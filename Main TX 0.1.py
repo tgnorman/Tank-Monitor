@@ -13,6 +13,8 @@ from machine import I2C, Pin, ADC # Import Pin
 #ssid = secrets.ssid_s
 #password = secrets.password_s
 
+DEBUG = False
+
 # Create PiicoDev sensor objects
 
 #First... I2C devices
@@ -113,14 +115,14 @@ def updateClock():
     str_time = month + "/" + day + " " + short_time    
 
 def log_switch_error(new_state):
-    print(f">>> log_switch_error  !! {new_state}")
+    print(f"!!! log_switch_error  !! {new_state}")
     
 def parse_reply(rply):
-    print(f"in parse arg is {rply}")
+    if DEBUG: print(f"in parse arg is {rply}")
     if isinstance(rply, tuple):			# good...
         key = rply[0]
         val = rply[1]
-        print(f"in parse: key={key}, val={val}")
+#        print(f"in parse: key={key}, val={val}")
         if key.upper() == "STATUS":
             return True, val
         else:
@@ -129,7 +131,13 @@ def parse_reply(rply):
     else:
         print("Parse expected tuple... didn't get one")
         return False, False
-     
+
+def transmit_and_pause(msg):
+    global radio
+
+    radio.send(msg)
+    sleep_ms(RADIO_PAUSE)
+
 def controlBorePump():
     global tank_is, counter, radio, borepump_is_on
     if tank_is == fill_states[0]:		# Overfull
@@ -144,20 +152,20 @@ def controlBorePump():
             counter += 1
             tup = ("ON", counter)
             print(tup)
-            radio.send(tup)
-            sleep_ms(RADIO_PAUSE)
-            radio.send("CHECK")
-            sleep_ms(RADIO_PAUSE)
+            transmit_and_pause(tup)
+            sleep_ms(RADIO_PAUSE)       # that's two sleeps... to be sure, to be sure
+# try implicit CHECK... which should happen in my RX module as state_changed
+#            radio.send("CHECK")
+#            sleep_ms(RADIO_PAUSE)
             if radio.receive():
-                rm = radio.message
-                print(f"radio.message (rm): {rm}")
-                rply = rm
-                print(f"received response: rply is {rply}")
+                rply = radio.message
+#                print(f"radio.message (rm): {rm}")
+#                print(f"received response: rply is {rply}")
                 valid_response, new_state = parse_reply(rply)
-                print(f"in ctlBP: rply is {valid_response} and {new_state}")
+#                print(f"in ctlBP: rply is {valid_response} and {new_state}")
                 if valid_response and new_state > 0:
                     borepump_is_on = new_state > 0
-                    print(f"Set borepump to state {borepump_is_on}")
+                    print(f"FSM: Set borepump to state {borepump_is_on}")
                 else:
                     log_switch_error(new_state)
             
@@ -167,17 +175,18 @@ def controlBorePump():
             counter -= 1
             tup = ("OFF", counter)
             print(tup)
-            radio.send(tup)
-            sleep_ms(RADIO_PAUSE)
-            radio.send("CHECK")
-            sleep_ms(RADIO_PAUSE)
+            transmit_and_pause(tup)
+            sleep_ms(RADIO_PAUSE)       # that's two sleeps... to be sure, to be sure
+# try implicit CHECK... which should happen in my RX module as state_changed
+#            radio.send("CHECK")
+#            sleep_ms(RADIO_PAUSE)
             if radio.receive():
                 rply = radio.message
                 valid_response, new_state = parse_reply(rply)
-                print(f"in ctlBP: rply is {valid_response} and {new_state}")
+#                print(f"in ctlBP: rply is {valid_response} and {new_state}")
                 if valid_response and not new_state:
                     borepump_is_on = False
-                    print(f"Set borepump to state {borepump_is_on}")
+                    print(f"FSM: Set borepump to state {borepump_is_on}")
                 else:
                     log_switch_error(new_state)
                     
@@ -242,13 +251,31 @@ def init_radio():
     if radio.receive():
         msg = radio.message
         print(f"Read {msg}")
-    else: print("nothing received in init")
-    
+    else:
+        print("nothing received in init")
+
+def ping_RX() -> bool:           # at startup, test if RX is listening
+    global radio
+
+    transmit_and_pause("PING")
+    if radio.receive():
+        msg = radio.message
+        if isinstance(msg, str):
+            if msg == "PING REPLY":
+                return True
+        else: return False
+    else: return False
+
 rec_num=0
 #radio.rfm69_reset
 
 init_radio()
 print("Starting MAIN")
+
+print("Pinging RX Pico...")
+while not ping_RX():
+    print("Waiting for RX to respond...")
+    sleep(1)
 
 try:
     while True:
@@ -268,4 +295,4 @@ except KeyboardInterrupt:
     f.flush()
     f.close()
     lcd.setRGB(0,0,0)		# turn off backlight
-    print('Program Interrupted by the user')
+    print('\n### Program Interrupted by the user')
