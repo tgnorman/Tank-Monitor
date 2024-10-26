@@ -1,4 +1,6 @@
-from PiicoDev_Transceiver import PiicoDev_Transceiver# My first real OO class...
+# My first real OO class...
+from PiicoDev_Transceiver import PiicoDev_Transceiver
+
 import time
 
 class Pump:
@@ -30,7 +32,7 @@ class Pump:
 #            self.update_pump_state(new_state)
             
             if self.state:			# then we were ON, now switching OFF... calc time we were ON
-                time_on_secs = time_now - self.last_time_switched
+                time_on_secs = time_now - time.mktime(self.last_time_switched)
                 self.cum_seconds_on += time_on_secs
             self.state = new_state
             self.last_time_switched = time_now
