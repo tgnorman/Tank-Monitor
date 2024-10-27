@@ -48,7 +48,7 @@ Min_Voltage = 0.5
 fill_states = ["Overflow", "Full", "Near full", "Part full", "Near Empty", "Empty"]
 borepump_is_on = False 		# init to True... ie assume on, take action to turn off
 BP_state_changed = False
-Tank_Height = 1600
+Tank_Height = 1650
 OverFull	= 150
 Min_Dist    = 200       # full
 Max_Dist    = 1000       # empty
@@ -73,6 +73,7 @@ buzzer.value(0)			# turn buzzer off
 lcd.clear()
 rtc.getDateTime()
 
+# CHANGE THIS... do after initialising internal clock
 tod   = rtc.timestamp()
 year  = tod.split()[0].split("-")[0]
 month = tod.split()[0].split("-")[1]
@@ -133,7 +134,7 @@ def updateClock():
     hour  = now[3]
     min   = now[4]
     sec   = now[5]
-    short_time = f"{hour}:{min}:{sec}"
+    short_time = f"{hour:02}:{min:02}:{sec:02}"
     str_time = str(month) + "/" + str(day) + " " + short_time 
     event_time = str(year) + "/" + str_time
 
@@ -187,6 +188,7 @@ def controlBorePump():
                 valid_response, new_state = parse_reply(rply)
 #                print(f"in ctlBP: rply is {valid_response} and {new_state}")
                 if valid_response and new_state > 0:
+                    borepump.switch_pump(True)
                     borepump_is_on = new_state > 0
                     ev_log.write(f"{event_time} ON\n")
                     print(f"FSM: Set borepump to state {borepump_is_on}")
@@ -209,6 +211,7 @@ def controlBorePump():
                 valid_response, new_state = parse_reply(rply)
 #                print(f"in ctlBP: rply is {valid_response} and {new_state}")
                 if valid_response and not new_state:
+                    borepump.switch_pump(False)
                     borepump_is_on = False
                     ev_log.write(f"{event_time} OFF\n")
                     print(f"FSM: Set borepump to state {borepump_is_on}")
@@ -295,7 +298,7 @@ def ping_RX() -> bool:           # at startup, test if RX is listening
 def get_initial_pump_state() -> bool:
     global borepump_is_on
 
-    borepump_is_on = False
+    _is_on = False
     transmit_and_pause("CHECK")
     if radio.receive():
         rply = radio.message
@@ -308,15 +311,15 @@ def dump_pump():
     global borepump, ev_log
 # write pump object stats to log file, typically when system is closed/interupted
 
-    dc_secs = borepump.dutycyclesecs
+    dc_secs = borepump.cum_seconds_on
     days  = int(dc_secs/(60*60*24))
     hours = int(dc_secs % (60*60*24) / (60*60))
     mins  = int(dc_secs % (60*60) / 60)
     secs  = int(dc_secs % 60)
-    ev_log.write(f"Monitor shutdown at {event_time}\n")
-    ev_log.write(f"Last switch time: {borepump.lastswitchtime}\n")
-    ev_log.write(f"Total switches this period: {borepump.count}\n")
-    ev_log.write(f"Cumulative runtime: {days} days {hours} hours {mins} minutes\n")
+    ev_log.write(f"\nMonitor shutdown at {event_time}\n")
+    ev_log.write(f"Last switch time: {borepump.last_time_switched}\n")
+    ev_log.write(f"Total switches this period: {borepump.num_switch_events}\n")
+    ev_log.write(f"Cumulative runtime: {days} days {hours} hours {mins} minutes {secs} seconds\n")
 
 # Connect to Wi-Fi
 def connect_wifi():
@@ -349,11 +352,13 @@ def set_time():
     print("Syncing time with NTP...")
     ntptime.settime()  # This will set the system time to UTC
 
-def init_everything():
-    global borepump
+def init_clock():
     if time.localtime()[0] < 2024:  # if we reset, localtime will return 2021...
         connect_wifi()
         set_time()
+        
+def init_everything_else():
+    global borepump
     
 #    updateClock()                   # get DST-adjusted local time
     init_radio()
@@ -372,10 +377,11 @@ def main():
 
     print("Starting MAIN")
     print("Initialising clock")
-    updateClock()                   # get DST-adjusted local time
-
-    ev_log.write(f"Log starting: {event_time}")
-    init_everything()
+    init_clock()
+    updateClock()				# get DST-adjusted local time
+    
+    ev_log.write(f"Pump Monitor starting: {event_time}\n")
+    init_everything_else()
 
     try:
         while True:
