@@ -1,17 +1,22 @@
-#from PiicoDev_BME280 import PiicoDev_BME280
-#from PiicoDev_VEML6030 import PiicoDev_VEML6030
+# Trev's super dooper Tank/Pump monitoring system
+
 from PiicoDev_VL53L1X import PiicoDev_VL53L1X
 from PiicoDev_RV3028 import PiicoDev_RV3028
 from PiicoDev_Transceiver import PiicoDev_Transceiver
 import RGB1602
+import time
+import network
+import ntptime
 from time import sleep
 from PiicoDev_Unified import sleep_ms
 from machine import I2C, Pin, ADC # Import Pin
 
-#import secrets
+import secrets
 # Configure your WiFi SSID and password
-#ssid = secrets.ssid_s
-#password = secrets.password_s
+ssid = secrets.ssid_s
+password = secrets.password_s
+
+from Pump import Pump           # get our Pump class
 
 DEBUG = False
 
@@ -75,7 +80,9 @@ day   = tod.split()[0].split("-")[2]
 shortyear = year[2:]
 
 daylogname = f'tank {shortyear}{month}{day}.txt'
-f = open(daylogname, "a")
+eventlogname = 'borepump_events.txt'
+f      = open(daylogname, "a")
+ev_log = open(eventlogname, "a")
 
 def get_fill_state(d):
     if d > Max_Dist:
@@ -106,13 +113,29 @@ def updateData():
     tank_is = get_fill_state(d)
     depth_str = f"{depth:.2f}m " + tank_is
 
-def updateClock():
-    global str_time
+def updateClock_OLD():
+    global str_time, event_time
     tod   = rtc.timestamp()
     month = tod.split()[0].split("-")[1]
     day   = tod.split()[0].split("-")[2]
     short_time = tod.split()[1]
-    str_time = month + "/" + day + " " + short_time    
+    str_time = month + "/" + day + " " + short_time 
+    event_time = year + "/" + str_time
+
+def updateClock():
+    global str_time, event_time
+
+    now   = SAtime()
+#    tod   = rtc.timestamp()
+    year  = now[0]
+    month = now[1]
+    day   = now[2]
+    hour  = now[3]
+    min   = now[4]
+    sec   = now[5]
+    short_time = f"{hour}:{min}:{sec}"
+    str_time = str(month) + "/" + str(day) + " " + short_time 
+    event_time = str(year) + "/" + str_time
 
 def log_switch_error(new_state):
     print(f"!!! log_switch_error  !! {new_state}")
@@ -165,6 +188,7 @@ def controlBorePump():
 #                print(f"in ctlBP: rply is {valid_response} and {new_state}")
                 if valid_response and new_state > 0:
                     borepump_is_on = new_state > 0
+                    ev_log.write(f"{event_time} ON\n")
                     print(f"FSM: Set borepump to state {borepump_is_on}")
                 else:
                     log_switch_error(new_state)
@@ -186,6 +210,7 @@ def controlBorePump():
 #                print(f"in ctlBP: rply is {valid_response} and {new_state}")
                 if valid_response and not new_state:
                     borepump_is_on = False
+                    ev_log.write(f"{event_time} OFF\n")
                     print(f"FSM: Set borepump to state {borepump_is_on}")
                 else:
                     log_switch_error(new_state)
@@ -256,43 +281,125 @@ def init_radio():
 
 def ping_RX() -> bool:           # at startup, test if RX is listening
     global radio
+    ping_acknowleged = False
 
     transmit_and_pause("PING")
-    if radio.receive():
+    if radio.receive():                     # depending on time relative to RX Pico, may need to pause more here before testing???
         msg = radio.message
         if isinstance(msg, str):
             if msg == "PING REPLY":
-                return True
-        else: return False
-    else: return False
+                ping_acknowleged = True
 
-rec_num=0
-#radio.rfm69_reset
+    return ping_acknowleged
 
-init_radio()
-print("Starting MAIN")
+def get_initial_pump_state() -> bool:
+    global borepump_is_on
 
-print("Pinging RX Pico...")
-while not ping_RX():
-    print("Waiting for RX to respond...")
-    sleep(1)
+    borepump_is_on = False
+    transmit_and_pause("CHECK")
+    if radio.receive():
+        rply = radio.message
+        valid_response, new_state = parse_reply(rply)
+        if valid_response and new_state > 0:
+            borepump_is_on = True
+    return borepump_is_on
 
-try:
-    while True:
-        updateClock()			# get datetime stuff
-        updateData()			# monitor water epth
-        controlBorePump()		# do whatever
-#        listen_to_radio()		# check for badness
-        displayAndLog()			# record it
-        checkForAnomalies(depth_ROC)	# test for weirdness
-    #        rec_num += 1
-        #    print(f"Sleeping for {mydelay} seconds")
-        sleep(mydelay)
-        
-#except Exception as e:
-#    print('Error occured: ', e)
-except KeyboardInterrupt:
-    f.flush()
-    f.close()
-    lcd.setRGB(0,0,0)		# turn off backlight
-    print('\n### Program Interrupted by the user')
+def dump_pump():
+    global borepump, ev_log
+# write pump object stats to log file, typically when system is closed/interupted
+
+    dc_secs = borepump.dutycyclesecs
+    days  = int(dc_secs/(60*60*24))
+    hours = int(dc_secs % (60*60*24) / (60*60))
+    mins  = int(dc_secs % (60*60) / 60)
+    secs  = int(dc_secs % 60)
+    ev_log.write(f"Monitor shutdown at {event_time}\n")
+    ev_log.write(f"Last switch time: {borepump.lastswitchtime}\n")
+    ev_log.write(f"Total switches this period: {borepump.count}\n")
+    ev_log.write(f"Cumulative runtime: {days} days {hours} hours {mins} minutes\n")
+
+# Connect to Wi-Fi
+def connect_wifi():
+    wlan = network.WLAN(network.STA_IF)
+    wlan.active(True)
+    if not wlan.isconnected():
+        print('Connecting to network...')
+        wlan.connect(SSID, PASSWORD)
+        while not wlan.isconnected():
+            time.sleep(1)
+    print('Connected to:', wlan.ifconfig())
+
+def SAtime():
+    year = time.localtime()[0]                  #get current year. It's all calculated from year...
+
+    DST_end   = time.mktime((year, 4,(31-(int(5*year/4+4))%7),2,0,0,0,0,0)) #Time of April change to end DST
+    DST_start = time.mktime((year,10,(7-(int(year*5/4+4)) % 7),2,0,0,0,0,0)) #Time of October change to start DST
+    now=time.time()
+    
+    if DST_end < now and now < DST_start:		# then adjust
+#        print("Winter ... adding 9.5 hours")
+        sa_time = time.localtime(now + int(9.5 * 3600))
+    else:
+#        print("DST... adding 10.5 hours")
+        sa_time = time.localtime(now + int(10.5 * 3600))
+    return(sa_time)
+
+# Set time using NTP server
+def set_time():
+    print("Syncing time with NTP...")
+    ntptime.settime()  # This will set the system time to UTC
+
+def init_everything():
+    global borepump
+    if time.localtime()[0] < 2024:  # if we reset, localtime will return 2021...
+        connect_wifi()
+        set_time()
+    
+#    updateClock()                   # get DST-adjusted local time
+    init_radio()
+    print("Pinging RX Pico...")
+    while not ping_RX():
+        print("Waiting for RX to respond...")
+        sleep(1)
+     # then RX says pump is ON
+# if we get here, my RX is responding.  Get the current pump state and init my object
+    borepump = Pump(get_initial_pump_state())
+
+def main():
+    global event_time
+    rec_num=0
+    #radio.rfm69_reset
+
+    print("Starting MAIN")
+    print("Initialising clock")
+    updateClock()                   # get DST-adjusted local time
+
+    ev_log.write(f"Log starting: {event_time}")
+    init_everything()
+
+    try:
+        while True:
+            updateClock()			# get datetime stuff
+            updateData()			# monitor water epth
+            controlBorePump()		# do whatever
+    #        listen_to_radio()		# check for badness
+            displayAndLog()			# record it
+            checkForAnomalies(depth_ROC)	# test for weirdness
+        #        rec_num += 1
+            #    print(f"Sleeping for {mydelay} seconds")
+            sleep(mydelay)
+            
+    #except Exception as e:
+    #    print('Error occured: ', e)
+    except KeyboardInterrupt:
+        f.flush()
+        f.close()
+        ev_log.write(f"{event_time} STOP")
+        dump_pump()
+        ev_log.flush()
+        ev_log.close()
+        lcd.setRGB(0,0,0)		# turn off backlight
+        print('\n### Program Interrupted by the user')
+
+if __name__ == '__main__':
+    main()
