@@ -18,8 +18,16 @@ from machine import Pin
 
 DEBUG = False
 
-RADIO_PAUSE = 1000
-LOOP_DELAY  = 1000
+RADIO_PAUSE = 500
+LOOP_DELAY  = 400
+
+# OK, initialise control pins
+led 		= Pin('LED', Pin.OUT, value=0)
+bore_ctl 	= Pin(18, Pin.OUT, value=0)
+detect 		= Pin(22, Pin.IN, Pin.PULL_UP)
+# create transceiver object, default params should be fine.  Uses 922 MHz, 15200 Baud
+radio = PiicoDev_Transceiver()
+pump_state = False
 
 def pulse_count(ch):
     global count
@@ -37,7 +45,7 @@ def send_fail(req):
     global radio
     msg = "FAIL ON" if req else "FAIL OFF"
     if DEBUG: print(f"sending fail msg {msg}")
-    transmit_and_pause(msg)
+    transmit_and_pause(msg, RADIO_PAUSE)
     
 def confirm_state(req, period):		# test if reality agrees with last request
     expected_crosses = period / 50			# 50Hz...
@@ -47,7 +55,7 @@ def confirm_state(req, period):		# test if reality agrees with last request
         if period_count > min_crosses:
             if DEBUG: print(f'Counted {period_count} pulses.. confirmed pump is indeed ON')
             msg = ("STATUS", 1)
-            transmit_and_pause(msg)
+            transmit_and_pause(msg, RADIO_PAUSE)
         else:
             if DEBUG: print(f'Gak!... Only saw {period_count} pulses in {period} milliseconds.  FAIL')
 #            sleep_ms(RADIO_PAUSE)
@@ -57,7 +65,7 @@ def confirm_state(req, period):		# test if reality agrees with last request
         if period_count < min_crosses:
             if DEBUG: print(f'Counted {period_count} pulses.. confirmed pump is indeed OFF')
             msg = ("STATUS", 0)
-            transmit_and_pause(msg)
+            transmit_and_pause(msg, RADIO_PAUSE)
         else:
             if DEBUG: print(f'Zounds!... Saw {period_count} pulses in {period} milliseconds.  FAIL')
 #            sleep_ms(RADIO_PAUSE)
@@ -83,14 +91,6 @@ def switch_relay(state):
     pump_state = state			# keep track of state... for confirmation tests
     state_changed = True
 
-# OK, initialise control pins
-led 		= Pin('LED', Pin.OUT, value=0)
-bore_ctl 	= Pin(18, Pin.OUT, value=0)
-detect 		= Pin(22, Pin.IN, Pin.PULL_UP)
-# create transceiver object, default params should be fine.  Uses 922 MHz, 15200 Baud
-radio = PiicoDev_Transceiver()
-pump_state = False
-
 def init_radio():
     global radio
     
@@ -100,18 +100,42 @@ def init_radio():
         if isinstance(msg, str):
             if msg == "PING":         # respond I am alive...
                 resp_txt = "PING REPLY"
-                transmit_and_pause(resp_txt)
+                transmit_and_pause(resp_txt, RADIO_PAUSE)
                 print(f"REPLY: {resp_txt}")
             else:
                 print(f"Read unknown message: {msg}")
     else:
         if DEBUG: print("nothing received in init")
 
-def transmit_and_pause(msg):
+def transmit_and_pause(msg, delay):
     global radio
 
     radio.send(msg)
-    sleep_ms(RADIO_PAUSE)
+    sleep_ms(delay)
+
+def secs_to_localtime(s):
+    tupltime = time.localtime(s)
+    year = tupltime[0]
+    DST_end   = time.mktime((year, 4,(31-(int(5*year/4+4))%7),2,0,0,0,0,0)) #Time of April change to end DST
+    DST_start = time.mktime((year,10,(7-(int(year*5/4+4)) % 7),2,0,0,0,0,0)) #Time of October change to start DST
+    
+    if DST_end < s and s < DST_start:		# then adjust
+#        print("Winter ... adding 9.5 hours")
+        adj_time = time.localtime(s + int(9.5 * 3600))
+    else:
+#        print("DST... adding 10.5 hours")
+        adj_time = time.localtime(s + int(10.5 * 3600))
+    return(adj_time)
+
+def display_time(t):
+    year  = t[0]
+    month = t[1]
+    day   = t[2]
+    hour  = t[3]
+    min   = t[4]
+    sec   = t[5]
+    time_str = f"{year}/{month:02}/{day:02} {hour:02}:{min:02}:{sec:02}"
+    return time_str
     
 def main():
     global bore_ctl, detect, led, pump_state, state_changed
@@ -137,11 +161,11 @@ def main():
                     print(message)
                     if message == "CHECK":
                         resp_txt = ("STATUS", 1 if check_state(500) else 0)
-                        transmit_and_pause(resp_txt)
+                        transmit_and_pause(resp_txt, RADIO_PAUSE)
                         print(f"REPLY: {resp_txt}")
                     elif message == "PING":         # respond I am alive...
                         resp_txt = "PING REPLY"
-                        transmit_and_pause(resp_txt)
+                        transmit_and_pause(resp_txt, RADIO_PAUSE)
                         print(f"REPLY: {resp_txt}")
                 elif isinstance(message, tuple):
                     if DEBUG: print("Received tuple: ", message[0], message[1])
@@ -150,13 +174,13 @@ def main():
     #                    led.value(0)
                         if pump_state:		# pump is ON.. take action
                             switch_relay(False)
-                            print(f"OFF: Switching pump OFF at {message[1]}")
+                            print(f"OFF: Switching pump OFF at {display_time(secs_to_localtime(message[1]))}")
                         else:
                             if DEBUG: print("Ignoring OFF... already OFF")
                     elif message[0] == "ON":
                         if not pump_state:		# pump is OFF.. take action
                             switch_relay(True)
-                            print(f"ON: Switching pump ON at {message[1]}")
+                            print(f"ON: Switching pump ON at {display_time(secs_to_localtime(message[1]))}")
                         else:
                             if DEBUG: print("Ignoring ON... already ON")
                             state_changed = True        # YUK... tricks other code into sending confirmation
