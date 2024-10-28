@@ -114,19 +114,10 @@ def updateData():
     tank_is = get_fill_state(d)
     depth_str = f"{depth:.2f}m " + tank_is
 
-def updateClock_OLD():
-    global str_time, event_time
-    tod   = rtc.timestamp()
-    month = tod.split()[0].split("-")[1]
-    day   = tod.split()[0].split("-")[2]
-    short_time = tod.split()[1]
-    str_time = month + "/" + day + " " + short_time 
-    event_time = year + "/" + str_time
-
 def updateClock():
     global str_time, event_time
 
-    now   = SAtime()
+    now   = secs_to_localtime(time.time())
 #    tod   = rtc.timestamp()
     year  = now[0]
     month = now[1]
@@ -139,7 +130,9 @@ def updateClock():
     event_time = str(year) + "/" + str_time
 
 def log_switch_error(new_state):
+    global ev_log, event_time
     print(f"!!! log_switch_error  !! {new_state}")
+    ev_log.write(f"{event_time}: ERROR on switching to state {new_state}")
     
 def parse_reply(rply):
     if DEBUG: print(f"in parse arg is {rply}")
@@ -156,11 +149,11 @@ def parse_reply(rply):
         print("Parse expected tuple... didn't get one")
         return False, False
 
-def transmit_and_pause(msg):
+def transmit_and_pause(msg, delay):
     global radio
 
     radio.send(msg)
-    sleep_ms(RADIO_PAUSE)
+    sleep_ms(delay)
 
 def controlBorePump():
     global tank_is, counter, radio, borepump_is_on
@@ -176,8 +169,7 @@ def controlBorePump():
             counter += 1
             tup = ("ON", counter)
             print(tup)
-            transmit_and_pause(tup)
-            sleep_ms(RADIO_PAUSE)       # that's two sleeps... to be sure, to be sure
+            transmit_and_pause(tup, 2 * RADIO_PAUSE)    # that's two sleeps... as expecting immediate reply
 # try implicit CHECK... which should happen in my RX module as state_changed
 #            radio.send("CHECK")
 #            sleep_ms(RADIO_PAUSE)
@@ -201,8 +193,7 @@ def controlBorePump():
             counter -= 1
             tup = ("OFF", counter)
             print(tup)
-            transmit_and_pause(tup)
-            sleep_ms(RADIO_PAUSE)       # that's two sleeps... to be sure, to be sure
+            transmit_and_pause(tup, 2 * RADIO_PAUSE)    # that's two sleeps... as expecting immediate reply
 # try implicit CHECK... which should happen in my RX module as state_changed
 #            radio.send("CHECK")
 #            sleep_ms(RADIO_PAUSE)
@@ -218,15 +209,19 @@ def controlBorePump():
                 else:
                     log_switch_error(new_state)
                     
-def raiseAlarm(xxx):
-    pass
+def raiseAlarm(param, val):
+    global ev_log, event_time
+    str = f"{event_time}: ALARM {param} raised, value {val}\n"
+    ev_log.write(str)
+    print(str)
+    
 #    print(f"Yikes! This looks bad... abnormal {xxx} detected: ")
     
-def checkForAnomalies(roc):
-    global max_ROC
+def checkForAnomalies():
+    global max_ROC, depth_ROC
 #    print(f'ROC is {roc:.2f} in CFA...')
-    if roc > max_ROC:
-        raiseAlarm("ROC")
+    if depth_ROC > max_ROC:
+        raiseAlarm("ROC", depth_ROC)
     
 def displayAndLog():
     global log_freq
@@ -280,13 +275,13 @@ def init_radio():
         msg = radio.message
         print(f"Read {msg}")
     else:
-        print("nothing received in init")
+        print("nothing received in init_radio")
 
 def ping_RX() -> bool:           # at startup, test if RX is listening
     global radio
     ping_acknowleged = False
 
-    transmit_and_pause("PING")
+    transmit_and_pause("PING", RADIO_PAUSE)
     if radio.receive():                     # depending on time relative to RX Pico, may need to pause more here before testing???
         msg = radio.message
         if isinstance(msg, str):
@@ -298,8 +293,8 @@ def ping_RX() -> bool:           # at startup, test if RX is listening
 def get_initial_pump_state() -> bool:
     global borepump_is_on
 
-    _is_on = False
-    transmit_and_pause("CHECK")
+    borepump_is_on = False
+    transmit_and_pause("CHECK",  RADIO_PAUSE)
     if radio.receive():
         rply = radio.message
         valid_response, new_state = parse_reply(rply)
@@ -316,8 +311,8 @@ def dump_pump():
     hours = int(dc_secs % (60*60*24) / (60*60))
     mins  = int(dc_secs % (60*60) / 60)
     secs  = int(dc_secs % 60)
-    ev_log.write(f"\nMonitor shutdown at {event_time}\n")
-    ev_log.write(f"Last switch time: {borepump.last_time_switched}\n")
+    ev_log.write(f"\nMonitor shutdown at {display_time(secs_to_localtime(time.time()))}\n")
+    ev_log.write(f"Last switch time:   {display_time(secs_to_localtime(borepump.last_time_switched))}\n")
     ev_log.write(f"Total switches this period: {borepump.num_switch_events}\n")
     ev_log.write(f"Cumulative runtime: {days} days {hours} hours {mins} minutes {secs} seconds\n")
 
@@ -332,21 +327,30 @@ def connect_wifi():
             time.sleep(1)
     print('Connected to:', wlan.ifconfig())
 
-def SAtime():
-    year = time.localtime()[0]                  #get current year. It's all calculated from year...
-
+def secs_to_localtime(s):
+    tupltime = time.localtime(s)
+    year = tupltime[0]
     DST_end   = time.mktime((year, 4,(31-(int(5*year/4+4))%7),2,0,0,0,0,0)) #Time of April change to end DST
     DST_start = time.mktime((year,10,(7-(int(year*5/4+4)) % 7),2,0,0,0,0,0)) #Time of October change to start DST
-    now=time.time()
     
-    if DST_end < now and now < DST_start:		# then adjust
+    if DST_end < s and s < DST_start:		# then adjust
 #        print("Winter ... adding 9.5 hours")
-        sa_time = time.localtime(now + int(9.5 * 3600))
+        adj_time = time.localtime(s + int(9.5 * 3600))
     else:
 #        print("DST... adding 10.5 hours")
-        sa_time = time.localtime(now + int(10.5 * 3600))
-    return(sa_time)
+        adj_time = time.localtime(s + int(10.5 * 3600))
+    return(adj_time)
 
+def display_time(t):
+    year  = t[0]
+    month = t[1]
+    day   = t[2]
+    hour  = t[3]
+    min   = t[4]
+    sec   = t[5]
+    time_str = f"{year}/{month:02}/{day:02} {hour:02}:{min:02}:{sec:02}"
+    return time_str
+    
 # Set time using NTP server
 def set_time():
     print("Syncing time with NTP...")
@@ -366,8 +370,11 @@ def init_everything_else():
     while not ping_RX():
         print("Waiting for RX to respond...")
         sleep(1)
-     # then RX says pump is ON
-# if we get here, my RX is responding.  Get the current pump state and init my object
+
+# if we get here, my RX is responding.
+    print("RX responded to ping... comms ready")
+
+# Get the current pump state and init my object    
     borepump = Pump(get_initial_pump_state())
 
 def main():
@@ -386,11 +393,11 @@ def main():
     try:
         while True:
             updateClock()			# get datetime stuff
-            updateData()			# monitor water epth
+            updateData()			# monitor water depth
             controlBorePump()		# do whatever
     #        listen_to_radio()		# check for badness
             displayAndLog()			# record it
-            checkForAnomalies(depth_ROC)	# test for weirdness
+            checkForAnomalies()	# test for weirdness
         #        rec_num += 1
             #    print(f"Sleeping for {mydelay} seconds")
             sleep(mydelay)
