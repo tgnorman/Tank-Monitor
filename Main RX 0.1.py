@@ -15,11 +15,20 @@
 from PiicoDev_Transceiver import PiicoDev_Transceiver
 from PiicoDev_Unified import sleep_ms
 from machine import Pin
+import time
+import network
+import ntptime
+import secrets
+
+# Configure your WiFi SSID and password
+ssid     = secrets.ssid_s
+password = secrets.password_s
 
 DEBUG = False
 
 RADIO_PAUSE = 500
 LOOP_DELAY  = 400
+MAX_NON_COMM_PERIOD = 60        # maximum seconds allowed between heartbeats, turn pump off if exceeded.  FAIL-SAFE
 
 # OK, initialise control pins
 led 		= Pin('LED', Pin.OUT, value=0)
@@ -60,7 +69,6 @@ def confirm_state(req, period):		# test if reality agrees with last request
             if DEBUG: print(f'Gak!... Only saw {period_count} pulses in {period} milliseconds.  FAIL')
 #            sleep_ms(RADIO_PAUSE)
             send_fail(req)
-
     else:				# request was to switch OFF... count should be close to zero...
         if period_count < min_crosses:
             if DEBUG: print(f'Counted {period_count} pulses.. confirmed pump is indeed OFF')
@@ -88,8 +96,8 @@ def switch_relay(state):
     else:
         bore_ctl.value(0)			# turn borepump OFF to start
         led.value(0)
-    pump_state = state			# keep track of state... for confirmation tests
-    state_changed = True
+    state_changed = pump_state != state            # ...does this break my heartbeat stuff?
+    pump_state = state			    # keep track of new state... for confirmation tests
 
 def init_radio():
     global radio
@@ -136,27 +144,56 @@ def display_time(t):
     sec   = t[5]
     time_str = f"{year}/{month:02}/{day:02} {hour:02}:{min:02}:{sec:02}"
     return time_str
-    
+
+# Connect to Wi-Fi
+def connect_wifi():
+    global ssid, password
+    wlan = network.WLAN(network.STA_IF)
+    wlan.active(True)
+    if not wlan.isconnected():
+        print('Connecting to network...')
+        wlan.connect(ssid, password)
+        while not wlan.isconnected():
+            time.sleep(1)
+    print('Connected to:', wlan.ifconfig())
+
+# Set time using NTP server
+def set_time():
+    print("Syncing time with NTP...")
+    ntptime.settime()  # This will set the system time to UTC
+
+def init_clock():
+    if time.localtime()[0] < 2024:  # if we reset, localtime will return 2021...
+        connect_wifi()
+        set_time()
+
 def main():
-    global bore_ctl, detect, led, pump_state, state_changed
+    global bore_ctl, detect, led, pump_state, state_changed, last_ON_time
 
-#Initialise state vars
-
-    print("Switching bore pump OFF...")
-    switch_relay(False)
-    state_changed = False		# override initial state
+    init_clock()
+    start_time = time.time()
+    state_changed = False
+    print(f"Receiver starting at {display_time(secs_to_localtime(start_time))}")
+    if check_state(500):             # pump is already ON...
+        print("Pump is ON at start-up")
+        pump_state = True
+        last_ON_time = start_time
+    else:                       # pump is OFF at start...normal
+#    print("Switching bore pump OFF...")
+#    switch_relay(False)
+        pump_state = False
+        last_ON_time = 0            # fudge...
   
 #   print("Resetting radio...")
 #   radio.rfm69_reset
     init_radio()
-    
+  
     print("Listening for transmission...")
 
     try:
         while True:
             if radio.receive():
                 message = radio.message
-        #        print(message)
                 if isinstance(message, str):
                     print(message)
                     if message == "CHECK":
@@ -168,33 +205,42 @@ def main():
                         transmit_and_pause(resp_txt, RADIO_PAUSE)
                         print(f"REPLY: {resp_txt}")
                 elif isinstance(message, tuple):
-                    if DEBUG: print("Received tuple: ", message[0], message[1])
+                    if DEBUG:
+                        print("Received tuple: ", message[0], message[1])
                     if message[0] == "OFF":
-    #                    bore_ctl.value(0)			# turn borepump OFF
-    #                    led.value(0)
-                        if pump_state:		# pump is ON.. take action
+                        if pump_state:		        # pump is ON.. take action
                             switch_relay(False)
                             print(f"OFF: Switching pump OFF at {display_time(secs_to_localtime(message[1]))}")
                         else:
                             if DEBUG: print("Ignoring OFF... already OFF")
                     elif message[0] == "ON":
-                        if not pump_state:		# pump is OFF.. take action
+                        if not pump_state:		    # pump is OFF.. take action
                             switch_relay(True)
-                            print(f"ON: Switching pump ON at {display_time(secs_to_localtime(message[1]))}")
+                            print(f"ON:  Switching pump ON  at {display_time(secs_to_localtime(message[1]))}")
+                            last_ON_time = message[1]
                         else:
                             if DEBUG: print("Ignoring ON... already ON")
+                            last_ON_time = message[1]
                             state_changed = True        # YUK... tricks other code into sending confirmation
                             # This necessary as if I start TX when pump is already ON... I don't acknowledge, so TX stays in pump_is_off state
+                    elif message[0] == "BABOOM":        # that's TX talking saying I'm still alive...
+                        if DEBUG: print("received heartbeat BABOOM")
+                        last_ON_time = message[1]       # note the timestamp
                     else:
                         print("WTF is message[0]?")
             else:
                 message = ""         
 
             if state_changed:			#test if the request is reflected in the detect circuit
-                confirm_state(pump_state, 500)
+                confirm_state(pump_state, 500)  # implied sleep...
                 state_changed = False			# reset so we don't keep sending same data if nothing switched
             else:
-                sleep_ms(LOOP_DELAY)		# a real quick sleep... until I sort asynch, or threads..
+                no_comms_secs = time.time() - last_ON_time
+                if pump_state and no_comms_secs > MAX_NON_COMM_PERIOD:     # Houston, we have a problem...
+                    print("Max radio silence period exceeded!  Turning pump off")
+                    switch_relay(0)             # pump_state now OFF
+                    state_changed = False       # effectively go to starting loop, waiting for incoming ON/OFF or whatever
+                sleep_ms(LOOP_DELAY)		    # if we did NOT do implied sleep in confirm_state... delay a bit.
 
     except KeyboardInterrupt:
         print("\n***Turning pump OFF on KeyboardInterupt")

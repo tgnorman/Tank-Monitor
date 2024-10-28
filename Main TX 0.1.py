@@ -64,8 +64,9 @@ min_log_change_m = 0.1		# to save space... only write to file if significant cha
 level_init = False 		# to get started
 depth_ROC = 0
 max_ROC = 0.4			# change in metres/minute
+min_ROC = 0.1           # experimental.. might need to tweak.  To avoid noise in anomaly tests
+MAX_CONTINUOUS_RUNTIME = 6 * 60 * 60        # 6 hours max runtime.  More than this looks like trouble
 counter = 0
-tup = ""
 
 # start doing stuff
 buzzer.value(0)			# turn buzzer off
@@ -107,8 +108,8 @@ def updateData():
     global last_depth
     global depth_ROC
     d = distSensor.read()
-    depth_ROC = abs(depth - last_depth) / (mydelay / 60)	# ROC in m/minute
-#    print(f"depth_ROC: {depth_ROC:.3f}")
+    depth_ROC = (depth - last_depth) / (mydelay / 60)	# ROC in m/minute.  Save neagtives also... for anomaly testing
+#    if DEBUG print(f"depth_ROC: {depth_ROC:.3f}")
     last_depth = depth				# track change since last reading
     depth = (Tank_Height - d) / 1000
     tank_is = get_fill_state(d)
@@ -152,11 +153,12 @@ def parse_reply(rply):
 def transmit_and_pause(msg, delay):
     global radio
 
+    if DEBUG: print(f"Sending {msg}")
     radio.send(msg)
     sleep_ms(delay)
 
 def controlBorePump():
-    global tank_is, counter, radio, borepump_is_on
+    global tank_is, counter, radio, borepump_is_on, event_time
     if tank_is == fill_states[0]:		# Overfull
         buzzer.value(1)			# raise alarm
 #        borepump_is_on = True   probably best to  inquire rather than assume...
@@ -167,8 +169,8 @@ def controlBorePump():
 #        print(f"ctrlBP: tank is {tank_is}, pump_on is {borepump_is_on}")
         if not borepump_is_on:		# pump is off, we need to switch on
             counter += 1
-            tup = ("ON", counter)
-            print(tup)
+            tup = ("ON", time.time())   # was previosuly counter... now, time
+#            print(tup)
             transmit_and_pause(tup, 2 * RADIO_PAUSE)    # that's two sleeps... as expecting immediate reply
 # try implicit CHECK... which should happen in my RX module as state_changed
 #            radio.send("CHECK")
@@ -183,7 +185,7 @@ def controlBorePump():
                     borepump.switch_pump(True)
                     borepump_is_on = new_state > 0
                     ev_log.write(f"{event_time} ON\n")
-                    print(f"FSM: Set borepump to state {borepump_is_on}")
+                    if DEBUG: print(f"FSM: Set borepump to state {borepump_is_on}")
                 else:
                     log_switch_error(new_state)
             
@@ -191,8 +193,8 @@ def controlBorePump():
 #        bore_ctl.value(0)			# switch borepump OFF
         if borepump_is_on:			# pump is ON... need to turn OFF
             counter -= 1
-            tup = ("OFF", counter)
-            print(tup)
+            tup = ("OFF", time.time())
+#            print(tup)
             transmit_and_pause(tup, 2 * RADIO_PAUSE)    # that's two sleeps... as expecting immediate reply
 # try implicit CHECK... which should happen in my RX module as state_changed
 #            radio.send("CHECK")
@@ -205,27 +207,34 @@ def controlBorePump():
                     borepump.switch_pump(False)
                     borepump_is_on = False
                     ev_log.write(f"{event_time} OFF\n")
-                    print(f"FSM: Set borepump to state {borepump_is_on}")
+                    if DEBUG: print(f"FSM: Set borepump to state {borepump_is_on}")
                 else:
                     log_switch_error(new_state)
                     
 def raiseAlarm(param, val):
     global ev_log, event_time
-    str = f"{event_time}: ALARM {param} raised, value {val}\n"
+    str = f"{event_time} ALARM {param}, value {val:.3g}\n"
     ev_log.write(str)
     print(str)
     
-#    print(f"Yikes! This looks bad... abnormal {xxx} detected: ")
-    
 def checkForAnomalies():
-    global max_ROC, depth_ROC
-#    print(f'ROC is {roc:.2f} in CFA...')
-    if depth_ROC > max_ROC:
-        raiseAlarm("ROC", depth_ROC)
+    global borepump, max_ROC, depth_ROC, tank_is, MAX_CONTINUOUS_RUNTIME
+
+    if borepump.state and tank_is == "Overflow":        # ideally, refer to a Tank object... but this will work for now
+        raiseAlarm("OVERFLOW and still ON", 999)        # probably should do more than this.. REALLY BAD scenario!
+    if abs(depth_ROC) > max_ROC:
+        raiseAlarm("Max ROC Exceeded", depth_ROC)
+    if depth_ROC > min_ROC and not borepump.state:        # pump is OFF but level is rising!
+        raiseAlarm("FILLING while OFF", depth_ROC)
+    if depth_ROC < -min_ROC and borepump.state:            # pump is ON but level is falling!
+        raiseAlarm("DRAINING while ON", depth_ROC)
+    if borepump.state:
+        runtime = time.time() - borepump.last_time_switched
+        if runtime > MAX_CONTINUOUS_RUNTIME:
+            raiseAlarm("RUNTIME EXCEEDED", runtime)
     
 def displayAndLog():
     global log_freq
-    global rec_num
     global depth
     global last_depth
     global level_init
@@ -300,6 +309,7 @@ def get_initial_pump_state() -> bool:
         valid_response, new_state = parse_reply(rply)
         if valid_response and new_state > 0:
             borepump_is_on = True
+    print(f"Pump Initial state is {borepump_is_on}")
     return borepump_is_on
 
 def dump_pump():
@@ -377,15 +387,30 @@ def init_everything_else():
 # Get the current pump state and init my object    
     borepump = Pump(get_initial_pump_state())
 
+# heartbeat... if pump is on, send a regular heartbeat to the RX end
+# On RX, if a max time has passed... turn off.
+# Need a mechanism to alert T... and reset
+
+def heartbeat() -> bool:
+    global borepump
+# Doing this inline as it were to avoid issues with async, buffering yada yada.
+# The return value indicates if we need to sleep before continuing the main loop
+    if not borepump.state:      # only do stuff if we believe the pump is running
+        return True             # nothing... so sleep
+    else:
+        transmit_and_pause("BABOOM", RADIO_PAUSE)       # this might be a candidate for a shorter delay... if no reply expected
+        return False            # implied sleep... so, negative
+
 def main():
     global event_time
-    rec_num=0
+#    rec_num=0
     #radio.rfm69_reset
 
-    print("Starting MAIN")
-    print("Initialising clock")
+    print("Initialising clock") 
     init_clock()
-    updateClock()				# get DST-adjusted local time
+    start_time = time.time()
+    print(f"Main TX starting at {display_time(secs_to_localtime(start_time))}")
+    updateClock()				    # get DST-adjusted local time
     
     ev_log.write(f"Pump Monitor starting: {event_time}\n")
     init_everything_else()
@@ -397,10 +422,11 @@ def main():
             controlBorePump()		# do whatever
     #        listen_to_radio()		# check for badness
             displayAndLog()			# record it
-            checkForAnomalies()	# test for weirdness
+            checkForAnomalies()	    # test for weirdness
         #        rec_num += 1
             #    print(f"Sleeping for {mydelay} seconds")
-            sleep(mydelay)
+            if heartbeat():             # send heartbeat if ON... not if OFF.  For now, anyway
+                sleep(mydelay)
             
     #except Exception as e:
     #    print('Error occured: ', e)
