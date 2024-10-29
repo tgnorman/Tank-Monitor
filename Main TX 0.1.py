@@ -10,15 +10,15 @@ import ntptime
 from time import sleep
 from PiicoDev_Unified import sleep_ms
 from machine import I2C, Pin, ADC # Import Pin
-
 import secrets
+
 # Configure your WiFi SSID and password
-ssid = secrets.ssid_s
-password = secrets.password_s
+ssid        = secrets.ssid_s
+password    = secrets.password_s
 
 from Pump import Pump           # get our Pump class
 
-DEBUG = False
+DEBUG       = False
 
 # Create PiicoDev sensor objects
 
@@ -38,33 +38,39 @@ backlight 	= Pin(6, Pin.IN)			# check if IN is correct!
 buzzer 		= Pin(16, Pin.OUT)
 presspmp 	= Pin(15,Pin.IN)		# or should this be ADC()?
 prsspmp_led = Pin(14, Pin.OUT)
-#pot 	   = ADC(Pin(26))			# read a voltage... simulate pump current detector
 
 # Misc stuff
 conv_fac 	= 3.3 / 65535
-Min_Voltage = 0.5
 
+# Gather all tank-related stuff with a view to making a class...
 # New state... .
 fill_states = ["Overflow", "Full", "Near full", "Part full", "Near Empty", "Empty"]
-borepump_is_on = False 		# init to True... ie assume on, take action to turn off
-BP_state_changed = False
+# Physical Constants
 Tank_Height = 1650
 OverFull	= 150
 Min_Dist    = 200       # full
 Max_Dist    = 1000       # empty
 Delta       = 50        # change indicating pump state change has occurred
 
-# Various constants
-mydelay = 5				# Sleep time... seconds, not ms...
-log_freq = 5
+# Tank variables/attributes
 depth = 0
 last_depth = 0
-last_logged_depth = 0
-min_log_change_m = 0.1		# to save space... only write to file if significant change in level
-level_init = False 		# to get started
 depth_ROC = 0
 max_ROC = 0.4			# change in metres/minute
 min_ROC = 0.1           # experimental.. might need to tweak.  To avoid noise in anomaly tests
+
+# this really shouldn't exist... rather refer to the pump state
+borepump_is_on = False 		# init to True... ie assume on, take action to turn off
+
+# Various constants
+mydelay = 5				# Sleep time... seconds, not ms...
+
+# logging stuff...
+log_freq = 5
+last_logged_depth = 0
+min_log_change_m = 0.1		# to save space... only write to file if significant change in level
+level_init = False 		# to get started
+
 MAX_CONTINUOUS_RUNTIME = 6 * 60 * 60        # 6 hours max runtime.  More than this looks like trouble
 counter = 0
 
@@ -81,10 +87,14 @@ month = tod.split()[0].split("-")[1]
 day   = tod.split()[0].split("-")[2]
 shortyear = year[2:]
 
-daylogname = f'tank {shortyear}{month}{day}.txt'
-eventlogname = 'borepump_events.txt'
-f      = open(daylogname, "a")
-ev_log = open(eventlogname, "a")
+
+def init_logging():
+    global year, month, day, shortyear
+    global f, ev_log
+    daylogname = f'tank {shortyear}{month}{day}.txt'
+    eventlogname = 'borepump_events.txt'
+    f      = open(daylogname, "a")
+    ev_log = open(eventlogname, "a")
 
 def get_fill_state(d):
     if d > Max_Dist:
@@ -118,9 +128,10 @@ def updateData():
 def updateClock():
     global str_time, event_time
 
-    now   = secs_to_localtime(time.time())
+    now   = secs_to_localtime(time.time())      # getcurrent time, convert to local SA time
 #    tod   = rtc.timestamp()
     year  = now[0]
+    
     month = now[1]
     day   = now[2]
     hour  = now[3]
@@ -332,7 +343,7 @@ def connect_wifi():
     wlan.active(True)
     if not wlan.isconnected():
         print('Connecting to network...')
-        wlan.connect(SSID, PASSWORD)
+        wlan.connect(ssid, password)
         while not wlan.isconnected():
             time.sleep(1)
     print('Connected to:', wlan.ifconfig())
@@ -402,7 +413,7 @@ def heartbeat() -> bool:
         return False            # implied sleep... so, negative
 
 def main():
-    global event_time
+    global event_time, ev_log
 #    rec_num=0
     #radio.rfm69_reset
 
@@ -410,6 +421,7 @@ def main():
     init_clock()
     start_time = time.time()
     print(f"Main TX starting at {display_time(secs_to_localtime(start_time))}")
+    init_logging()
     updateClock()				    # get DST-adjusted local time
     
     ev_log.write(f"Pump Monitor starting: {event_time}\n")
