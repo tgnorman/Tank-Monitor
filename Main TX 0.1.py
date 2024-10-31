@@ -18,7 +18,7 @@ password    = secrets.password_s
 
 from Pump import Pump               # get our Pump class
 
-DEBUGLVL       = 1
+DEBUGLVL    = 0
 
 # Create PiicoDev sensor objects
 
@@ -36,7 +36,7 @@ backlight 	= Pin(6, Pin.IN)		# check if IN is correct!
 buzzer 		= Pin(16, Pin.OUT)
 presspmp 	= Pin(15,Pin.IN)		# or should this be ADC()?
 prsspmp_led = Pin(14, Pin.OUT)
-solenoid    = Pin(2, Pin.OUT, value=1)
+solenoid    = Pin(2, Pin.OUT, value=0)      # MUST ensure we don't close solenoid on startup... pump may already be running !!!  Note: Low == Open
 
 # Misc stuff
 conv_fac 	= 3.3 / 65535
@@ -159,11 +159,12 @@ def parse_reply(rply):
 def transmit_and_pause(msg, delay):
     global radio
 
-    if DEBUGLVL > 1: print(f"Sending {msg}")
+    if DEBUGLVL > 1: print(f"TX Sending {msg}, sleeping for {delay} ms")
     radio.send(msg)
     sleep_ms(delay)
 
 def confirm_solenoid()-> bool:
+    sleep_ms(500)
     return True                     #... remember to fix this when I have another detect circuit...
 
 def controlBorePump():
@@ -174,7 +175,7 @@ def controlBorePump():
         buzzer.value(0)
     if tank_is == fill_states[len(fill_states) - 1]:		# Empty
         if not borepump.state:		# pump is off, we need to switch on
-            print("Opening valve")
+            if DEBUGLVL > 0: print("cBP: Opening valve")
             solenoid.value(0)
             if confirm_solenoid():
                 counter += 1
@@ -216,7 +217,7 @@ def controlBorePump():
                 if valid_response and not new_state:        # this means I received confirmation that pump is OFF...
                     borepump.switch_pump(False)
                     ev_log.write(f"{event_time} OFF\n")
-                    print("Closing valve")
+                    if DEBUGLVL > 0: print("cBP: Closing valve")
                     solenoid.value(1)               # wait until pump OFF confirmed before closing valve !!!
                     if DEBUGLVL > 0: print(f"FSM: Set borepump to state {borepump.state}")
                 else:
@@ -397,6 +398,16 @@ def init_everything_else():
 # Get the current pump state and init my object    
     borepump = Pump(get_initial_pump_state())
 
+# On start, valve should now be open... but just to be sure... and to verify during testing...
+    if borepump.state:
+        if DEBUGLVL > 0:
+            print("At startup, Pump is ON ... opening valve")
+        solenoid.value(0)           # be very careful... inverse logic!
+    else:
+        if DEBUGLVL > 0:
+            print("At startup, Pump is OFF ... closing valve")
+        solenoid.value(1)           # be very careful... inverse logic!
+
 # heartbeat... if pump is on, send a regular heartbeat to the RX end
 # On RX, if a max time has passed... turn off.
 # Need a mechanism to alert T... and reset
@@ -406,10 +417,10 @@ def heartbeat() -> bool:
 # Doing this inline as it were to avoid issues with async, buffering yada yada.
 # The return value indicates if we need to sleep before continuing the main loop
     if not borepump.state:      # only do stuff if we believe the pump is running
-        return True             # nothing... so sleep
+        return (True)             # nothing... so sleep
     else:
         transmit_and_pause("BABOOM", RADIO_PAUSE)       # this might be a candidate for a shorter delay... if no reply expected
-        return False            # implied sleep... so, negative
+        return (False)            # implied sleep... so, negative
 
 def switch_valve(state):
     global solenoid
@@ -458,14 +469,19 @@ def main():
             displayAndLog()			# record it
             checkForAnomalies()	    # test for weirdness
     #        rec_num += 1
-
             if heartbeat():             # send heartbeat if ON... not if OFF.  For now, anyway
+                if DEBUGLVL > 1: print("Need to sleep...")
                 sleep(mydelay)
+            else:
+                if DEBUGLVL > 1: print("Need a shorter sleep")
+                sleep_ms(mydelay * 1000 - RADIO_PAUSE)
             
     except KeyboardInterrupt:
     # turn everything OFF
         borepump.switch_pump(False)             # turn pump OFF
-        confirm_and_switch_solenoid(False)      # close valve
+    #    confirm_and_switch_solenoid(False)     #  *** DO NOT DO THIS ***  If live, this will close valve while pump.
+    #           to be real sure, don't even test if pump is off... just leave it... for now.
+
         lcd.setRGB(0,0,0)		                # turn off backlight
     
     # tidy up...

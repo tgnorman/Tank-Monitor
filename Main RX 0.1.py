@@ -21,10 +21,10 @@ import ntptime
 import secrets
 
 # Configure your WiFi SSID and password
-ssid     = secrets.ssid_s
-password = secrets.password_s
+ssid        = secrets.ssid_s
+password    = secrets.password_s
 
-DEBUGLVL = 1                        # Multi-level debug for better analysis. 0:None, 1: Some, 2:Lots
+DEBUGLVL    = 0                        # Multi-level debug for better analysis. 0:None, 1: Some, 2:Lots
 
 RADIO_PAUSE = 500
 LOOP_DELAY  = 400
@@ -111,8 +111,8 @@ def init_radio():
         if isinstance(msg, str):
             if msg == "PING":         # respond I am alive...
                 resp_txt = "PING REPLY"
-                transmit_and_pause(resp_txt, RADIO_PAUSE)
                 print(f"REPLY: {resp_txt}")
+                transmit_and_pause(resp_txt, RADIO_PAUSE)
             else:
                 print(f"Read unknown message: {msg}")
     else:
@@ -121,6 +121,7 @@ def init_radio():
 def transmit_and_pause(msg, delay):
     global radio
 
+    if DEBUGLVL > 1: print(f"RX Sending {msg}")
     radio.send(msg)
     sleep_ms(delay)
 
@@ -232,13 +233,15 @@ def main():
                 state_changed = False			# reset so we don't keep sending same data if nothing switched
             
             radio_silence_secs = time.time() - last_comms_time
-            if DEBUGLVL > 1: print(f"Radio silence period: {radio_silence_secs} seconds")
-            if pump_state and radio_silence_secs > MAX_NON_COMM_PERIOD:     # Houston, we have a problem...
-                print("Max radio silence period exceeded!  Turning pump off")
-                switch_relay(0)             # pump_state now OFF
-                state_changed = False       # effectively go to starting loop, waiting for incoming ON/OFF or whatever
-                if DEBUGLVL > 0: print("Resetting to initial state")
-                
+            if pump_state:
+                if DEBUGLVL > 1: print(f"Radio silence period: {radio_silence_secs} seconds")
+                if radio_silence_secs > MAX_NON_COMM_PERIOD:     # Houston, we have a problem...
+                    print("Max radio silence period exceeded!  Turning pump off")
+                    switch_relay(0)             # pump_state now OFF
+                    state_changed = False       # effectively go to starting loop, waiting for incoming ON/OFF or whatever
+                    if DEBUGLVL > 0: print("Resetting to initial state")
+
+            if DEBUGLVL > 0: print(".", end="")    
             sleep_ms(LOOP_DELAY)		    # if we did NOT do implied sleep in confirm_state... delay a bit.
 
     except KeyboardInterrupt:
