@@ -24,16 +24,17 @@ import secrets
 ssid     = secrets.ssid_s
 password = secrets.password_s
 
-DEBUG = False
+DEBUGLVL = 1                        # Multi-level debug for better analysis. 0:None, 1: Some, 2:Lots
 
 RADIO_PAUSE = 500
 LOOP_DELAY  = 400
-MAX_NON_COMM_PERIOD = 60        # maximum seconds allowed between heartbeats, turn pump off if exceeded.  FAIL-SAFE
+MAX_NON_COMM_PERIOD = 60            # maximum seconds allowed between heartbeats, turn pump off if exceeded.  FAIL-SAFE
 
 # OK, initialise control pins
 led 		= Pin('LED', Pin.OUT, value=0)
 bore_ctl 	= Pin(18, Pin.OUT, value=0)
 detect 		= Pin(22, Pin.IN, Pin.PULL_UP)
+
 # create transceiver object, default params should be fine.  Uses 922 MHz, 15200 Baud
 radio = PiicoDev_Transceiver()
 pump_state = False
@@ -53,29 +54,29 @@ def count_next_period(mili):		# count how many crossings in the specified period
 def send_fail(req):
     global radio
     msg = "FAIL ON" if req else "FAIL OFF"
-    if DEBUG: print(f"sending fail msg {msg}")
+    if DEBUGLVL > 0: print(f"sending fail msg {msg}")
     transmit_and_pause(msg, RADIO_PAUSE)
     
-def confirm_state(req, period):		# test if reality agrees with last request
-    expected_crosses = period / 50			# 50Hz...
-    min_crosses = expected_crosses / 2		# allow for some inaccuracies...
+def confirm_state(req, period):		            # test if reality agrees with last request
+    expected_crosses = period / 50			    # 50Hz...
+    min_crosses = expected_crosses / 2		    # allow for some inaccuracies...
     period_count = count_next_period(period)
     if req:				# request was to switch ON... count better be well above zero!
         if period_count > min_crosses:
-            if DEBUG: print(f'Counted {period_count} pulses.. confirmed pump is indeed ON')
+            if DEBUGLVL > 0: print(f'Counted {period_count} pulses.. confirmed pump is indeed ON')
             msg = ("STATUS", 1)
             transmit_and_pause(msg, RADIO_PAUSE)
         else:
-            if DEBUG: print(f'Gak!... Only saw {period_count} pulses in {period} milliseconds.  FAIL')
+            if DEBUGLVL > 0: print(f'Gak!... Only saw {period_count} pulses in {period} milliseconds.  FAIL')
 #            sleep_ms(RADIO_PAUSE)
             send_fail(req)
     else:				# request was to switch OFF... count should be close to zero...
         if period_count < min_crosses:
-            if DEBUG: print(f'Counted {period_count} pulses.. confirmed pump is indeed OFF')
+            if DEBUGLVL > 0: print(f'Counted {period_count} pulses.. confirmed pump is indeed OFF')
             msg = ("STATUS", 0)
             transmit_and_pause(msg, RADIO_PAUSE)
         else:
-            if DEBUG: print(f'Zounds!... Saw {period_count} pulses in {period} milliseconds.  FAIL')
+            if DEBUGLVL > 0: print(f'Zounds!... Saw {period_count} pulses in {period} milliseconds.  FAIL')
 #            sleep_ms(RADIO_PAUSE)
             send_fail(req)
              
@@ -91,20 +92,22 @@ def check_state(period) -> bool:
 def switch_relay(state):
     global pump_state, state_changed
     if state:
-        bore_ctl.value(1)			# turn borepump OFF to start
+        bore_ctl.value(1)			        # turn borepump ON to start
         led.value(1)
     else:
-        bore_ctl.value(0)			# turn borepump OFF to start
+        bore_ctl.value(0)			        # turn borepump OFF to start
         led.value(0)
-    state_changed = pump_state != state            # ...does this break my heartbeat stuff?
-    pump_state = state			    # keep track of new state... for confirmation tests
+    state_changed = pump_state != state     # definitive relay state change status
+    pump_state = state			            # keep track of new state... for confirmation tests
 
 def init_radio():
-    global radio
+    global radio, last_comms_time
     
     print("Initialising radio...")
+    last_comms_time = 0
     if radio.receive():
         msg = radio.message
+        last_comms_time = time.time()
         if isinstance(msg, str):
             if msg == "PING":         # respond I am alive...
                 resp_txt = "PING REPLY"
@@ -113,7 +116,7 @@ def init_radio():
             else:
                 print(f"Read unknown message: {msg}")
     else:
-        if DEBUG: print("nothing received in init")
+        if DEBUGLVL > 0: print("nothing received in init")
 
 def transmit_and_pause(msg, delay):
     global radio
@@ -168,7 +171,7 @@ def init_clock():
         set_time()
 
 def main():
-    global bore_ctl, detect, led, pump_state, state_changed, last_ON_time
+    global bore_ctl, detect, led, pump_state, state_changed, last_ON_time, last_comms_time
 
     init_clock()
     start_time = time.time()
@@ -179,13 +182,9 @@ def main():
         pump_state = True
         last_ON_time = start_time
     else:                       # pump is OFF at start...normal
-#    print("Switching bore pump OFF...")
-#    switch_relay(False)
         pump_state = False
         last_ON_time = 0            # fudge...
   
-#   print("Resetting radio...")
-#   radio.rfm69_reset
     init_radio()
   
     print("Listening for transmission...")
@@ -194,53 +193,53 @@ def main():
         while True:
             if radio.receive():
                 message = radio.message
+                last_comms_time = time.time()
                 if isinstance(message, str):
-                    print(message)
+                    if DEBUGLVL > 1: print(message)
                     if message == "CHECK":
                         resp_txt = ("STATUS", 1 if check_state(500) else 0)
                         transmit_and_pause(resp_txt, RADIO_PAUSE)
-                        print(f"REPLY: {resp_txt}")
+                        if DEBUGLVL > 0: print(f"REPLY: {resp_txt}")
                     elif message == "PING":         # respond I am alive...
                         resp_txt = "PING REPLY"
                         transmit_and_pause(resp_txt, RADIO_PAUSE)
-                        print(f"REPLY: {resp_txt}")
+                        if DEBUGLVL > 0: print(f"REPLY: {resp_txt}")
+                    elif message == "BABOOM":
+                        if DEBUGLVL > 1: print("TX Heartbeat received")
                 elif isinstance(message, tuple):
-                    if DEBUG:
+                    if DEBUGLVL > 1:
                         print("Received tuple: ", message[0], message[1])
                     if message[0] == "OFF":
                         if pump_state:		        # pump is ON.. take action
                             switch_relay(False)
-                            print(f"OFF: Switching pump OFF at {display_time(secs_to_localtime(message[1]))}")
+                            if DEBUGLVL > 1: print(f"OFF: Switching pump OFF at {display_time(secs_to_localtime(message[1]))}")
                         else:
-                            if DEBUG: print("Ignoring OFF... already OFF")
+                            if DEBUGLVL > 1: print("Ignoring OFF... already OFF")
                     elif message[0] == "ON":
                         if not pump_state:		    # pump is OFF.. take action
                             switch_relay(True)
-                            print(f"ON:  Switching pump ON  at {display_time(secs_to_localtime(message[1]))}")
+                            if DEBUGLVL > 1: print(f"ON:  Switching pump ON  at {display_time(secs_to_localtime(message[1]))}")
                             last_ON_time = message[1]
                         else:
-                            if DEBUG: print("Ignoring ON... already ON")
-                            last_ON_time = message[1]
-                            state_changed = True        # YUK... tricks other code into sending confirmation
-                            # This necessary as if I start TX when pump is already ON... I don't acknowledge, so TX stays in pump_is_off state
-                    elif message[0] == "BABOOM":        # that's TX talking saying I'm still alive...
-                        if DEBUG: print("received heartbeat BABOOM")
-                        last_ON_time = message[1]       # note the timestamp
-                    else:
+                            if DEBUGLVL > 1: print("Ignoring ON... already ON")
+                    else:                           # unrecognised tuple received...
                         print("WTF is message[0]?")
             else:
                 message = ""         
 
-            if state_changed:			#test if the request is reflected in the detect circuit
+            if state_changed:			        # test if the request is reflected in the detect circuit
                 confirm_state(pump_state, 500)  # implied sleep...
                 state_changed = False			# reset so we don't keep sending same data if nothing switched
-            else:
-                no_comms_secs = time.time() - last_ON_time
-                if pump_state and no_comms_secs > MAX_NON_COMM_PERIOD:     # Houston, we have a problem...
-                    print("Max radio silence period exceeded!  Turning pump off")
-                    switch_relay(0)             # pump_state now OFF
-                    state_changed = False       # effectively go to starting loop, waiting for incoming ON/OFF or whatever
-                sleep_ms(LOOP_DELAY)		    # if we did NOT do implied sleep in confirm_state... delay a bit.
+            
+            radio_silence_secs = time.time() - last_comms_time
+            if DEBUGLVL > 1: print(f"Radio silence period: {radio_silence_secs} seconds")
+            if pump_state and radio_silence_secs > MAX_NON_COMM_PERIOD:     # Houston, we have a problem...
+                print("Max radio silence period exceeded!  Turning pump off")
+                switch_relay(0)             # pump_state now OFF
+                state_changed = False       # effectively go to starting loop, waiting for incoming ON/OFF or whatever
+                if DEBUGLVL > 0: print("Resetting to initial state")
+                
+            sleep_ms(LOOP_DELAY)		    # if we did NOT do implied sleep in confirm_state... delay a bit.
 
     except KeyboardInterrupt:
         print("\n***Turning pump OFF on KeyboardInterupt")

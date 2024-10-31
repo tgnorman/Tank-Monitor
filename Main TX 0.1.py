@@ -16,28 +16,27 @@ import secrets
 ssid        = secrets.ssid_s
 password    = secrets.password_s
 
-from Pump import Pump           # get our Pump class
+from Pump import Pump               # get our Pump class
 
-DEBUG       = False
+DEBUGLVL       = 1
 
 # Create PiicoDev sensor objects
 
 #First... I2C devices
 distSensor 	= PiicoDev_VL53L1X()
-rtc 		= PiicoDev_RV3028() # Initialise the RTC module, enable charging
+rtc 		= PiicoDev_RV3028()     # Initialise the RTC module, enable charging
 lcd 		= RGB1602.RGB1602(16,2)
 
 radio = PiicoDev_Transceiver()
 RADIO_PAUSE = 1000
 
 # Pins
-temp_sensor = ADC(4)			# Internal temperature sensor is connected to ADC channel 4
-backlight 	= Pin(6, Pin.IN)			# check if IN is correct!
-#bore_ctl 	= Pin(18, Pin.OUT)
-#bore_sense 	= Pin(22, Pin.IN)	# or should this be ADC()?
+temp_sensor = ADC(4)			    # Internal temperature sensor is connected to ADC channel 4
+backlight 	= Pin(6, Pin.IN)		# check if IN is correct!
 buzzer 		= Pin(16, Pin.OUT)
 presspmp 	= Pin(15,Pin.IN)		# or should this be ADC()?
 prsspmp_led = Pin(14, Pin.OUT)
+solenoid    = Pin(2, Pin.OUT, value=1)
 
 # Misc stuff
 conv_fac 	= 3.3 / 65535
@@ -48,19 +47,16 @@ fill_states = ["Overflow", "Full", "Near full", "Part full", "Near Empty", "Empt
 # Physical Constants
 Tank_Height = 1650
 OverFull	= 150
-Min_Dist    = 200       # full
-Max_Dist    = 1000       # empty
-Delta       = 50        # change indicating pump state change has occurred
+Min_Dist    = 200           # full
+Max_Dist    = 1000          # empty
+Delta       = 50            # change indicating pump state change has occurred
 
 # Tank variables/attributes
 depth = 0
 last_depth = 0
 depth_ROC = 0
 max_ROC = 0.4			# change in metres/minute
-min_ROC = 0.1           # experimental.. might need to tweak.  To avoid noise in anomaly tests
-
-# this really shouldn't exist... rather refer to the pump state
-borepump_is_on = False 		# init to True... ie assume on, take action to turn off
+min_ROC = 0.15           # experimental.. might need to tweak.  To avoid noise in anomaly tests
 
 # Various constants
 mydelay = 5				# Sleep time... seconds, not ms...
@@ -68,7 +64,7 @@ mydelay = 5				# Sleep time... seconds, not ms...
 # logging stuff...
 log_freq = 5
 last_logged_depth = 0
-min_log_change_m = 0.1		# to save space... only write to file if significant change in level
+min_log_change_m = 0.1	# to save space... only write to file if significant change in level
 level_init = False 		# to get started
 
 MAX_CONTINUOUS_RUNTIME = 6 * 60 * 60        # 6 hours max runtime.  More than this looks like trouble
@@ -76,7 +72,6 @@ counter = 0
 
 # start doing stuff
 buzzer.value(0)			# turn buzzer off
-#bore_ctl.value(0)			# turn borepump OFF to start
 lcd.clear()
 rtc.getDateTime()
 
@@ -119,7 +114,7 @@ def updateData():
     global depth_ROC
     d = distSensor.read()
     depth_ROC = (depth - last_depth) / (mydelay / 60)	# ROC in m/minute.  Save neagtives also... for anomaly testing
-#    if DEBUG print(f"depth_ROC: {depth_ROC:.3f}")
+    if DEBUGLVL > 1: print(f"depth_ROC: {depth_ROC:.3f}")
     last_depth = depth				# track change since last reading
     depth = (Tank_Height - d) / 1000
     tank_is = get_fill_state(d)
@@ -147,7 +142,7 @@ def log_switch_error(new_state):
     ev_log.write(f"{event_time}: ERROR on switching to state {new_state}")
     
 def parse_reply(rply):
-    if DEBUG: print(f"in parse arg is {rply}")
+    if DEBUGLVL > 1: print(f"in parse arg is {rply}")
     if isinstance(rply, tuple):			# good...
         key = rply[0]
         val = rply[1]
@@ -164,45 +159,49 @@ def parse_reply(rply):
 def transmit_and_pause(msg, delay):
     global radio
 
-    if DEBUG: print(f"Sending {msg}")
+    if DEBUGLVL > 1: print(f"Sending {msg}")
     radio.send(msg)
     sleep_ms(delay)
 
+def confirm_solenoid()-> bool:
+    return True                     #... remember to fix this when I have another detect circuit...
+
 def controlBorePump():
-    global tank_is, counter, radio, borepump_is_on, event_time
+    global tank_is, counter, radio, event_time
     if tank_is == fill_states[0]:		# Overfull
         buzzer.value(1)			# raise alarm
-#        borepump_is_on = True   probably best to  inquire rather than assume...
     else:
         buzzer.value(0)
     if tank_is == fill_states[len(fill_states) - 1]:		# Empty
-#        bore_ctl.value(1)			# switch borepump ON, will also show LED
-#        print(f"ctrlBP: tank is {tank_is}, pump_on is {borepump_is_on}")
-        if not borepump_is_on:		# pump is off, we need to switch on
-            counter += 1
-            tup = ("ON", time.time())   # was previosuly counter... now, time
-#            print(tup)
-            transmit_and_pause(tup, 2 * RADIO_PAUSE)    # that's two sleeps... as expecting immediate reply
-# try implicit CHECK... which should happen in my RX module as state_changed
-#            radio.send("CHECK")
-#            sleep_ms(RADIO_PAUSE)
-            if radio.receive():
-                rply = radio.message
-#                print(f"radio.message (rm): {rm}")
-#                print(f"received response: rply is {rply}")
-                valid_response, new_state = parse_reply(rply)
-#                print(f"in ctlBP: rply is {valid_response} and {new_state}")
-                if valid_response and new_state > 0:
-                    borepump.switch_pump(True)
-                    borepump_is_on = new_state > 0
-                    ev_log.write(f"{event_time} ON\n")
-                    if DEBUG: print(f"FSM: Set borepump to state {borepump_is_on}")
-                else:
-                    log_switch_error(new_state)
-            
+        if not borepump.state:		# pump is off, we need to switch on
+            print("Opening valve")
+            solenoid.value(0)
+            if confirm_solenoid():
+                counter += 1
+                tup = ("ON", time.time())   # was previosuly counter... now, time
+    #            print(tup)
+                transmit_and_pause(tup, 2 * RADIO_PAUSE)    # that's two sleeps... as expecting immediate reply
+    # try implicit CHECK... which should happen in my RX module as state_changed
+    #            radio.send("CHECK")
+    #            sleep_ms(RADIO_PAUSE)
+                if radio.receive():
+                    rply = radio.message
+    #                print(f"radio.message (rm): {rm}")
+    #                print(f"received response: rply is {rply}")
+                    valid_response, new_state = parse_reply(rply)
+    #                print(f"in ctlBP: rply is {valid_response} and {new_state}")
+                    if valid_response and new_state > 0:
+                        borepump.switch_pump(True)
+                        ev_log.write(f"{event_time} ON\n")
+                        if DEBUGLVL > 0: print(f"FSM: Set borepump to state {borepump.state}")
+                    else:
+                        log_switch_error(new_state)
+            else:               # dang... want to turn pump on, but solenoid looks OFF
+                raiseAlarm("NOT turning pump on... valve is CLOSED!", event_time)
     elif tank_is == fill_states[0] or tank_is == fill_states[1]:	# Full or Overfull
 #        bore_ctl.value(0)			# switch borepump OFF
-        if borepump_is_on:			# pump is ON... need to turn OFF
+        if borepump.state:			# pump is ON... need to turn OFF
+ 
             counter -= 1
             tup = ("OFF", time.time())
 #            print(tup)
@@ -214,11 +213,12 @@ def controlBorePump():
                 rply = radio.message
                 valid_response, new_state = parse_reply(rply)
 #                print(f"in ctlBP: rply is {valid_response} and {new_state}")
-                if valid_response and not new_state:
+                if valid_response and not new_state:        # this means I received confirmation that pump is OFF...
                     borepump.switch_pump(False)
-                    borepump_is_on = False
                     ev_log.write(f"{event_time} OFF\n")
-                    if DEBUG: print(f"FSM: Set borepump to state {borepump_is_on}")
+                    print("Closing valve")
+                    solenoid.value(1)               # wait until pump OFF confirmed before closing valve !!!
+                    if DEBUGLVL > 0: print(f"FSM: Set borepump to state {borepump.state}")
                 else:
                     log_switch_error(new_state)
                     
@@ -235,11 +235,11 @@ def checkForAnomalies():
         raiseAlarm("OVERFLOW and still ON", 999)        # probably should do more than this.. REALLY BAD scenario!
     if abs(depth_ROC) > max_ROC:
         raiseAlarm("Max ROC Exceeded", depth_ROC)
-    if depth_ROC > min_ROC and not borepump.state:        # pump is OFF but level is rising!
+    if depth_ROC > min_ROC and not borepump.state:      # pump is OFF but level is rising!
         raiseAlarm("FILLING while OFF", depth_ROC)
-    if depth_ROC < -min_ROC and borepump.state:            # pump is ON but level is falling!
+    if depth_ROC < -min_ROC and borepump.state:         # pump is ON but level is falling!
         raiseAlarm("DRAINING while ON", depth_ROC)
-    if borepump.state:
+    if borepump.state:                                  # if pump is on, and has been on for more than max... do stuff!
         runtime = time.time() - borepump.last_time_switched
         if runtime > MAX_CONTINUOUS_RUNTIME:
             raiseAlarm("RUNTIME EXCEEDED", runtime)
@@ -283,7 +283,7 @@ def listen_to_radio():
         if isinstance(msg, str):
             print(msg)
             if "FAIL" in msg:
-                print("Dang... something went wrong...")
+                print(f"Dang... something went wrong...{msg}")
         elif isinstance(msg, tuple):
             print("Received tuple: ", msg[0], msg[1])
 
@@ -299,8 +299,8 @@ def init_radio():
 
 def ping_RX() -> bool:           # at startup, test if RX is listening
     global radio
-    ping_acknowleged = False
 
+    ping_acknowleged = False
     transmit_and_pause("PING", RADIO_PAUSE)
     if radio.receive():                     # depending on time relative to RX Pico, may need to pause more here before testing???
         msg = radio.message
@@ -311,17 +311,16 @@ def ping_RX() -> bool:           # at startup, test if RX is listening
     return ping_acknowleged
 
 def get_initial_pump_state() -> bool:
-    global borepump_is_on
 
-    borepump_is_on = False
+    initial_state = False
     transmit_and_pause("CHECK",  RADIO_PAUSE)
     if radio.receive():
         rply = radio.message
         valid_response, new_state = parse_reply(rply)
         if valid_response and new_state > 0:
-            borepump_is_on = True
-    print(f"Pump Initial state is {borepump_is_on}")
-    return borepump_is_on
+            initial_state = True
+    print(f"Pump Initial state is {initial_state}")
+    return initial_state
 
 def dump_pump():
     global borepump, ev_log
@@ -412,6 +411,29 @@ def heartbeat() -> bool:
         transmit_and_pause("BABOOM", RADIO_PAUSE)       # this might be a candidate for a shorter delay... if no reply expected
         return False            # implied sleep... so, negative
 
+def switch_valve(state):
+    global solenoid
+
+    if state:
+        solenoid.value(0)       # NOTE:  ZERO to turn ON/OPEN
+    else:
+        sleep_ms(400)           # what is appropriate sleep time???
+        solenoid.value(1)       # High to close
+
+def confirm_and_switch_solenoid(state):
+#  NOTE: solenoid relay is reverse logic... LOW is ON
+    global borepump
+
+    if state:
+        if DEBUGLVL > 0: print("Turning valve ON")
+        switch_valve(borepump.state)
+    else:
+        if borepump.state:          # not good to turn valve off while pump is ON !!!
+            raiseAlarm("Solenoid OFF Invalid - Pump is!", borepump.state )
+        else:
+            if DEBUGLVL > 0: print("Turning valve OFF")
+            switch_valve(False)
+    
 def main():
     global event_time, ev_log
 #    rec_num=0
@@ -435,21 +457,25 @@ def main():
     #        listen_to_radio()		# check for badness
             displayAndLog()			# record it
             checkForAnomalies()	    # test for weirdness
-        #        rec_num += 1
-            #    print(f"Sleeping for {mydelay} seconds")
+    #        rec_num += 1
+
             if heartbeat():             # send heartbeat if ON... not if OFF.  For now, anyway
                 sleep(mydelay)
             
-    #except Exception as e:
-    #    print('Error occured: ', e)
     except KeyboardInterrupt:
+    # turn everything OFF
+        borepump.switch_pump(False)             # turn pump OFF
+        confirm_and_switch_solenoid(False)      # close valve
+        lcd.setRGB(0,0,0)		                # turn off backlight
+    
+    # tidy up...
         f.flush()
         f.close()
         ev_log.write(f"{event_time} STOP")
         dump_pump()
         ev_log.flush()
         ev_log.close()
-        lcd.setRGB(0,0,0)		# turn off backlight
+
         print('\n### Program Interrupted by the user')
 
 if __name__ == '__main__':
