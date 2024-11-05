@@ -7,18 +7,28 @@ import RGB1602
 import time
 import network
 import ntptime
+import os
+import random               # just for PP detect sim...
 from time import sleep
 from PiicoDev_Unified import sleep_ms
-from machine import I2C, Pin, ADC # Import Pin
-import secrets
-
-# Configure your WiFi SSID and password
-ssid        = secrets.ssid_s
-password    = secrets.password_s
-
+from machine import I2C, Pin, ADC, Timer # Import Pin
 from Pump import Pump               # get our Pump class
+from Tank import Tank
+from secrets import MyWiFi
 
-DEBUGLVL    = 0
+
+# OK... major leap... intro to FSM...
+from SM_SimpleFSM import SimpleDevice
+
+system      = SimpleDevice()            #initialise my FSM.
+wf          = MyWiFi()
+
+DEBUGLVL    = 2
+
+# region initial declarations etc
+# Configure your WiFi SSID and password
+ssid        = wf.ssid
+password    = wf.password
 
 # Create PiicoDev sensor objects
 
@@ -29,6 +39,9 @@ lcd 		= RGB1602.RGB1602(16,2)
 
 radio = PiicoDev_Transceiver()
 RADIO_PAUSE = 1000
+MIN_FREE_SPACE = 100                # in KB...
+MAX_CONTINUOUS_RUNTIME = 6 * 60 * 60        # 6 hours max runtime.  More than this looks like trouble
+
 
 # Pins
 temp_sensor = ADC(4)			    # Internal temperature sensor is connected to ADC channel 4
@@ -40,9 +53,13 @@ solenoid    = Pin(2, Pin.OUT, value=0)      # MUST ensure we don't close solenoi
 
 # Misc stuff
 conv_fac 	= 3.3 / 65535
+steady_state = False                # if not, then don't check for anomalies
+clock_adjust_ms = 0                 # will be set later... this just to ensure it is ALWAYS something
 
 # Gather all tank-related stuff with a view to making a class...
-# New state... .
+housetank   = Tank("Empty")           # make my tank object
+
+# New state...
 fill_states = ["Overflow", "Full", "Near full", "Part full", "Near Empty", "Empty"]
 # Physical Constants
 Tank_Height = 1650
@@ -67,8 +84,9 @@ last_logged_depth = 0
 min_log_change_m = 0.1	# to save space... only write to file if significant change in level
 level_init = False 		# to get started
 
-MAX_CONTINUOUS_RUNTIME = 6 * 60 * 60        # 6 hours max runtime.  More than this looks like trouble
 counter = 0
+
+# endregion
 
 # start doing stuff
 buzzer.value(0)			# turn buzzer off
@@ -82,14 +100,15 @@ month = tod.split()[0].split("-")[1]
 day   = tod.split()[0].split("-")[2]
 shortyear = year[2:]
 
-
 def init_logging():
     global year, month, day, shortyear
     global f, ev_log
-    daylogname = f'tank {shortyear}{month}{day}.txt'
+    daylogname  = f'tank {shortyear}{month}{day}.txt'
+    pplogname   = f'pressure {month}{day}.txt'
     eventlogname = 'borepump_events.txt'
     f      = open(daylogname, "a")
     ev_log = open(eventlogname, "a")
+    pp_log = open(pplogname, "a")
 
 def get_fill_state(d):
     if d > Max_Dist:
@@ -139,10 +158,10 @@ def updateClock():
 def log_switch_error(new_state):
     global ev_log, event_time
     print(f"!!! log_switch_error  !! {new_state}")
-    ev_log.write(f"{event_time}: ERROR on switching to state {new_state}")
+    ev_log.write(f"{event_time}: ERROR on switching to state {new_state}\n")
     
 def parse_reply(rply):
-    if DEBUGLVL > 1: print(f"in parse arg is {rply}")
+    if DEBUGLVL > 0: print(f"in parse arg is {rply}")
     if isinstance(rply, tuple):			# good...
         key = rply[0]
         val = rply[1]
@@ -150,10 +169,10 @@ def parse_reply(rply):
         if key.upper() == "STATUS":
             return True, val
         else:
-            print("Unknown reply from receiver")
+            print(f"Unknown tuple from receiver: key {key}, val {val}")
             return False, -1
     else:
-        print("Parse expected tuple... didn't get one")
+        print(f"Parse expected tuple... didn't get one.  Got {rply}")
         return False, False
 
 def transmit_and_pause(msg, delay):
@@ -167,6 +186,10 @@ def confirm_solenoid()-> bool:
     sleep_ms(500)
     return True                     #... remember to fix this when I have another detect circuit...
 
+def radio_time(local_time):
+    global clock_adjust_ms
+    return(local_time + clock_adjust_ms)
+
 def controlBorePump():
     global tank_is, counter, radio, event_time
     if tank_is == fill_states[0]:		# Overfull
@@ -179,7 +202,7 @@ def controlBorePump():
             solenoid.value(0)
             if confirm_solenoid():
                 counter += 1
-                tup = ("ON", time.time())   # was previosuly counter... now, time
+                tup = ("ON", radio_time(time.time()))   # was previosuly counter... now, time
     #            print(tup)
                 transmit_and_pause(tup, 2 * RADIO_PAUSE)    # that's two sleeps... as expecting immediate reply
     # try implicit CHECK... which should happen in my RX module as state_changed
@@ -204,7 +227,7 @@ def controlBorePump():
         if borepump.state:			# pump is ON... need to turn OFF
  
             counter -= 1
-            tup = ("OFF", time.time())
+            tup = ("OFF", radio_time(time.time()))
 #            print(tup)
             transmit_and_pause(tup, 2 * RADIO_PAUSE)    # that's two sleeps... as expecting immediate reply
 # try implicit CHECK... which should happen in my RX module as state_changed
@@ -225,9 +248,9 @@ def controlBorePump():
                     
 def raiseAlarm(param, val):
     global ev_log, event_time
-    str = f"{event_time} ALARM {param}, value {val:.3g}\n"
-    ev_log.write(str)
+    str = f"{event_time} ALARM {param}, value {val:.3g}"
     print(str)
+    ev_log.write(f"{str}\n")
     
 def checkForAnomalies():
     global borepump, max_ROC, depth_ROC, tank_is, MAX_CONTINUOUS_RUNTIME
@@ -260,7 +283,7 @@ def displayAndLog():
 #    temp = 27 - (temp_sensor.read_u16() * conv_fac - 0.706)/0.001721
 #    tempstr=f"{temp:.2f} C"  
     logstr = str_time + f" {depth:.2f}m\n"
-    dbgstr = str_time + f" {depth:.2f}m"    
+    dbgstr = str_time + f" {depth:.3f}m"    
 #    if rec_num % log_freq == 0:
 #    if rec_num == log_freq:			# avoid using mod... in case of overflow
 #        rec_num = 0					# just reset to zero
@@ -276,8 +299,8 @@ def displayAndLog():
             f.write(logstr)      
     print(dbgstr)
 
-#This needs to be in a separate event task... next job is that
 def listen_to_radio():
+#This needs to be in a separate event task... next job is that
     global radio
     if radio.receive():
         msg = radio.message
@@ -289,7 +312,7 @@ def listen_to_radio():
             print("Received tuple: ", msg[0], msg[1])
 
 def init_radio():
-    global radio
+    global radio, system
     
     print("Initialising radio...")
     if radio.receive():
@@ -297,6 +320,14 @@ def init_radio():
         print(f"Read {msg}")
     else:
         print("nothing received in init_radio")
+    print("Pinging RX Pico...")
+    while not ping_RX():
+        print("Waiting for RX to respond...")
+        sleep(1)
+
+# if we get here, my RX is responding.
+    print("RX responded to ping... comms ready")
+    system.on_event("ACK COMMS")
 
 def ping_RX() -> bool:           # at startup, test if RX is listening
     global radio
@@ -337,15 +368,20 @@ def dump_pump():
     ev_log.write(f"Total switches this period: {borepump.num_switch_events}\n")
     ev_log.write(f"Cumulative runtime: {days} days {hours} hours {mins} minutes {secs} seconds\n")
 
-# Connect to Wi-Fi
 def connect_wifi():
+    global system
+
+# Connect to Wi-Fi
     wlan = network.WLAN(network.STA_IF)
     wlan.active(True)
+    print("connect_wifi..")
     if not wlan.isconnected():
         print('Connecting to network...')
         wlan.connect(ssid, password)
         while not wlan.isconnected():
+            print(">", end="")
             time.sleep(1)
+    system.on_event("ACK WIFI")
     print('Connected to:', wlan.ifconfig())
 
 def secs_to_localtime(s):
@@ -372,48 +408,79 @@ def display_time(t):
     time_str = f"{year}/{month:02}/{day:02} {hour:02}:{min:02}:{sec:02}"
     return time_str
     
-# Set time using NTP server
 def set_time():
+ # Set time using NTP server
     print("Syncing time with NTP...")
     ntptime.settime()  # This will set the system time to UTC
-
-def init_clock():
-    if time.localtime()[0] < 2024:  # if we reset, localtime will return 2021...
-        connect_wifi()
-        set_time()
-        
-def init_everything_else():
-    global borepump
     
-#    updateClock()                   # get DST-adjusted local time
-    init_radio()
-    print("Pinging RX Pico...")
-    while not ping_RX():
-        print("Waiting for RX to respond...")
-        sleep(1)
+def init_clock():
+    global system
 
-# if we get here, my RX is responding.
-    print("RX responded to ping... comms ready")
+    print("Initialising local clock")
+    if time.localtime()[0] < 2024:  # if we reset, localtime will return 2021...
+#        connect_wifi()
+        set_time()
+    system.on_event("ACK NTP")
 
+def sync_clock():                   # initiate exchange of time info with RX, purpose is to determine clock adjustment
+    global radio, clock_adjust_ms
+
+    if system.state == "CLOCK_SET":
+        print("Starting clock sync process")
+        count = 10
+        delay = 500                     # millisecs
+        for n in range(count):
+            local_time = time.time()
+            tup = ("CLK", local_time)
+            radio.send(tup)
+            sleep_ms(delay)
+        max_loops = 100
+        loop_count = 0
+        while not radio.receive() and loop_count < max_loops:
+            sleep_ms(50)
+            loop_count += 1
+        if loop_count < max_loops:      # then we got a reply
+            if DEBUGLVL > 0: print(f"Got CLK SYNC reply after {loop_count} loops")
+            rcv_msg = radio.message
+            if type(rcv_msg) is tuple:
+                if rcv_msg[0] == "CLK":
+                    clock_adjust_ms = rcv_msg[1]
+        else:                           # we did NOT get a reply... don't block... set adj to default 500
+            clock_adjust_ms = 500
+       
+        system.on_event("CLK SYNC")
+    else:
+        print(f"What am I doing here in state {system.state}")
+
+    if DEBUGLVL > 0: print(f"Setting clock_adjust to {clock_adjust_ms}") 
+
+def init_everything_else():
+    global borepump, steady_state, free_space_KB, presspump
+       
 # Get the current pump state and init my object    
-    borepump = Pump(get_initial_pump_state())
+    borepump = Pump(0, get_initial_pump_state())
 
 # On start, valve should now be open... but just to be sure... and to verify during testing...
     if borepump.state:
         if DEBUGLVL > 0:
-            print("At startup, Pump is ON ... opening valve")
+            print("At startup, BorePump is ON  ... opening valve")
         solenoid.value(0)           # be very careful... inverse logic!
     else:
         if DEBUGLVL > 0:
-            print("At startup, Pump is OFF ... closing valve")
+            print("At startup, BorePump is OFF ... closing valve")
         solenoid.value(1)           # be very careful... inverse logic!
 
+    presspump = Pump(1, False)
+    free_space_KB = free_space()
+# ensure we start out right...
+    steady_state_= False
+
+def heartbeat() -> bool:
+    global borepump
 # heartbeat... if pump is on, send a regular heartbeat to the RX end
 # On RX, if a max time has passed... turn off.
 # Need a mechanism to alert T... and reset
 
-def heartbeat() -> bool:
-    global borepump
 # Doing this inline as it were to avoid issues with async, buffering yada yada.
 # The return value indicates if we need to sleep before continuing the main loop
     if not borepump.state:      # only do stuff if we believe the pump is running
@@ -444,19 +511,55 @@ def confirm_and_switch_solenoid(state):
         else:
             if DEBUGLVL > 0: print("Turning valve OFF")
             switch_valve(False)
-    
+
+def free_space():
+    # Get the filesystem stats
+    stats = os.statvfs('/')
+
+    # Calculate free space
+    block_size = stats[0]
+    total_blocks = stats[2]
+    free_blocks = stats[3]
+
+    # Free space in bytes
+    free_space_kb = free_blocks * block_size / 1024
+    return free_space_kb
+
+def sim_pressure_pump_detect(x):
+    p = random.random()
+
+    return True if p > x else False
+
+def sim_solenoid_detect():
+    pass
+
 def main():
-    global event_time, ev_log
-#    rec_num=0
+    global event_time, ev_log, steady_state, housetank, system
+
+    rec_num=0
     #radio.rfm69_reset
 
-    print("Initialising clock") 
-    init_clock()
+# first cut at how to progress SM on start-up.  Not clear if this is optimal.  Maybe better to drive this inside SM methods
+
+    if not system:              # yikes... don't have a SM ??
+        if DEBUGLVL > 0:
+            print("GAK... no state machine exists at start-up")
+    else:
+        while  system.state != "READY":
+            print(system.state)
+            if system.state == "PicoReset":     connect_wifi()  # ACK WIFI
+            if system.state == "WIFI_READY":    init_clock()    # ACK NTP
+            if system.state == "CLOCK_SET":     init_radio()    # ACK COMMS
+            if system.state == "COMMS_READY":   sync_clock()    # ACK SYNC
+            if system.state == "CLOCK_SYNCED": system.on_event("START_MONITORING")
+            sleep(1)
+
     start_time = time.time()
     print(f"Main TX starting at {display_time(secs_to_localtime(start_time))}")
     init_logging()
     updateClock()				    # get DST-adjusted local time
     
+    print(f"Housetank state is {housetank.state}")
     ev_log.write(f"Pump Monitor starting: {event_time}\n")
     init_everything_else()
 
@@ -467,8 +570,9 @@ def main():
             controlBorePump()		# do whatever
     #        listen_to_radio()		# check for badness
             displayAndLog()			# record it
-            checkForAnomalies()	    # test for weirdness
-    #        rec_num += 1
+            if steady_state: checkForAnomalies()	    # test for weirdness
+            rec_num += 1
+            if rec_num > 2 and not steady_state: steady_state = True
             if heartbeat():             # send heartbeat if ON... not if OFF.  For now, anyway
                 if DEBUGLVL > 1: print("Need to sleep...")
                 sleep(mydelay)

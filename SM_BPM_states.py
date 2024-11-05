@@ -8,7 +8,7 @@ class PicoReset(State):
 # Initial state on start-up 
 
     def on_event(self, event):
-        if event == 'OFF REQ':
+        if event == 'ACK WIFI':
             return WIFI_READY()
         return self
     
@@ -16,19 +16,35 @@ class WIFI_READY(State):
 # Initial state on start-up 
 
     def on_event(self, event):
-        if event == 'OFF REQ':
-            return CLOCK_SYNC()
+        if event == 'ACK NTP':
+            return CLOCK_SET()
         return self
-    
-class CLOCK_SYNC(State):
+
+class CLOCK_SET(State):
 # Initial state on start-up 
 
     def on_event(self, event):
-        if event == 'OFF REQ':
-            return Init()
+        if event == 'ACK COMMS':
+            return COMMS_READY()
+        return self
+    
+class COMMS_READY(State):
+# Initial state on start-up 
+
+    def on_event(self, event):
+        if event == 'ACK SYNC':
+            return CLOCK_SYNCED()
+        return self
+            
+class CLOCK_SYNCED(State):
+# Initial state on start-up 
+
+    def on_event(self, event):
+        if event == 'START_MONITORING':
+            return READY()
         return self
                 
-class Init(State):
+class READY(State):
 # Initial state on start-up 
 
     def on_event(self, event):
@@ -53,7 +69,7 @@ class PumpPendingON(State):
         if event == 'ON ACK':
             return PumpON()
         if event == "ON NAK":
-            return Init()
+            return READY()
         return self
     
 class PumpON(State):

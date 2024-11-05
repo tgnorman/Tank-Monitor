@@ -18,14 +18,16 @@ from machine import Pin
 import time
 import network
 import ntptime
-import secrets
+from secrets import MyWiFi
 
 # Configure your WiFi SSID and password
-ssid        = secrets.ssid_s
-password    = secrets.password_s
+wf          = MyWiFi()
+ssid        = wf.ssid
+password    = wf.password
 
-DEBUGLVL    = 0                        # Multi-level debug for better analysis. 0:None, 1: Some, 2:Lots
+DEBUGLVL    = 1                        # Multi-level debug for better analysis. 0:None, 1: Some, 2:Lots
 
+# region  initial declarations
 RADIO_PAUSE = 500
 LOOP_DELAY  = 400
 MAX_NON_COMM_PERIOD = 60            # maximum seconds allowed between heartbeats, turn pump off if exceeded.  FAIL-SAFE
@@ -37,6 +39,8 @@ detect 		= Pin(22, Pin.IN, Pin.PULL_UP)
 
 # create transceiver object, default params should be fine.  Uses 922 MHz, 15200 Baud
 radio = PiicoDev_Transceiver()
+# endregion
+
 pump_state = False
 
 def pulse_count(ch):
@@ -104,10 +108,9 @@ def init_radio():
     global radio, last_comms_time
     
     print("Initialising radio...")
-    last_comms_time = 0
+    last_comms_time = time.time()       # not entirely true, but setting to zero triggers an immediate max silence condition
     if radio.receive():
         msg = radio.message
-        last_comms_time = time.time()
         if isinstance(msg, str):
             if msg == "PING":         # respond I am alive...
                 resp_txt = "PING REPLY"
@@ -149,8 +152,8 @@ def display_time(t):
     time_str = f"{year}/{month:02}/{day:02} {hour:02}:{min:02}:{sec:02}"
     return time_str
 
-# Connect to Wi-Fi
 def connect_wifi():
+# Connect to Wi-Fi
     global ssid, password
     wlan = network.WLAN(network.STA_IF)
     wlan.active(True)
@@ -161,8 +164,8 @@ def connect_wifi():
             time.sleep(1)
     print('Connected to:', wlan.ifconfig())
 
-# Set time using NTP server
 def set_time():
+# Set time using NTP server
     print("Syncing time with NTP...")
     ntptime.settime()  # This will set the system time to UTC
 
@@ -170,6 +173,25 @@ def init_clock():
     if time.localtime()[0] < 2024:  # if we reset, localtime will return 2021...
         connect_wifi()
         set_time()
+
+def calculate_clock_diff() -> int:
+    global radio
+
+    count = 10
+    sum_t = 0
+ #   if radio.receive():
+ #       junk = radio.message
+
+    for n in range(count):
+        if radio.receive():
+            rcv_time = time.ticks_ms()
+            m = radio.message
+            if type(m) is tuple:
+                if m[0] == "CLK":
+                    tx_time = m[1]
+                    time_diff = rcv_time - tx_time
+                    sum_t += time_diff
+    return int(sum_t / count)
 
 def main():
     global bore_ctl, detect, led, pump_state, state_changed, last_ON_time, last_comms_time
@@ -179,8 +201,8 @@ def main():
     state_changed = False
     print(f"Receiver starting at {display_time(secs_to_localtime(start_time))}")
     if check_state(500):             # pump is already ON...
-        print("Pump is ON at start-up")
         pump_state = True
+        print("Pump is ON at start-up")
         last_ON_time = start_time
     else:                       # pump is OFF at start...normal
         pump_state = False
@@ -196,17 +218,17 @@ def main():
                 message = radio.message
                 last_comms_time = time.time()
                 if isinstance(message, str):
-                    if DEBUGLVL > 1: print(message)
+                    if DEBUGLVL > 2: print(message)
                     if message == "CHECK":
                         resp_txt = ("STATUS", 1 if check_state(500) else 0)
                         transmit_and_pause(resp_txt, RADIO_PAUSE)
-                        if DEBUGLVL > 0: print(f"REPLY: {resp_txt}")
+                        if DEBUGLVL > 1: print(f"REPLY: {resp_txt}")
                     elif message == "PING":         # respond I am alive...
                         resp_txt = "PING REPLY"
                         transmit_and_pause(resp_txt, RADIO_PAUSE)
-                        if DEBUGLVL > 0: print(f"REPLY: {resp_txt}")
+                        if DEBUGLVL > 1: print(f"REPLY: {resp_txt}")
                     elif message == "BABOOM":
-                        if DEBUGLVL > 1: print("TX Heartbeat received")
+                        if DEBUGLVL > 2: print("TX Heartbeat received")
                 elif isinstance(message, tuple):
                     if DEBUGLVL > 1:
                         print("Received tuple: ", message[0], message[1])
