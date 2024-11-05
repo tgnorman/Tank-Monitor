@@ -245,6 +245,13 @@ def main():
                             last_ON_time = message[1]
                         else:
                             if DEBUGLVL > 1: print("Ignoring ON... already ON")
+                    elif message[0] == "CLK":
+                        if DEBUGLVL > 0: print("Got CLK: ", message)
+                        rcv_time = time.ticks_ms()
+                        rp = message[1]
+                        time_diff = rcv_time - rp
+                        if DEBUGLVL > 0: print(f"time_diff: {time_diff} ms")
+                        transmit_and_pause(("CLK", time_diff), 500)
                     else:                           # unrecognised tuple received...
                         print("WTF is message[0]?")
             else:

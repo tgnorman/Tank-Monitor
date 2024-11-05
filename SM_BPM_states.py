@@ -32,7 +32,7 @@ class COMMS_READY(State):
 # Initial state on start-up 
 
     def on_event(self, event):
-        if event == 'ACK SYNC':
+        if event == 'CLK SYNC':
             return CLOCK_SYNCED()
         return self
             

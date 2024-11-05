@@ -25,6 +25,7 @@ wf          = MyWiFi()
 
 DEBUGLVL    = 2
 
+print(f"System looks like: {system}")
 # region initial declarations etc
 # Configure your WiFi SSID and password
 ssid        = wf.ssid
@@ -422,11 +423,22 @@ def init_clock():
         set_time()
     system.on_event("ACK NTP")
 
-def sync_clock():                   # initiate exchange of time info with RX, purpose is to determine clock adjustment
-    global radio, clock_adjust_ms
+def calibrate_clock():
+    global radio
 
-    if system.state == "CLOCK_SET":
+    delay=500
+    for i in range(1):
+        p = time.ticks_ms()
+        s = "CLK"
+        t=(s, p)
+        transmit_and_pause(t, delay)
+
+def sync_clock():                   # initiate exchange of time info with RX, purpose is to determine clock adjustment
+    global radio, clock_adjust_ms, system
+
+    if str(system.state) == "COMMS_READY":
         print("Starting clock sync process")
+        calibrate_clock()
         count = 10
         delay = 500                     # millisecs
         for n in range(count):
@@ -439,18 +451,20 @@ def sync_clock():                   # initiate exchange of time info with RX, pu
         while not radio.receive() and loop_count < max_loops:
             sleep_ms(50)
             loop_count += 1
-        if loop_count < max_loops:      # then we got a reply
-            if DEBUGLVL > 0: print(f"Got CLK SYNC reply after {loop_count} loops")
+        if loop_count < max_loops:      # then we got a reply          
             rcv_msg = radio.message
             if type(rcv_msg) is tuple:
                 if rcv_msg[0] == "CLK":
-                    clock_adjust_ms = rcv_msg[1]
+                    if DEBUGLVL > 0: print(f"Got CLK SYNC reply after {loop_count} loops")
+                    clock_adjust_ms = int(rcv_msg[1])
+                    if abs(clock_adjust_ms) > 100000:       # this looks dodgy...
+                        print(f"*****Bad clock adjust: {clock_adjust_ms}... setting to 800")
+                        clock_adjust_ms = 800
         else:                           # we did NOT get a reply... don't block... set adj to default 500
-            clock_adjust_ms = 500
-       
+            clock_adjust_ms = 0
         system.on_event("CLK SYNC")
     else:
-        print(f"What am I doing here in state {system.state}")
+        print(f"What am I doing here in state {str(system.state)}")
 
     if DEBUGLVL > 0: print(f"Setting clock_adjust to {clock_adjust_ms}") 
 
@@ -545,13 +559,20 @@ def main():
         if DEBUGLVL > 0:
             print("GAK... no state machine exists at start-up")
     else:
-        while  system.state != "READY":
-            print(system.state)
-            if system.state == "PicoReset":     connect_wifi()  # ACK WIFI
-            if system.state == "WIFI_READY":    init_clock()    # ACK NTP
-            if system.state == "CLOCK_SET":     init_radio()    # ACK COMMS
-            if system.state == "COMMS_READY":   sync_clock()    # ACK SYNC
-            if system.state == "CLOCK_SYNCED": system.on_event("START_MONITORING")
+        print(f"Before while...{type(system.state)} ")
+        while  str(system.state) != "READY":
+            print(str(system.state))
+            if str(system.state) == "PicoReset":
+                print("yep... PicoReset")
+                connect_wifi()  # ACK WIFI
+            if str(system.state) == "WIFI_READY":
+                init_clock()    # ACK NTP
+            if str(system.state) == "CLOCK_SET":
+                init_radio()    # ACK COMMS
+            if str(system.state) == "COMMS_READY":
+                sync_clock()    # ACK SYNC
+            if str(system.state) == "CLOCK_SYNCED":
+                system.on_event("START_MONITORING")
             sleep(1)
 
     start_time = time.time()
