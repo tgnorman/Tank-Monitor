@@ -11,11 +11,11 @@ import os
 import random               # just for PP detect sim...
 from time import sleep
 from PiicoDev_Unified import sleep_ms
-from machine import I2C, Pin, ADC, Timer # Import Pin
+from machine import Timer, Pin, ADC, Timer # Import Pin
 from Pump import Pump               # get our Pump class
 from Tank import Tank
 from secrets import MyWiFi
-
+import uasyncio
 
 # OK... major leap... intro to FSM...
 from SM_SimpleFSM import SimpleDevice
@@ -23,9 +23,8 @@ from SM_SimpleFSM import SimpleDevice
 system      = SimpleDevice()            #initialise my FSM.
 wf          = MyWiFi()
 
-DEBUGLVL    = 2
+DEBUGLVL    = 0
 
-print(f"System looks like: {system}")
 # region initial declarations etc
 # Configure your WiFi SSID and password
 ssid        = wf.ssid
@@ -43,10 +42,12 @@ RADIO_PAUSE = 1000
 MIN_FREE_SPACE = 100                # in KB...
 MAX_CONTINUOUS_RUNTIME = 6 * 60 * 60        # 6 hours max runtime.  More than this looks like trouble
 
+LCD_ON_TIME = 3000      # millisecs
+btnflag     = False
 
 # Pins
 temp_sensor = ADC(4)			    # Internal temperature sensor is connected to ADC channel 4
-backlight 	= Pin(6, Pin.IN)		# check if IN is correct!
+lcdbtn 	    = Pin(6, Pin.IN, Pin.PULL_UP)		# check if IN is correct!
 buzzer 		= Pin(16, Pin.OUT)
 presspmp 	= Pin(15,Pin.IN)		# or should this be ADC()?
 prsspmp_led = Pin(14, Pin.OUT)
@@ -95,17 +96,51 @@ lcd.clear()
 rtc.getDateTime()
 
 # CHANGE THIS... do after initialising internal clock
-tod   = rtc.timestamp()
-year  = tod.split()[0].split("-")[0]
-month = tod.split()[0].split("-")[1]
-day   = tod.split()[0].split("-")[2]
-shortyear = year[2:]
+
+def lcdbtn_pressed(x):          # my lcd button ISR
+    global btnflag
+    btnflag = not btnflag
+    sleep_ms(300)
+
+lcdbtn.irq(handler=lcdbtn_pressed, trigger=Pin.IRQ_RISING)
+
+def lcd_off(x):
+    lcd.setRGB(0,0,0)
+
+async def check_lcd_btn():
+    global btnflag
+    while True:
+        if btnflag:
+#            lcdbl_toggle()
+            lcd.setRGB(0,0,220)     # turn on, and...
+            tim=Timer(period=LCD_ON_TIME, mode=Timer.ONE_SHOT, callback=lcd_off)
+            btnflag = False
+        await uasyncio.sleep(0.5)
+def Pico_RTC():
+    tod   = rtc.timestamp()
+    year  = tod.split()[0].split("-")[0]
+    month = tod.split()[0].split("-")[1]
+    day   = tod.split()[0].split("-")[2]
+    shortyear = year[2:]
+
+def internal_RTC():
+    now   = secs_to_localtime(time.time())      # getcurrent time, convert to local SA time
+    year  = now[0]
+    month = now[1]
+    day   = now[2]
 
 def init_logging():
     global year, month, day, shortyear
-    global f, ev_log
-    daylogname  = f'tank {shortyear}{month}{day}.txt'
-    pplogname   = f'pressure {month}{day}.txt'
+    global f, ev_log, pp_log
+
+    now   = secs_to_localtime(time.time())      # getcurrent time, convert to local SA time
+    year  = now[0]
+    month = now[1]
+    day   = now[2]
+    shortyear = str(year)[2:]
+    datestr = f"{shortyear}{month:02}{day:02}"
+    daylogname  = f'tank {datestr}.txt'
+    pplogname   = f'pressure {datestr}.txt'
     eventlogname = 'borepump_events.txt'
     f      = open(daylogname, "a")
     ev_log = open(eventlogname, "a")
@@ -144,9 +179,7 @@ def updateClock():
     global str_time, event_time
 
     now   = secs_to_localtime(time.time())      # getcurrent time, convert to local SA time
-#    tod   = rtc.timestamp()
     year  = now[0]
-    
     month = now[1]
     day   = now[2]
     hour  = now[3]
@@ -192,7 +225,7 @@ def radio_time(local_time):
     return(local_time + clock_adjust_ms)
 
 def controlBorePump():
-    global tank_is, counter, radio, event_time
+    global tank_is, counter, radio, event_time, system
     if tank_is == fill_states[0]:		# Overfull
         buzzer.value(1)			# raise alarm
     else:
@@ -205,6 +238,7 @@ def controlBorePump():
                 counter += 1
                 tup = ("ON", radio_time(time.time()))   # was previosuly counter... now, time
     #            print(tup)
+                system.on_event("ON REQ")
                 transmit_and_pause(tup, 2 * RADIO_PAUSE)    # that's two sleeps... as expecting immediate reply
     # try implicit CHECK... which should happen in my RX module as state_changed
     #            radio.send("CHECK")
@@ -218,6 +252,7 @@ def controlBorePump():
                     if valid_response and new_state > 0:
                         borepump.switch_pump(True)
                         ev_log.write(f"{event_time} ON\n")
+                        system.on_event("ON ACK")
                         if DEBUGLVL > 0: print(f"FSM: Set borepump to state {borepump.state}")
                     else:
                         log_switch_error(new_state)
@@ -230,6 +265,7 @@ def controlBorePump():
             counter -= 1
             tup = ("OFF", radio_time(time.time()))
 #            print(tup)
+            system.on_event("OFF REQ")
             transmit_and_pause(tup, 2 * RADIO_PAUSE)    # that's two sleeps... as expecting immediate reply
 # try implicit CHECK... which should happen in my RX module as state_changed
 #            radio.send("CHECK")
@@ -241,6 +277,7 @@ def controlBorePump():
                 if valid_response and not new_state:        # this means I received confirmation that pump is OFF...
                     borepump.switch_pump(False)
                     ev_log.write(f"{event_time} OFF\n")
+                    system.on_event("OFF ACK")
                     if DEBUGLVL > 0: print("cBP: Closing valve")
                     solenoid.value(1)               # wait until pump OFF confirmed before closing valve !!!
                     if DEBUGLVL > 0: print(f"FSM: Set borepump to state {borepump.state}")
@@ -418,20 +455,20 @@ def init_clock():
     global system
 
     print("Initialising local clock")
-    if time.localtime()[0] < 2024:  # if we reset, localtime will return 2021...
+ #   if time.localtime()[0] < 2024:  # if we reset, localtime will return 2021...
 #        connect_wifi()
-        set_time()
+    set_time()
     system.on_event("ACK NTP")
 
 def calibrate_clock():
     global radio
 
     delay=500
-    for i in range(1):
-        p = time.ticks_ms()
-        s = "CLK"
-        t=(s, p)
-        transmit_and_pause(t, delay)
+ #   for i in range(1):
+    p = time.ticks_ms()
+    s = "CLK"
+    t=(s, p)
+    transmit_and_pause(t, delay)
 
 def sync_clock():                   # initiate exchange of time info with RX, purpose is to determine clock adjustment
     global radio, clock_adjust_ms, system
@@ -439,7 +476,7 @@ def sync_clock():                   # initiate exchange of time info with RX, pu
     if str(system.state) == "COMMS_READY":
         print("Starting clock sync process")
         calibrate_clock()
-        count = 10
+        count = 2
         delay = 500                     # millisecs
         for n in range(count):
             local_time = time.time()
@@ -583,6 +620,9 @@ def main():
     print(f"Housetank state is {housetank.state}")
     ev_log.write(f"Pump Monitor starting: {event_time}\n")
     init_everything_else()
+
+# start up lcd_button widget
+    uasyncio.create_task(check_lcd_btn())
 
     try:
         while True:
