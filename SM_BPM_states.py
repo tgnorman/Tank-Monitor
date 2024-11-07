@@ -34,6 +34,8 @@ class COMMS_READY(State):
     def on_event(self, event):
         if event == 'CLK SYNC':
             return CLOCK_SYNCED()
+        if event == 'START_MONITORING':
+            return READY()
         return self
             
 class CLOCK_SYNCED(State):
