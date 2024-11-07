@@ -23,7 +23,7 @@ from SM_SimpleFSM import SimpleDevice
 system      = SimpleDevice()            #initialise my FSM.
 wf          = MyWiFi()
 
-DEBUGLVL    = 0
+DEBUGLVL    = 1
 
 # region initial declarations etc
 # Configure your WiFi SSID and password
@@ -584,7 +584,7 @@ def sim_pressure_pump_detect(x):
 def sim_solenoid_detect():
     pass
 
-def main():
+async def main():
     global event_time, ev_log, steady_state, housetank, system
 
     rec_num=0
@@ -607,8 +607,8 @@ def main():
             if str(system.state) == "CLOCK_SET":
                 init_radio()    # ACK COMMS
             if str(system.state) == "COMMS_READY":
-                sync_clock()    # ACK SYNC
-            if str(system.state) == "CLOCK_SYNCED":
+#                sync_clock()    # ACK SYNC
+#            if str(system.state) == "CLOCK_SYNCED":
                 system.on_event("START_MONITORING")
             sleep(1)
 
@@ -624,40 +624,47 @@ def main():
 # start up lcd_button widget
     uasyncio.create_task(check_lcd_btn())
 
-    try:
-        while True:
-            updateClock()			# get datetime stuff
-            updateData()			# monitor water depth
-            controlBorePump()		# do whatever
-    #        listen_to_radio()		# check for badness
-            displayAndLog()			# record it
-            if steady_state: checkForAnomalies()	    # test for weirdness
-            rec_num += 1
-            if rec_num > 2 and not steady_state: steady_state = True
-            if heartbeat():             # send heartbeat if ON... not if OFF.  For now, anyway
-                if DEBUGLVL > 1: print("Need to sleep...")
-                sleep(mydelay)
-            else:
-                if DEBUGLVL > 1: print("Need a shorter sleep")
-                sleep_ms(mydelay * 1000 - RADIO_PAUSE)
-            
-    except KeyboardInterrupt:
-    # turn everything OFF
-        borepump.switch_pump(False)             # turn pump OFF
-    #    confirm_and_switch_solenoid(False)     #  *** DO NOT DO THIS ***  If live, this will close valve while pump.
-    #           to be real sure, don't even test if pump is off... just leave it... for now.
 
-        lcd.setRGB(0,0,0)		                # turn off backlight
-    
-    # tidy up...
-        f.flush()
-        f.close()
-        ev_log.write(f"{event_time} STOP")
-        dump_pump()
-        ev_log.flush()
-        ev_log.close()
+    while True:
+        updateClock()			# get datetime stuff
+        updateData()			# monitor water depth
+        controlBorePump()		# do whatever
+#        listen_to_radio()		# check for badness
+        displayAndLog()			# record it
+        if steady_state: checkForAnomalies()	    # test for weirdness
+        rec_num += 1
+        if rec_num > 2 and not steady_state: steady_state = True
+        heartbeat()
+        # if heartbeat():             # send heartbeat if ON... not if OFF.  For now, anyway
+        #     if DEBUGLVL > 1: print("Need to sleep...")
+        #     sleep(mydelay)
+        # else:
+        #     if DEBUGLVL > 1: print("Need a shorter sleep")
+        #     sleep_ms(mydelay * 1000 - RADIO_PAUSE)
+        await uasyncio.sleep(mydelay)
+try:
+    uasyncio.run(main())
 
-        print('\n### Program Interrupted by the user')
+except KeyboardInterrupt:
+    print('\n### Program Interrupted by the user')
+# turn everything OFF
+    borepump.switch_pump(False)             # turn pump OFF
+#    confirm_and_switch_solenoid(False)     #  *** DO NOT DO THIS ***  If live, this will close valve while pump.
+#           to be real sure, don't even test if pump is off... just leave it... for now.
+
+    lcd.setRGB(0,0,0)		                # turn off backlight
+#    lcd_btn_task.              would like to cancel this task, but seems I can't
+
+# tidy up...
+    f.flush()
+    f.close()
+    ev_log.write(f"{event_time} STOP")
+    dump_pump()
+    ev_log.flush()
+    ev_log.close()
+
+    print("Cleanup completed")
+
 
 if __name__ == '__main__':
     main()
