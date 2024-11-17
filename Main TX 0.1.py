@@ -23,7 +23,8 @@ from SM_SimpleFSM import SimpleDevice
 system      = SimpleDevice()            #initialise my FSM.
 wf          = MyWiFi()
 
-DEBUGLVL    = 1
+DEBUGLVL    = 0
+ROC_AVERAGE = 5         # make 1 for NO averaging... otherwise do an SMA of this period.  Need a ring buffer?
 
 # region initial declarations etc
 # Configure your WiFi SSID and password
@@ -34,24 +35,24 @@ password    = wf.password
 
 #First... I2C devices
 distSensor 	= PiicoDev_VL53L1X()
-rtc 		= PiicoDev_RV3028()     # Initialise the RTC module, enable charging
+#rtc 		= PiicoDev_RV3028()     # Initialise the RTC module, enable charging
 lcd 		= RGB1602.RGB1602(16,2)
 
-radio = PiicoDev_Transceiver()
+radio       = PiicoDev_Transceiver()
 RADIO_PAUSE = 1000
 MIN_FREE_SPACE = 100                # in KB...
-MAX_CONTINUOUS_RUNTIME = 6 * 60 * 60        # 6 hours max runtime.  More than this looks like trouble
+MAX_CONTINUOUS_RUNTIME = 4 * 60 * 60        # 6 hours max runtime.  More than this looks like trouble
 
-LCD_ON_TIME = 3000      # millisecs
+LCD_ON_TIME = 5000      # millisecs
 btnflag     = False
 
 # Pins
-temp_sensor = ADC(4)			    # Internal temperature sensor is connected to ADC channel 4
+temp_sensor = ADC(4)			                # Internal temperature sensor is connected to ADC channel 4
 lcdbtn 	    = Pin(6, Pin.IN, Pin.PULL_UP)		# check if IN is correct!
 buzzer 		= Pin(16, Pin.OUT)
-presspmp 	= Pin(15,Pin.IN)		# or should this be ADC()?
+presspmp    = Pin(15, Pin.IN, Pin.PULL_UP)      # prep for pressure pump monitor.  Needs output from opamp circuit
 prsspmp_led = Pin(14, Pin.OUT)
-solenoid    = Pin(2, Pin.OUT, value=0)      # MUST ensure we don't close solenoid on startup... pump may already be running !!!  Note: Low == Open
+solenoid    = Pin(2, Pin.OUT, value=0)          # MUST ensure we don't close solenoid on startup... pump may already be running !!!  Note: Low == Open
 
 # Misc stuff
 conv_fac 	= 3.3 / 65535
@@ -59,41 +60,62 @@ steady_state = False                # if not, then don't check for anomalies
 clock_adjust_ms = 0                 # will be set later... this just to ensure it is ALWAYS something
 
 # Gather all tank-related stuff with a view to making a class...
-housetank   = Tank("Empty")           # make my tank object
+housetank   = Tank("Empty")         # make my tank object
 
 # New state...
 fill_states = ["Overflow", "Full", "Near full", "Part full", "Near Empty", "Empty"]
 # Physical Constants
-Tank_Height = 1650
-OverFull	= 150
-Min_Dist    = 200           # full
+Tank_Height = 1700
+OverFull	= 250
+Min_Dist    = 400           # full
 Max_Dist    = 1000          # empty
 Delta       = 50            # change indicating pump state change has occurred
 
 # Tank variables/attributes
-depth = 0
-last_depth = 0
-depth_ROC = 0
-max_ROC = 0.4			# change in metres/minute
-min_ROC = 0.15           # experimental.. might need to tweak.  To avoid noise in anomaly tests
+depth       = 0
+last_depth  = 0
+depth_ROC   = 0
+max_ROC     = 0.2			    # change in metres/minute... soon to be measured on SMA/ring buffer
+min_ROC     = 0.15              # experimental.. might need to tweak.  To avoid noise in anomaly tests
 
 # Various constants
-mydelay = 5				# Sleep time... seconds, not ms...
+if DEBUGLVL > 0:
+    mydelay = 5
+else:
+    mydelay = 5            # Sleep time... seconds, not ms...  Up from 5, using calculated data
 
 # logging stuff...
-log_freq = 5
+log_freq    = 5
 last_logged_depth = 0
-min_log_change_m = 0.1	# to save space... only write to file if significant change in level
-level_init = False 		# to get started
+min_log_change_m = 0.001	# to save space... only write to file if significant change in level
+level_init  = False 		# to get started
 
-counter = 0
+counter         = 0
+ringbufferindex = 0         # for SMA calculation... keep last n measures in a ring buffer
 
+LOGRINGSIZE     = 10        # max log ringbuffer length
+logindex        = 0         # for scrolling through error logs on screen
 # endregion
 
 # start doing stuff
 buzzer.value(0)			# turn buzzer off
 lcd.clear()
-rtc.getDateTime()
+#rtc.getDateTime()
+
+# how I will monitor pressure pump state...
+def pp_callback(pin):
+    presspmp.irq(handler=None)
+    v = pin.value()
+    presspump.switch_pump(v)
+    print("Pressure Pump Pin triggered:", v)
+    sleep_ms(100)
+    presspmp.irq(trigger=Pin.IRQ_RISING|Pin.IRQ_FALLING, handler=pp_callback)
+
+# Configure the pin
+
+# Attach the ISR for both rising and falling edges
+presspmp.irq(trigger=Pin.IRQ_RISING|Pin.IRQ_FALLING, handler=pp_callback)
+#presspmp.irq(trigger=Pin.IRQ_FALLING, handler=pp_LO_callback)
 
 # CHANGE THIS... do after initialising internal clock
 
@@ -112,22 +134,24 @@ async def check_lcd_btn():
     while True:
         if btnflag:
 #            lcdbl_toggle()
-            lcd.setRGB(0,0,220)     # turn on, and...
+            lcd.setRGB(170,170,138)     # turn on, and...
             tim=Timer(period=LCD_ON_TIME, mode=Timer.ONE_SHOT, callback=lcd_off)
             btnflag = False
         await uasyncio.sleep(0.5)
-def Pico_RTC():
-    tod   = rtc.timestamp()
-    year  = tod.split()[0].split("-")[0]
-    month = tod.split()[0].split("-")[1]
-    day   = tod.split()[0].split("-")[2]
-    shortyear = year[2:]
 
-def internal_RTC():
-    now   = secs_to_localtime(time.time())      # getcurrent time, convert to local SA time
-    year  = now[0]
-    month = now[1]
-    day   = now[2]
+# def Pico_RTC():
+#     tod   = rtc.timestamp()
+#     year  = tod.split()[0].split("-")[0]
+#     month = tod.split()[0].split("-")[1]
+#     day   = tod.split()[0].split("-")[2]
+#     shortyear = year[2:]
+
+# def internal_RTC():
+#     global year
+#     now   = secs_to_localtime(time.time())      # getcurrent time, convert to local SA time
+#     year  = now[0]
+#     month = now[1]
+#     day   = now[2]
 
 def init_logging():
     global year, month, day, shortyear
@@ -161,18 +185,42 @@ def get_fill_state(d):
         tmp = fill_states[0]
     return tmp
 
+def calc_ROC_SMA()-> float:
+    sum = 0
+    n = 0
+    for dval in ringbuf:
+        if dval > 0:
+            sum += dval
+            n += 1
+    if n > 0:
+        return sum / n
+    else:
+        return 0.0
+
+def get_tank_depth():
+    global depth, tank_is
+
+    d = distSensor.read()
+    depth = (Tank_Height - d) / 1000
+    tank_is = get_fill_state(d)
+
 def updateData():
     global tank_is
     global depth_str
     global depth
     global last_depth
     global depth_ROC
-    d = distSensor.read()
-    depth_ROC = (depth - last_depth) / (mydelay / 60)	# ROC in m/minute.  Save neagtives also... for anomaly testing
-    if DEBUGLVL > 1: print(f"depth_ROC: {depth_ROC:.3f}")
-    last_depth = depth				# track change since last reading
-    depth = (Tank_Height - d) / 1000
-    tank_is = get_fill_state(d)
+    global ringbuf, ringbufferindex, sma_depth
+  
+    get_tank_depth()
+    ringbuf[ringbufferindex] = depth ; ringbufferindex = (ringbufferindex + 1) % ROC_AVERAGE
+    sma_depth = calc_ROC_SMA()
+    if DEBUGLVL > 0:
+#        print("Ringbuf: ", ringbuf)
+        print("sma_depth: ", sma_depth)
+    depth_ROC = (sma_depth - last_depth) / (mydelay / 60)	# ROC in m/minute.  Save neagtives also... for anomaly testing
+    if DEBUGLVL > 0: print(f"depth_ROC: {depth_ROC:.3f}")
+    last_depth = sma_depth				# track change since last reading
     depth_str = f"{depth:.2f}m " + tank_is
 
 def updateClock():
@@ -193,9 +241,10 @@ def log_switch_error(new_state):
     global ev_log, event_time
     print(f"!!! log_switch_error  !! {new_state}")
     ev_log.write(f"{event_time}: ERROR on switching to state {new_state}\n")
+    add_to_log_ring(f"{event_time}: ERROR switching to {new_state}")
     
 def parse_reply(rply):
-    if DEBUGLVL > 0: print(f"in parse arg is {rply}")
+    if DEBUGLVL > 1: print(f"in parse arg is {rply}")
     if isinstance(rply, tuple):			# good...
         key = rply[0]
         val = rply[1]
@@ -232,7 +281,7 @@ def controlBorePump():
         buzzer.value(0)
     if tank_is == fill_states[len(fill_states) - 1]:		# Empty
         if not borepump.state:		# pump is off, we need to switch on
-            if DEBUGLVL > 0: print("cBP: Opening valve")
+            if DEBUGLVL > 1: print("cBP: Opening valve")
             solenoid.value(0)
             if confirm_solenoid():
                 counter += 1
@@ -253,7 +302,7 @@ def controlBorePump():
                         borepump.switch_pump(True)
                         ev_log.write(f"{event_time} ON\n")
                         system.on_event("ON ACK")
-                        if DEBUGLVL > 0: print(f"FSM: Set borepump to state {borepump.state}")
+                        if DEBUGLVL > 0: print(f"Class: Set borepump to state {borepump.state}")
                     else:
                         log_switch_error(new_state)
             else:               # dang... want to turn pump on, but solenoid looks OFF
@@ -278,17 +327,41 @@ def controlBorePump():
                     borepump.switch_pump(False)
                     ev_log.write(f"{event_time} OFF\n")
                     system.on_event("OFF ACK")
-                    if DEBUGLVL > 0: print("cBP: Closing valve")
+                    if DEBUGLVL > 1: print("cBP: Closing valve")
                     solenoid.value(1)               # wait until pump OFF confirmed before closing valve !!!
-                    if DEBUGLVL > 0: print(f"FSM: Set borepump to state {borepump.state}")
+                    if DEBUGLVL > 1: print(f"Class: Set borepump to state {borepump.state}")
                 else:
                     log_switch_error(new_state)
-                    
+
+def add_to_log_ring(s):
+    global logindex
+    
+    logring[logindex] = s
+    if len(logring) < LOGRINGSIZE:
+        logring.append("")
+#        logindex = len(logring)
+
+    logindex = (logindex + 1) % LOGRINGSIZE
+         
+def dump_log_ring():
+    if len(logring) < LOGRINGSIZE:
+        for i in range(logindex - 1, -1, -1):
+            s = logring[i]
+            if s != "": print(f"Errorlog {i}: {logring[i]}")
+    else:
+        i = logindex - 1            # start with last log entered
+        for k in range(LOGRINGSIZE):
+            s = logring[i]
+            if s != "": print(f"Errorlog {i}: {logring[i]}")
+            i = (i - 1) % LOGRINGSIZE
+    
 def raiseAlarm(param, val):
+    global logring, logindex
     global ev_log, event_time
     str = f"{event_time} ALARM {param}, value {val:.3g}"
     print(str)
     ev_log.write(f"{str}\n")
+    add_to_log_ring(str)
     
 def checkForAnomalies():
     global borepump, max_ROC, depth_ROC, tank_is, MAX_CONTINUOUS_RUNTIME
@@ -320,7 +393,7 @@ def displayAndLog():
     lcd.printout(depth_str)
 #    temp = 27 - (temp_sensor.read_u16() * conv_fac - 0.706)/0.001721
 #    tempstr=f"{temp:.2f} C"  
-    logstr = str_time + f" {depth:.2f}m\n"
+    logstr = str_time + f" {depth:.3f}\n"
     dbgstr = str_time + f" {depth:.3f}m"    
 #    if rec_num % log_freq == 0:
 #    if rec_num == log_freq:			# avoid using mod... in case of overflow
@@ -334,7 +407,7 @@ def displayAndLog():
         level_change = abs(depth - last_logged_depth)
         if level_change > min_log_change_m:
             last_logged_depth = depth
-            f.write(logstr)      
+            f.write(logstr)   
     print(dbgstr)
 
 def listen_to_radio():
@@ -356,9 +429,9 @@ def init_radio():
     if radio.receive():
         msg = radio.message
         print(f"Read {msg}")
-    else:
-        print("nothing received in init_radio")
-    print("Pinging RX Pico...")
+    # else:
+        # print("nothing received in init_radio")
+    # print("Pinging RX Pico...")
     while not ping_RX():
         print("Waiting for RX to respond...")
         sleep(1)
@@ -389,22 +462,41 @@ def get_initial_pump_state() -> bool:
         valid_response, new_state = parse_reply(rply)
         if valid_response and new_state > 0:
             initial_state = True
-    print(f"Pump Initial state is {initial_state}")
+#    print(f"Pump Initial state is {initial_state}")
     return initial_state
 
-def dump_pump():
-    global borepump, ev_log
-# write pump object stats to log file, typically when system is closed/interupted
+# def dump_pump():
+#     global borepump, ev_log
+# # write pump object stats to log file, typically when system is closed/interupted
 
-    dc_secs = borepump.cum_seconds_on
+#     dc_secs = borepump.cum_seconds_on
+#     days  = int(dc_secs/(60*60*24))
+#     hours = int(dc_secs % (60*60*24) / (60*60))
+#     mins  = int(dc_secs % (60*60) / 60)
+#     secs  = int(dc_secs % 60)
+#     ev_log.write(f"\nMonitor shutdown at {display_time(secs_to_localtime(time.time()))}\n")
+#     ev_log.write(f"Last switch time:   {display_time(secs_to_localtime(borepump.last_time_switched))}\n")
+#     ev_log.write(f"Total switches this period: {borepump.num_switch_events}\n")
+#     ev_log.write(f"Cumulative runtime: {days} days {hours} hours {mins} minutes {secs} seconds\n")
+
+def dump_pump_arg(p:Pump):
+    global ev_log
+
+    pid = p.ID
+# write pump object stats to log file, typically when system is closed/interupted
+    ev_log.flush()
+    ev_log.write(f"Stats for pump ID {pid}\n")
+
+    dc_secs = p.cum_seconds_on
     days  = int(dc_secs/(60*60*24))
     hours = int(dc_secs % (60*60*24) / (60*60))
     mins  = int(dc_secs % (60*60) / 60)
     secs  = int(dc_secs % 60)
-    ev_log.write(f"\nMonitor shutdown at {display_time(secs_to_localtime(time.time()))}\n")
-    ev_log.write(f"Last switch time:   {display_time(secs_to_localtime(borepump.last_time_switched))}\n")
-    ev_log.write(f"Total switches this period: {borepump.num_switch_events}\n")
+    
+    ev_log.write(f"Last switch time:   {display_time(secs_to_localtime(p.last_time_switched))}\n")
+    ev_log.write(f"Total switches this period: {p.num_switch_events}\n")
     ev_log.write(f"Cumulative runtime: {days} days {hours} hours {mins} minutes {secs} seconds\n")
+    ev_log.flush()
 
 def connect_wifi():
     global system
@@ -455,7 +547,7 @@ def init_clock():
     global system
 
     print("Initialising local clock")
- #   if time.localtime()[0] < 2024:  # if we reset, localtime will return 2021...
+#   if time.localtime()[0] < 2024:  # if we reset, localtime will return 2021...
 #        connect_wifi()
     set_time()
     system.on_event("ACK NTP")
@@ -464,7 +556,7 @@ def calibrate_clock():
     global radio
 
     delay=500
- #   for i in range(1):
+#   for i in range(1):
     p = time.ticks_ms()
     s = "CLK"
     t=(s, p)
@@ -505,9 +597,23 @@ def sync_clock():                   # initiate exchange of time info with RX, pu
 
     if DEBUGLVL > 0: print(f"Setting clock_adjust to {clock_adjust_ms}") 
 
+def init_ringbuffers():
+    global  ringbuf, ringbufferindex, logring, logindex
+
+    ringbuf = [0.0]                 # start with a list containing zero...
+    if ROC_AVERAGE > 1:             # expand it as needed...
+        for x in range(ROC_AVERAGE - 1):
+            ringbuf.append(0.0)
+    if DEBUGLVL > 0: print("Ringbuf is ", ringbuf)
+    ringbufferindex = 0
+
+    logring = [""]
+    logindex = 0
+
 def init_everything_else():
     global borepump, steady_state, free_space_KB, presspump
-       
+    
+    lcd.setRGB(170,170,138)   
 # Get the current pump state and init my object    
     borepump = Pump(0, get_initial_pump_state())
 
@@ -523,6 +629,9 @@ def init_everything_else():
 
     presspump = Pump(1, False)
     free_space_KB = free_space()
+
+    init_ringbuffers()
+
 # ensure we start out right...
     steady_state_= False
 
@@ -534,11 +643,11 @@ def heartbeat() -> bool:
 
 # Doing this inline as it were to avoid issues with async, buffering yada yada.
 # The return value indicates if we need to sleep before continuing the main loop
-    if not borepump.state:      # only do stuff if we believe the pump is running
-        return (True)             # nothing... so sleep
-    else:
+
+# only do heartbeat if the pump is running
+    if borepump.state:
         transmit_and_pause("BABOOM", RADIO_PAUSE)       # this might be a candidate for a shorter delay... if no reply expected
-        return (False)            # implied sleep... so, negative
+    return borepump.state
 
 def switch_valve(state):
     global solenoid
@@ -566,7 +675,7 @@ def confirm_and_switch_solenoid(state):
 def free_space():
     # Get the filesystem stats
     stats = os.statvfs('/')
-
+    
     # Calculate free space
     block_size = stats[0]
     total_blocks = stats[2]
@@ -587,43 +696,61 @@ def sim_solenoid_detect():
 async def main():
     global event_time, ev_log, steady_state, housetank, system
 
+    print("RUNNING START")
     rec_num=0
     #radio.rfm69_reset
-
+    lcd.setRGB(170,170,138)
 # first cut at how to progress SM on start-up.  Not clear if this is optimal.  Maybe better to drive this inside SM methods
 
     if not system:              # yikes... don't have a SM ??
         if DEBUGLVL > 0:
             print("GAK... no state machine exists at start-up")
     else:
-        print(f"Before while...{type(system.state)} ")
+ #       print(f"Before while...{type(system.state)} ")
         while  str(system.state) != "READY":
             print(str(system.state))
             if str(system.state) == "PicoReset":
-                print("yep... PicoReset")
                 connect_wifi()  # ACK WIFI
+                lcd.clear()
+                lcd.printout("WIFI")
             if str(system.state) == "WIFI_READY":
                 init_clock()    # ACK NTP
+                lcd.clear()
+                lcd.printout("CLOCK")
             if str(system.state) == "CLOCK_SET":
                 init_radio()    # ACK COMMS
+                lcd.clear()
+                lcd.printout("COMMS")
             if str(system.state) == "COMMS_READY":
 #                sync_clock()    # ACK SYNC
 #            if str(system.state) == "CLOCK_SYNCED":
+                lcd.clear()
+                lcd.printout("READY")
                 system.on_event("START_MONITORING")
             sleep(1)
 
     start_time = time.time()
+    init_logging()          # needs corect time first!
     print(f"Main TX starting at {display_time(secs_to_localtime(start_time))}")
-    init_logging()
     updateClock()				    # get DST-adjusted local time
     
-    print(f"Housetank state is {housetank.state}")
-    ev_log.write(f"Pump Monitor starting: {event_time}\n")
+    get_tank_depth()
     init_everything_else()
+
+    housetank.state = tank_is
+    print(f"Initial Housetank state is {housetank.state}")
+    if (housetank.state == "Empty" and not borepump.state):           # then we need to start doing somethin... else, we do NOTHING
+        print("Immediate switch pump ON required")
+    elif (borepump.state and (housetank.state == "Full" or housetank.state == "Overflow")):     # pump is ON... but...
+        print("Immediate switch pump OFF required")
+    else:
+        print("No immediate action required")
+
+    ev_log.write(f"\nPump Monitor starting: {event_time}\n")
 
 # start up lcd_button widget
     uasyncio.create_task(check_lcd_btn())
-
+    
 
     while True:
         updateClock()			# get datetime stuff
@@ -633,38 +760,46 @@ async def main():
         displayAndLog()			# record it
         if steady_state: checkForAnomalies()	    # test for weirdness
         rec_num += 1
-        if rec_num > 2 and not steady_state: steady_state = True
-        heartbeat()
-        # if heartbeat():             # send heartbeat if ON... not if OFF.  For now, anyway
-        #     if DEBUGLVL > 1: print("Need to sleep...")
-        #     sleep(mydelay)
-        # else:
-        #     if DEBUGLVL > 1: print("Need a shorter sleep")
-        #     sleep_ms(mydelay * 1000 - RADIO_PAUSE)
-        await uasyncio.sleep(mydelay)
+        if rec_num > ROC_AVERAGE and not steady_state: steady_state = True    # just ignore data until ringbuf is fully populated
+        if heartbeat():             # send heartbeat if ON... not if OFF.  For now, anyway
+#           if DEBUGLVL > 1: print("Need to sleep...")
+            delay_ms = mydelay * 1000 - RADIO_PAUSE
+        else:
+#           if DEBUGLVL > 1: print("Need a shorter sleep")
+            delay_ms = mydelay * 1000
+        print(f"Doing uasyncio.sleep_ms({delay_ms})")
+        await uasyncio.sleep_ms(delay_ms)
+
+
+
 try:
     uasyncio.run(main())
+    
+except uasyncio.CancelledError:
+    print("I see a cancelled uasyncio thing")
 
 except KeyboardInterrupt:
+    lcd.setRGB(0,0,0)		                # turn off backlight
     print('\n### Program Interrupted by the user')
 # turn everything OFF
     borepump.switch_pump(False)             # turn pump OFF
 #    confirm_and_switch_solenoid(False)     #  *** DO NOT DO THIS ***  If live, this will close valve while pump.
 #           to be real sure, don't even test if pump is off... just leave it... for now.
 
-    lcd.setRGB(0,0,0)		                # turn off backlight
 #    lcd_btn_task.              would like to cancel this task, but seems I can't
 
 # tidy up...
     f.flush()
     f.close()
     ev_log.write(f"{event_time} STOP")
-    dump_pump()
+    ev_log.write(f"\nMonitor shutdown at {display_time(secs_to_localtime(time.time()))}\n")
+    dump_pump_arg(borepump)
+    dump_log_ring()
+    ev_log.write("Next Pump dump...\n")
+    dump_pump_arg(presspump)
     ev_log.flush()
     ev_log.close()
 
     print("Cleanup completed")
-
-
-if __name__ == '__main__':
-    main()
+# if __name__ == '__main__':
+    # main()

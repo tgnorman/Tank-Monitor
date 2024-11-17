@@ -5,9 +5,9 @@
 import time
 
 class Pump:
-    def __init__(self, ID, start_state):            # ability to start in ON state... need to sync with RX on startup
+    def __init__(self, ID, start_state):        # ability to start in ON state... need to sync with RX on startup
         self.state = start_state
-        self.last_time_switched = time.time() if start_state else 0	# localtime tuple would be nice... but need to write a decoder
+        self.last_time_switched = time.time() 	# localtime tuple would be nice... but need to write a decoder
         self.cum_seconds_on = 0					# NOTE:  Dependency on above in calc of cum_secs in switch_pump
         self.num_switch_events = 0
         self.ID = ID
@@ -20,8 +20,8 @@ class Pump:
             print(f"Pump {self.ID}  is ON")
         else:
             print(f"Pump {self.ID} is OFF")
-        print(f"Pump {self.ID} has been on for {self.cum_seconds_on} seconds")
-        print(f"Total {self.num_switch_events} switch events for pump {self.ID}")
+#        print(f"Pump {self.ID} has been on for {self.cum_seconds_on} seconds")
+#        print(f"Total {self.num_switch_events} switch events for pump {self.ID}")
 
     def switch_pump(self, new_state):           # allow for starting in ON state
 #        print(f"In switch_pump state is {self.state} and new_state is {new_state}")

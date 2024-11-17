@@ -25,7 +25,7 @@ wf          = MyWiFi()
 ssid        = wf.ssid
 password    = wf.password
 
-DEBUGLVL    = 1                        # Multi-level debug for better analysis. 0:None, 1: Some, 2:Lots
+DEBUGLVL    = 0                        # Multi-level debug for better analysis. 0:None, 1: Some, 2:Lots
 
 # region  initial declarations
 RADIO_PAUSE = 500
@@ -67,20 +67,20 @@ def confirm_state(req, period):		            # test if reality agrees with last 
     period_count = count_next_period(period)
     if req:				# request was to switch ON... count better be well above zero!
         if period_count > min_crosses:
-            if DEBUGLVL > 0: print(f'Counted {period_count} pulses.. confirmed pump is indeed ON')
+            if DEBUGLVL > 1: print(f'Counted {period_count} pulses.. confirmed pump is indeed ON')
             msg = ("STATUS", 1)
             transmit_and_pause(msg, RADIO_PAUSE)
         else:
-            if DEBUGLVL > 0: print(f'Gak!... Only saw {period_count} pulses in {period} milliseconds.  FAIL')
+            if DEBUGLVL > 1: print(f'Gak!... Only saw {period_count} pulses in {period} milliseconds.  FAIL')
 #            sleep_ms(RADIO_PAUSE)
             send_fail(req)
     else:				# request was to switch OFF... count should be close to zero...
         if period_count < min_crosses:
-            if DEBUGLVL > 0: print(f'Counted {period_count} pulses.. confirmed pump is indeed OFF')
+            if DEBUGLVL > 1: print(f'Counted {period_count} pulses.. confirmed pump is indeed OFF')
             msg = ("STATUS", 0)
             transmit_and_pause(msg, RADIO_PAUSE)
         else:
-            if DEBUGLVL > 0: print(f'Zounds!... Saw {period_count} pulses in {period} milliseconds.  FAIL')
+            if DEBUGLVL > 1: print(f'Zounds!... Saw {period_count} pulses in {period} milliseconds.  FAIL')
 #            sleep_ms(RADIO_PAUSE)
             send_fail(req)
              
@@ -177,7 +177,7 @@ def init_clock():
 def calculate_clock_diff() -> int:
     global radio
 
-    count = 10
+    count = 1
     sum_t = 0
  #   if radio.receive():
  #       junk = radio.message
@@ -235,25 +235,25 @@ def main():
                     if message[0] == "OFF":
                         if pump_state:		        # pump is ON.. take action
                             switch_relay(False)
-                            if DEBUGLVL > 1: print(f"OFF: Switching pump OFF at {display_time(secs_to_localtime(message[1]))}")
+                            if DEBUGLVL > 0: print(f"OFF: Switching pump OFF at {display_time(secs_to_localtime(message[1]))}")
                         else:
                             if DEBUGLVL > 1: print("Ignoring OFF... already OFF")
                     elif message[0] == "ON":
                         if not pump_state:		    # pump is OFF.. take action
                             switch_relay(True)
-                            if DEBUGLVL > 1: print(f"ON:  Switching pump ON  at {display_time(secs_to_localtime(message[1]))}")
+                            if DEBUGLVL > 0: print(f"ON:  Switching pump ON  at {display_time(secs_to_localtime(message[1]))}")
                             last_ON_time = message[1]
                         else:
                             if DEBUGLVL > 1: print("Ignoring ON... already ON")
                     elif message[0] == "CLK":
-                        if DEBUGLVL > 0: print("Got CLK: ", message)
+                        if DEBUGLVL > 1: print("Got CLK: ", message)
                         rcv_time = time.ticks_ms()
                         rp = message[1]
                         time_diff = rcv_time - rp
-                        if DEBUGLVL > 0: print(f"time_diff: {time_diff} ms")
+                        if DEBUGLVL > 1: print(f"time_diff: {time_diff} ms")
                         transmit_and_pause(("CLK", time_diff), 500)
                     else:                           # unrecognised tuple received...
-                        print("WTF is message[0]?")
+                        print(f"WTF is message[0]? <{message[0]}>")
             else:
                 message = ""         
 
@@ -265,17 +265,20 @@ def main():
             if pump_state:
                 if DEBUGLVL > 1: print(f"Radio silence period: {radio_silence_secs} seconds")
                 if radio_silence_secs > MAX_NON_COMM_PERIOD:     # Houston, we have a problem...
-                    print("Max radio silence period exceeded!  Turning pump off")
-                    switch_relay(0)             # pump_state now OFF
+                    print("Max radio silence period exceeded!  Switching pump OFF")
+                    switch_relay(False)             # pump_state now OFF
                     state_changed = False       # effectively go to starting loop, waiting for incoming ON/OFF or whatever
-                    if DEBUGLVL > 0: print("Resetting to initial state")
+                    if DEBUGLVL > 1: print("Resetting to initial state")
 
-            if DEBUGLVL > 0: print(".", end="")    
+            if DEBUGLVL > 1: print(".", end="")    
             sleep_ms(LOOP_DELAY)		    # if we did NOT do implied sleep in confirm_state... delay a bit.
 
     except KeyboardInterrupt:
         print("\n***Turning pump OFF on KeyboardInterupt")
-        switch_relay(0)
+        switch_relay(False)
+
+    except Exception as e:
+        print(f"Something bad happened: {e}")
 
 # Do the kosher check for main
 if __name__ == '__main__':

@@ -23,3 +23,4 @@ class SimpleDevice(object):
 
         # The next state will be the result of the on_event function.
         self.state = self.state.on_event(event)
+        # print(f">> FSM: {str(self.state)}")
