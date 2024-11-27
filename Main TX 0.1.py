@@ -9,7 +9,7 @@ import network
 import ntptime
 import os
 import random               # just for PP detect sim...
-from time import sleep
+from time import sleep, ticks_us, ticks_diff
 from PiicoDev_Unified import sleep_ms
 from machine import Timer, Pin, ADC, Timer # Import Pin
 from Pump import Pump               # get our Pump class
@@ -47,29 +47,33 @@ LCD_ON_TIME = 5000      # millisecs
 btnflag     = False
 
 # Pins
+vsys        = ADC(3)                            # one day I'll monitor this for over/under...
 temp_sensor = ADC(4)			                # Internal temperature sensor is connected to ADC channel 4
 lcdbtn 	    = Pin(6, Pin.IN, Pin.PULL_UP)		# check if IN is correct!
 buzzer 		= Pin(16, Pin.OUT)
 presspmp    = Pin(15, Pin.IN, Pin.PULL_UP)      # prep for pressure pump monitor.  Needs output from opamp circuit
 prsspmp_led = Pin(14, Pin.OUT)
 solenoid    = Pin(2, Pin.OUT, value=0)          # MUST ensure we don't close solenoid on startup... pump may already be running !!!  Note: Low == Open
+vbus_sense  = Pin('WL_GPIO2', Pin.IN)           # external power monitoring of VBUS
 
 # Misc stuff
 conv_fac 	= 3.3 / 65535
-steady_state = False                # if not, then don't check for anomalies
-clock_adjust_ms = 0                 # will be set later... this just to ensure it is ALWAYS something
+steady_state = False                    # if not, then don't check for anomalies
+clock_adjust_ms = 0                     # will be set later... this just to ensure it is ALWAYS something
+MAX_OUTAGE  = 20                        # seconds of no power
+report_outage    = True
 
 # Gather all tank-related stuff with a view to making a class...
-housetank   = Tank("Empty")         # make my tank object
+housetank   = Tank("Empty")             # make my tank object
 
 # New state...
 fill_states = ["Overflow", "Full", "Near full", "Part full", "Near Empty", "Empty"]
 # Physical Constants
 Tank_Height = 1700
 OverFull	= 250
-Min_Dist    = 400           # full
-Max_Dist    = 1000          # empty
-Delta       = 50            # change indicating pump state change has occurred
+Min_Dist    = 400               # full
+Max_Dist    = 1400              # empty
+Delta       = 50                # change indicating pump state change has occurred
 
 # Tank variables/attributes
 depth       = 0
@@ -81,8 +85,10 @@ min_ROC     = 0.15              # experimental.. might need to tweak.  To avoid 
 # Various constants
 if DEBUGLVL > 0:
     mydelay = 5
+    FLUSH_PERIOD = 5
 else:
-    mydelay = 5            # Sleep time... seconds, not ms...  Up from 5, using calculated data
+    mydelay = 15             # Sleep time... seconds, not ms...  Up from 5, using calculated data
+    FLUSH_PERIOD = 15
 
 # logging stuff...
 log_freq    = 5
@@ -98,7 +104,7 @@ logindex        = 0         # for scrolling through error logs on screen
 # endregion
 
 # start doing stuff
-buzzer.value(0)			# turn buzzer off
+buzzer.value(0)			    # turn buzzer off
 lcd.clear()
 #rtc.getDateTime()
 
@@ -432,7 +438,7 @@ def init_radio():
     # else:
         # print("nothing received in init_radio")
     # print("Pinging RX Pico...")
-    while not ping_RX():
+    while not ping_RX():            # NOTE: This potentially an infinte block...
         print("Waiting for RX to respond...")
         sleep(1)
 
@@ -465,20 +471,6 @@ def get_initial_pump_state() -> bool:
 #    print(f"Pump Initial state is {initial_state}")
     return initial_state
 
-# def dump_pump():
-#     global borepump, ev_log
-# # write pump object stats to log file, typically when system is closed/interupted
-
-#     dc_secs = borepump.cum_seconds_on
-#     days  = int(dc_secs/(60*60*24))
-#     hours = int(dc_secs % (60*60*24) / (60*60))
-#     mins  = int(dc_secs % (60*60) / 60)
-#     secs  = int(dc_secs % 60)
-#     ev_log.write(f"\nMonitor shutdown at {display_time(secs_to_localtime(time.time()))}\n")
-#     ev_log.write(f"Last switch time:   {display_time(secs_to_localtime(borepump.last_time_switched))}\n")
-#     ev_log.write(f"Total switches this period: {borepump.num_switch_events}\n")
-#     ev_log.write(f"Cumulative runtime: {days} days {hours} hours {mins} minutes {secs} seconds\n")
-
 def dump_pump_arg(p:Pump):
     global ev_log
 
@@ -488,7 +480,7 @@ def dump_pump_arg(p:Pump):
     ev_log.write(f"Stats for pump ID {pid}\n")
 
     dc_secs = p.cum_seconds_on
-    days  = int(dc_secs/(60*60*24))
+    days  = int(dc_secs / (60*60*24))
     hours = int(dc_secs % (60*60*24) / (60*60))
     mins  = int(dc_secs % (60*60) / 60)
     secs  = int(dc_secs % 60)
@@ -508,7 +500,7 @@ def connect_wifi():
     if not wlan.isconnected():
         print('Connecting to network...')
         wlan.connect(ssid, password)
-        while not wlan.isconnected():
+        while not wlan.isconnected():       # another potential infinite block...
             print(">", end="")
             time.sleep(1)
     system.on_event("ACK WIFI")
@@ -517,8 +509,8 @@ def connect_wifi():
 def secs_to_localtime(s):
     tupltime = time.localtime(s)
     year = tupltime[0]
-    DST_end   = time.mktime((year, 4,(31-(int(5*year/4+4))%7),2,0,0,0,0,0)) #Time of April change to end DST
-    DST_start = time.mktime((year,10,(7-(int(year*5/4+4)) % 7),2,0,0,0,0,0)) #Time of October change to start DST
+    DST_end   = time.mktime((year, 4,(31-(int(5*year/4+4))%7),2,0,0,0,0,0))     # Time of April change to end DST
+    DST_start = time.mktime((year,10,(7-(int(year*5/4+4)) % 7),2,0,0,0,0,0))    # Time of October change to start DST
     
     if DST_end < s and s < DST_start:		# then adjust
 #        print("Winter ... adding 9.5 hours")
@@ -611,7 +603,7 @@ def init_ringbuffers():
     logindex = 0
 
 def init_everything_else():
-    global borepump, steady_state, free_space_KB, presspump
+    global borepump, steady_state, free_space_KB, presspump, vbus_on_time
     
     lcd.setRGB(170,170,138)   
 # Get the current pump state and init my object    
@@ -633,7 +625,9 @@ def init_everything_else():
     init_ringbuffers()
 
 # ensure we start out right...
-    steady_state_= False
+    steady_state = False
+
+    vbus_on_time = time.time()      # init this... so we can test external
 
 def heartbeat() -> bool:
     global borepump
@@ -667,7 +661,7 @@ def confirm_and_switch_solenoid(state):
         switch_valve(borepump.state)
     else:
         if borepump.state:          # not good to turn valve off while pump is ON !!!
-            raiseAlarm("Solenoid OFF Invalid - Pump is!", borepump.state )
+            raiseAlarm("Solenoid OFF Invalid - Pump is ", borepump.state )
         else:
             if DEBUGLVL > 0: print("Turning valve OFF")
             switch_valve(False)
@@ -692,6 +686,59 @@ def sim_pressure_pump_detect(x):
 
 def sim_solenoid_detect():
     pass
+
+async def regular_flush(m):
+    while True:
+        f.flush()
+        ev_log.flush()
+        await uasyncio.sleep(m)
+
+# def mypp_handler(pin):
+#     global l, mypp
+
+#     mypp.irq(handler=None)
+#     v = pin.value()
+#     if v:
+#         print(str_HI)
+#         l.write(str_HI)
+#     else:
+#         print(str_LO)
+#         l.write(str_LO)
+# #    l.flush()
+#     sleep(1)
+#     mypp.irq(trigger=Pin.IRQ_RISING|Pin.IRQ_FALLING, handler=mypp_handler)
+
+def housekeeping(close_files: bool):
+    print("Flushing data to flash...")
+    start_time = time.ticks_us()
+    f.flush()
+    ev_log.write(f"{event_time} STOP")
+    ev_log.write(f"\nMonitor shutdown at {display_time(secs_to_localtime(time.time()))}\n")
+    dump_pump_arg(borepump)
+    dump_log_ring()
+    ev_log.write("Next Pump dump...\n")
+    dump_pump_arg(presspump)
+    ev_log.flush()
+    end_time = time.ticks_us()
+    if close_files:
+        f.close()
+        ev_log.close()
+
+    print(f"Cleanup completed in {time.ticks_diff(end_time, start_time)} microseconds")
+
+def monitor_vbus():
+    global vbus_on_time, report_outage
+
+    now = time.time()
+    if vbus_sense.value():
+        vbus_on_time = now
+        report_outage = True
+    else:
+        if (now - vbus_on_time >= MAX_OUTAGE) and report_outage:
+            s = f">>: {display_time(secs_to_localtime(time.time()))}  Power off for more than {MAX_OUTAGE} seconds\n"
+            ev_log.write(s)             # seconds since last saw power 
+            report_outage = False
+            housekeeping(False)
 
 async def main():
     global event_time, ev_log, steady_state, housetank, system
@@ -748,8 +795,9 @@ async def main():
 
     ev_log.write(f"\nPump Monitor starting: {event_time}\n")
 
-# start up lcd_button widget
-    uasyncio.create_task(check_lcd_btn())
+# start coroutines..
+    uasyncio.create_task(check_lcd_btn())                   # start up lcd_button widget
+    uasyncio.create_task(regular_flush(FLUSH_PERIOD))       # flush data every 15 minutes
     
 
     while True:
@@ -761,20 +809,19 @@ async def main():
         if steady_state: checkForAnomalies()	    # test for weirdness
         rec_num += 1
         if rec_num > ROC_AVERAGE and not steady_state: steady_state = True    # just ignore data until ringbuf is fully populated
+        delay_ms = mydelay * 1000
         if heartbeat():             # send heartbeat if ON... not if OFF.  For now, anyway
 #           if DEBUGLVL > 1: print("Need to sleep...")
-            delay_ms = mydelay * 1000 - RADIO_PAUSE
-        else:
-#           if DEBUGLVL > 1: print("Need a shorter sleep")
-            delay_ms = mydelay * 1000
-        print(f"Doing uasyncio.sleep_ms({delay_ms})")
-        await uasyncio.sleep_ms(delay_ms)
+            delay_ms -= RADIO_PAUSE
+#        print(f"Doing uasyncio.sleep_ms({delay_ms})")
+        monitor_vbus()          # escape clause... to trigger dump...
 
+        await uasyncio.sleep_ms(delay_ms)
 
 
 try:
     uasyncio.run(main())
-    
+
 except uasyncio.CancelledError:
     print("I see a cancelled uasyncio thing")
 
@@ -789,17 +836,7 @@ except KeyboardInterrupt:
 #    lcd_btn_task.              would like to cancel this task, but seems I can't
 
 # tidy up...
-    f.flush()
-    f.close()
-    ev_log.write(f"{event_time} STOP")
-    ev_log.write(f"\nMonitor shutdown at {display_time(secs_to_localtime(time.time()))}\n")
-    dump_pump_arg(borepump)
-    dump_log_ring()
-    ev_log.write("Next Pump dump...\n")
-    dump_pump_arg(presspump)
-    ev_log.flush()
-    ev_log.close()
+    housekeeping(True)
 
-    print("Cleanup completed")
 # if __name__ == '__main__':
     # main()
