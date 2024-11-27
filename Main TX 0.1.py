@@ -55,25 +55,26 @@ presspmp    = Pin(15, Pin.IN, Pin.PULL_UP)      # prep for pressure pump monitor
 prsspmp_led = Pin(14, Pin.OUT)
 solenoid    = Pin(2, Pin.OUT, value=0)          # MUST ensure we don't close solenoid on startup... pump may already be running !!!  Note: Low == Open
 vbus_sense  = Pin('WL_GPIO2', Pin.IN)           # external power monitoring of VBUS
+led         = Pin('LED', Pin.OUT)
 
 # Misc stuff
 conv_fac 	= 3.3 / 65535
-steady_state = False                    # if not, then don't check for anomalies
-clock_adjust_ms = 0                     # will be set later... this just to ensure it is ALWAYS something
-MAX_OUTAGE  = 20                        # seconds of no power
+steady_state = False                # if not, then don't check for anomalies
+clock_adjust_ms = 0                 # will be set later... this just to ensure it is ALWAYS something
+MAX_OUTAGE  = 20                     # seconds of no power
 report_outage    = True
 
 # Gather all tank-related stuff with a view to making a class...
-housetank   = Tank("Empty")             # make my tank object
+housetank   = Tank("Empty")         # make my tank object
 
 # New state...
 fill_states = ["Overflow", "Full", "Near full", "Part full", "Near Empty", "Empty"]
 # Physical Constants
 Tank_Height = 1700
 OverFull	= 250
-Min_Dist    = 400               # full
-Max_Dist    = 1400              # empty
-Delta       = 50                # change indicating pump state change has occurred
+Min_Dist    = 400           # full
+Max_Dist    = 1400          # empty
+Delta       = 50            # change indicating pump state change has occurred
 
 # Tank variables/attributes
 depth       = 0
@@ -82,13 +83,14 @@ depth_ROC   = 0
 max_ROC     = 0.2			    # change in metres/minute... soon to be measured on SMA/ring buffer
 min_ROC     = 0.15              # experimental.. might need to tweak.  To avoid noise in anomaly tests
 
+FLUSH_PERIOD = 2
 # Various constants
 if DEBUGLVL > 0:
     mydelay = 5
-    FLUSH_PERIOD = 5
+#    FLUSH_PERIOD = 5
 else:
-    mydelay = 15             # Sleep time... seconds, not ms...  Up from 5, using calculated data
-    FLUSH_PERIOD = 15
+    mydelay = 5            # Sleep time... seconds, not ms...  Up from 5, using calculated data
+#    FLUSH_PERIOD = 15
 
 # logging stuff...
 log_freq    = 5
@@ -438,7 +440,7 @@ def init_radio():
     # else:
         # print("nothing received in init_radio")
     # print("Pinging RX Pico...")
-    while not ping_RX():            # NOTE: This potentially an infinte block...
+    while not ping_RX():
         print("Waiting for RX to respond...")
         sleep(1)
 
@@ -471,6 +473,20 @@ def get_initial_pump_state() -> bool:
 #    print(f"Pump Initial state is {initial_state}")
     return initial_state
 
+# def dump_pump():
+#     global borepump, ev_log
+# # write pump object stats to log file, typically when system is closed/interupted
+
+#     dc_secs = borepump.cum_seconds_on
+#     days  = int(dc_secs/(60*60*24))
+#     hours = int(dc_secs % (60*60*24) / (60*60))
+#     mins  = int(dc_secs % (60*60) / 60)
+#     secs  = int(dc_secs % 60)
+#     ev_log.write(f"\nMonitor shutdown at {display_time(secs_to_localtime(time.time()))}\n")
+#     ev_log.write(f"Last switch time:   {display_time(secs_to_localtime(borepump.last_time_switched))}\n")
+#     ev_log.write(f"Total switches this period: {borepump.num_switch_events}\n")
+#     ev_log.write(f"Cumulative runtime: {days} days {hours} hours {mins} minutes {secs} seconds\n")
+
 def dump_pump_arg(p:Pump):
     global ev_log
 
@@ -480,7 +496,7 @@ def dump_pump_arg(p:Pump):
     ev_log.write(f"Stats for pump ID {pid}\n")
 
     dc_secs = p.cum_seconds_on
-    days  = int(dc_secs / (60*60*24))
+    days  = int(dc_secs/(60*60*24))
     hours = int(dc_secs % (60*60*24) / (60*60))
     mins  = int(dc_secs % (60*60) / 60)
     secs  = int(dc_secs % 60)
@@ -500,7 +516,7 @@ def connect_wifi():
     if not wlan.isconnected():
         print('Connecting to network...')
         wlan.connect(ssid, password)
-        while not wlan.isconnected():       # another potential infinite block...
+        while not wlan.isconnected():
             print(">", end="")
             time.sleep(1)
     system.on_event("ACK WIFI")
@@ -509,8 +525,8 @@ def connect_wifi():
 def secs_to_localtime(s):
     tupltime = time.localtime(s)
     year = tupltime[0]
-    DST_end   = time.mktime((year, 4,(31-(int(5*year/4+4))%7),2,0,0,0,0,0))     # Time of April change to end DST
-    DST_start = time.mktime((year,10,(7-(int(year*5/4+4)) % 7),2,0,0,0,0,0))    # Time of October change to start DST
+    DST_end   = time.mktime((year, 4,(31-(int(5*year/4+4))%7),2,0,0,0,0,0)) #Time of April change to end DST
+    DST_start = time.mktime((year,10,(7-(int(year*5/4+4)) % 7),2,0,0,0,0,0)) #Time of October change to start DST
     
     if DST_end < s and s < DST_start:		# then adjust
 #        print("Winter ... adding 9.5 hours")
@@ -736,9 +752,20 @@ def monitor_vbus():
     else:
         if (now - vbus_on_time >= MAX_OUTAGE) and report_outage:
             s = f">>: {display_time(secs_to_localtime(time.time()))}  Power off for more than {MAX_OUTAGE} seconds\n"
-            ev_log.write(s)             # seconds since last saw power 
+            ev_log.write(s)  # seconds since last saw power 
             report_outage = False
             housekeeping(False)
+
+async def blinkx2():
+    while True:
+        led.value(1)
+        sleep_ms(50)
+        led.value(0)
+        sleep_ms(50)
+        led.value(1)
+        sleep_ms(50)
+        led.value(0)
+        await uasyncio.sleep_ms(1000)
 
 async def main():
     global event_time, ev_log, steady_state, housetank, system
@@ -796,9 +823,9 @@ async def main():
     ev_log.write(f"\nPump Monitor starting: {event_time}\n")
 
 # start coroutines..
-    uasyncio.create_task(check_lcd_btn())                   # start up lcd_button widget
-    uasyncio.create_task(regular_flush(FLUSH_PERIOD))       # flush data every 15 minutes
-    
+    uasyncio.create_task(check_lcd_btn())                       # start up lcd_button widget
+    uasyncio.create_task(regular_flush(FLUSH_PERIOD))           # flush data every 15 minutes
+    uasyncio.create_task(blinkx2())                             # visual indicator we are running
 
     while True:
         updateClock()			# get datetime stuff
@@ -811,9 +838,7 @@ async def main():
         if rec_num > ROC_AVERAGE and not steady_state: steady_state = True    # just ignore data until ringbuf is fully populated
         delay_ms = mydelay * 1000
         if heartbeat():             # send heartbeat if ON... not if OFF.  For now, anyway
-#           if DEBUGLVL > 1: print("Need to sleep...")
             delay_ms -= RADIO_PAUSE
-#        print(f"Doing uasyncio.sleep_ms({delay_ms})")
         monitor_vbus()          # escape clause... to trigger dump...
 
         await uasyncio.sleep_ms(delay_ms)
