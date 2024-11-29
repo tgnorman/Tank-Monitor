@@ -1,0 +1,43 @@
+{
+    "title": "Main Menu",
+    "items": [
+      {
+        "title": "Settings",
+        "items": [
+          {
+            "title": "Network",
+            "items": [
+              {
+                "title": "Deep Down",
+                "items": [
+                  { "title": "Deep 1", "action": "Do something 1"},
+                  { "title": "Deep 2", "action": "Something else 2"},
+                  { "title": "Back to Network", "action": "go back"}                 
+                ]
+              },
+              { "title": "Wi-Fi", "action": "connect_wifi" },
+              { "title": "Bluetooth", "action": "connect_bluetooth" },
+              { "title": "Go back to Settings", "action": "go back"}
+            ]
+          },
+          {
+            "title": "Display",
+            "items": [
+              { "title": "Brightness", "action": "adjust_brightness" },
+              { "title": "Contrast", "action": "adjust_contrast" },
+              { "title": "Go back to Settings", "action": "go back"}
+            ]
+          }
+        ]
+      },
+      {
+        "title": "Info",
+        "items": [
+          { "title": "System", "action": "show_system_info" },
+          { "title": "About", "action": "show_about" },
+          { "title": "Go back to Main", "action": "go back"}
+        ]
+      }
+    ]
+  }
+  
