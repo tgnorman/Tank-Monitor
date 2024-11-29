@@ -1,42 +1,49 @@
 {
-    "title": "Main Menu",
+    "title": "L0 Main Menu",
     "items": [
       {
-        "title": "Settings",
+        "title": "L1.1 Settings->",
         "items": [
           {
-            "title": "Network",
+            "title": "  L2.1 Network->",
             "items": [
+              { "title": "    L2.1.1 Wi-Fi", "action": "connect_wifi" },
+              { "title": "    L2.1.2 Bluetooth", "action": "connect_bluetooth" },
               {
-                "title": "Deep Down",
+                "title": "    L2.1.3 Deep Down->",
                 "items": [
-                  { "title": "Deep 1", "action": "Do something 1"},
-                  { "title": "Deep 2", "action": "Something else 2"},
-                  { "title": "Back to Network", "action": "go back"}                 
+                  { "title": "      L2.1.3.1 Deep 1", "action": "Do something 1"},
+                  { "title": "      L2.1.3.2 Deep 2", "action": "Something else 2"},
+                  { "title": "      L2.1.3.3 Back to Network", "action": "go back"}                 
                 ]
               },
-              { "title": "Wi-Fi", "action": "connect_wifi" },
-              { "title": "Bluetooth", "action": "connect_bluetooth" },
-              { "title": "Go back to Settings", "action": "go back"}
+              { "title": "    L2.1.4 Email", "action": "send email" },
+              { "title": "    L2.1.5 Go back to Settings", "action": "go back"}
             ]
           },
           {
-            "title": "Display",
+            "title": "  L2.2 Display->",
             "items": [
-              { "title": "Brightness", "action": "adjust_brightness" },
-              { "title": "Contrast", "action": "adjust_contrast" },
-              { "title": "Go back to Settings", "action": "go back"}
+              { "title": "    L2.2.1 Brightness", "action": "adjust_brightness" },
+              { "title": "    L2.2.2 Contrast", "action": "adjust_contrast" },
+              { "title": "    L2.2.3 Go back to Settings", "action": "go back"}
             ]
+          },
+          {
+            "title": "  L2.3 New Go Back", "action":"go back"
           }
         ]
       },
       {
-        "title": "Info",
+        "title": "L1.2 Info->",
         "items": [
-          { "title": "System", "action": "show_system_info" },
-          { "title": "About", "action": "show_about" },
-          { "title": "Go back to Main", "action": "go back"}
+          { "title": "  L1.2.1 System", "action": "show_system_info" },
+          { "title": "  L1.2.2 About", "action": "show_about" },
+          { "title": "  L1.2.3 Go back to Main", "action": "go back"}
         ]
+      },
+      {
+        "title": "L1.3 Exit", "action": "Exit Menu"
       }
     ]
   }
