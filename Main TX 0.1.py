@@ -41,7 +41,7 @@ lcd 		= RGB1602.RGB1602(16,2)
 radio       = PiicoDev_Transceiver()
 RADIO_PAUSE = 1000
 MIN_FREE_SPACE = 100                # in KB...
-MAX_CONTINUOUS_RUNTIME = 4 * 60 * 60        # 6 hours max runtime.  More than this looks like trouble
+MAX_CONTINUOUS_RUNTIME = 3 * 60 * 60            # 3 hours max runtime.  More than this looks like trouble
 
 LCD_ON_TIME = 5000      # millisecs
 btnflag     = False
@@ -72,7 +72,7 @@ fill_states = ["Overflow", "Full", "Near full", "Part full", "Near Empty", "Empt
 # Physical Constants
 Tank_Height = 1700
 OverFull	= 250
-Min_Dist    = 400           # full
+Min_Dist    = 500           # full
 Max_Dist    = 1400          # empty
 Delta       = 50            # change indicating pump state change has occurred
 
@@ -366,10 +366,10 @@ def dump_log_ring():
 def raiseAlarm(param, val):
     global logring, logindex
     global ev_log, event_time
-    str = f"{event_time} ALARM {param}, value {val:.3g}"
-    print(str)
-    ev_log.write(f"{str}\n")
-    add_to_log_ring(str)
+    logstr = f"{event_time} ALARM {param}, value {val:.3g}"
+    print(logstr)
+    ev_log.write(f"{logstr}\n")
+    add_to_log_ring(logstr)
     
 def checkForAnomalies():
     global borepump, max_ROC, depth_ROC, tank_is, MAX_CONTINUOUS_RUNTIME
@@ -473,30 +473,15 @@ def get_initial_pump_state() -> bool:
 #    print(f"Pump Initial state is {initial_state}")
     return initial_state
 
-# def dump_pump():
-#     global borepump, ev_log
-# # write pump object stats to log file, typically when system is closed/interupted
-
-#     dc_secs = borepump.cum_seconds_on
-#     days  = int(dc_secs/(60*60*24))
-#     hours = int(dc_secs % (60*60*24) / (60*60))
-#     mins  = int(dc_secs % (60*60) / 60)
-#     secs  = int(dc_secs % 60)
-#     ev_log.write(f"\nMonitor shutdown at {display_time(secs_to_localtime(time.time()))}\n")
-#     ev_log.write(f"Last switch time:   {display_time(secs_to_localtime(borepump.last_time_switched))}\n")
-#     ev_log.write(f"Total switches this period: {borepump.num_switch_events}\n")
-#     ev_log.write(f"Cumulative runtime: {days} days {hours} hours {mins} minutes {secs} seconds\n")
-
 def dump_pump_arg(p:Pump):
     global ev_log
 
-    pid = p.ID
 # write pump object stats to log file, typically when system is closed/interupted
     ev_log.flush()
-    ev_log.write(f"Stats for pump ID {pid}\n")
+    ev_log.write(f"Stats for pump {p.ID}\n")
 
     dc_secs = p.cum_seconds_on
-    days  = int(dc_secs/(60*60*24))
+    days  = int(dc_secs / (60*60*24))
     hours = int(dc_secs % (60*60*24) / (60*60))
     mins  = int(dc_secs % (60*60) / 60)
     secs  = int(dc_secs % 60)
@@ -623,7 +608,7 @@ def init_everything_else():
     
     lcd.setRGB(170,170,138)   
 # Get the current pump state and init my object    
-    borepump = Pump(0, get_initial_pump_state())
+    borepump = Pump("BorePump", get_initial_pump_state())
 
 # On start, valve should now be open... but just to be sure... and to verify during testing...
     if borepump.state:
@@ -635,7 +620,7 @@ def init_everything_else():
             print("At startup, BorePump is OFF ... closing valve")
         solenoid.value(1)           # be very careful... inverse logic!
 
-    presspump = Pump(1, False)
+    presspump = Pump("PressurePump", False)
     free_space_KB = free_space()
 
     init_ringbuffers()
@@ -767,7 +752,7 @@ async def blinkx2():
         led.value(0)
         await uasyncio.sleep_ms(1000)
 
-async def main():
+async def do_main_loop():
     global event_time, ev_log, steady_state, housetank, system
 
     print("RUNNING START")
@@ -843,25 +828,25 @@ async def main():
 
         await uasyncio.sleep_ms(delay_ms)
 
+def main() -> None:
+    try:
+        uasyncio.run(do_main_loop())
 
-try:
-    uasyncio.run(main())
+    except uasyncio.CancelledError:
+        print("I see a cancelled uasyncio thing")
 
-except uasyncio.CancelledError:
-    print("I see a cancelled uasyncio thing")
+    except KeyboardInterrupt:
+        lcd.setRGB(0,0,0)		                # turn off backlight
+        print('\n### Program Interrupted by the user')
+    # turn everything OFF
+        borepump.switch_pump(False)             # turn pump OFF
+    #    confirm_and_switch_solenoid(False)     #  *** DO NOT DO THIS ***  If live, this will close valve while pump.
+    #           to be real sure, don't even test if pump is off... just leave it... for now.
 
-except KeyboardInterrupt:
-    lcd.setRGB(0,0,0)		                # turn off backlight
-    print('\n### Program Interrupted by the user')
-# turn everything OFF
-    borepump.switch_pump(False)             # turn pump OFF
-#    confirm_and_switch_solenoid(False)     #  *** DO NOT DO THIS ***  If live, this will close valve while pump.
-#           to be real sure, don't even test if pump is off... just leave it... for now.
+    #    lcd_btn_task.              would like to cancel this task, but seems I can't
 
-#    lcd_btn_task.              would like to cancel this task, but seems I can't
+    # tidy up...
+        housekeeping(True)
 
-# tidy up...
-    housekeeping(True)
-
-# if __name__ == '__main__':
-    # main()
+if __name__ == '__main__':
+     main()

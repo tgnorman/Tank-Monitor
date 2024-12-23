@@ -88,10 +88,7 @@ def check_state(period) -> bool:
     expected_crosses = period / 50			# 50Hz...
     min_crosses = expected_crosses / 2		# allow for some inaccuracies...
     period_count = count_next_period(period)
-    if period_count > min_crosses:
-        return True
-    else:
-        return False
+    return period_count > min_crosses
 
 def switch_relay(state):
     global pump_state, state_changed
@@ -193,16 +190,42 @@ def calculate_clock_diff() -> int:
                     sum_t += time_diff
     return int(sum_t / count)
 
+def init_logging():
+    global year, month, day, shortyear
+    global f, event_log, pp_log
+
+    now   = secs_to_localtime(time.time())      # getcurrent time, convert to local SA time
+    year  = now[0]
+    month = now[1]
+    day   = now[2]
+    shortyear = str(year)[2:]
+    datestr = f"{shortyear}{month:02}{day:02}"
+    eventlogname = f'RX events {datestr}.txt'
+    event_log = open(eventlogname, "a")
+
+def housekeeping(close_files: bool):
+    print("Flushing data to flash...")
+
+    event_log.write(f"Receiver shutdown at {display_time(secs_to_localtime(time.time()))}\n")
+    event_log.flush()
+    if close_files:
+        event_log.close()
+
 def main():
     global bore_ctl, detect, led, pump_state, state_changed, last_ON_time, last_comms_time
 
     init_clock()
+    init_logging()
     start_time = time.time()
     state_changed = False
-    print(f"Receiver starting at {display_time(secs_to_localtime(start_time))}")
+    logstr = f"Receiver starting at {display_time(secs_to_localtime(start_time))}"
+    print(logstr)
+    event_log.write(logstr + "\n")
+
     if check_state(500):             # pump is already ON...
         pump_state = True
         print("Pump is ON at start-up")
+        event_log.write("Pump is ON at start-up\n")
         last_ON_time = start_time
     else:                       # pump is OFF at start...normal
         pump_state = False
@@ -235,13 +258,17 @@ def main():
                     if message[0] == "OFF":
                         if pump_state:		        # pump is ON.. take action
                             switch_relay(False)
-                            if DEBUGLVL > 0: print(f"OFF: Switching pump OFF at {display_time(secs_to_localtime(message[1]))}")
+                            logstr = f"OFF: Switching pump OFF at {display_time(secs_to_localtime(message[1]))}"
+                            event_log.write(logstr + "\n")
+                            if DEBUGLVL > 0: print(logstr)
                         else:
                             if DEBUGLVL > 1: print("Ignoring OFF... already OFF")
                     elif message[0] == "ON":
                         if not pump_state:		    # pump is OFF.. take action
                             switch_relay(True)
-                            if DEBUGLVL > 0: print(f"ON:  Switching pump ON  at {display_time(secs_to_localtime(message[1]))}")
+                            logstr = f"ON:  Switching pump ON  at {display_time(secs_to_localtime(message[1]))}"
+                            event_log.write(logstr + "\n")
+                            if DEBUGLVL > 0: print(logstr)
                             last_ON_time = message[1]
                         else:
                             if DEBUGLVL > 1: print("Ignoring ON... already ON")
@@ -261,11 +288,14 @@ def main():
                 confirm_state(pump_state, 500)  # implied sleep...
                 state_changed = False			# reset so we don't keep sending same data if nothing switched
             
-            radio_silence_secs = time.time() - last_comms_time
+            now = time.time()
+            radio_silence_secs = now - last_comms_time
             if pump_state:
                 if DEBUGLVL > 1: print(f"Radio silence period: {radio_silence_secs} seconds")
                 if radio_silence_secs > MAX_NON_COMM_PERIOD:     # Houston, we have a problem...
-                    print("Max radio silence period exceeded!  Switching pump OFF")
+                    logstr = f"{display_time(secs_to_localtime(now))} Max radio silence period exceeded!  Switching pump OFF"
+                    print(logstr)
+                    event_log.write(logstr + "\n")
                     switch_relay(False)             # pump_state now OFF
                     state_changed = False       # effectively go to starting loop, waiting for incoming ON/OFF or whatever
                     if DEBUGLVL > 1: print("Resetting to initial state")
@@ -274,8 +304,11 @@ def main():
             sleep_ms(LOOP_DELAY)		    # if we did NOT do implied sleep in confirm_state... delay a bit.
 
     except KeyboardInterrupt:
-        print("\n***Turning pump OFF on KeyboardInterupt")
+        logstr = "\n***Turning pump OFF on KeyboardInterupt"
+        print(logstr)
+        event_log.write(logstr + "\n")
         switch_relay(False)
+        housekeeping(True)
 
     except Exception as e:
         print(f"Something bad happened: {e}")

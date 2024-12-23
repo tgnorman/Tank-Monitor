@@ -11,10 +11,12 @@ enc_b   = Pin(20, Pin.IN)
 
 last_time = 0 # the last time we pressed the button
 
+menu_file:str = "menu2.json"
+
 # Load the menu from JSON file
-with open("menu.json") as f:
+with open(menu_file) as f:
     menu = json.load(f)
-print("opened JSON file...")
+print(f"opened JSON file {menu_file}...")
 
 class MenuNavigator:
     def __init__(self, menu):
