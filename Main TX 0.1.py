@@ -5,21 +5,101 @@ from PiicoDev_RV3028 import PiicoDev_RV3028
 from PiicoDev_Transceiver import PiicoDev_Transceiver
 import RGB1602
 import time
+import utime
 import network
 import ntptime
 import os
 import random               # just for PP detect sim...
-from time import sleep, ticks_us, ticks_diff
+from utime import sleep, ticks_us, ticks_diff
 from PiicoDev_Unified import sleep_ms
 from machine import Timer, Pin, ADC, Timer # Import Pin
 from Pump import Pump               # get our Pump class
 from Tank import Tank
 from secrets import MyWiFi
 import uasyncio
+from MenuNavigator import MenuNavigator
 
 # OK... major leap... intro to FSM...
 from SM_SimpleFSM import SimpleDevice
 
+def display_depth():
+    display_mode = "depth"
+    print(f'{display_mode=}')
+
+def display_pressure():
+    display_mode = "pressure"
+    print(f'{display_mode=}')
+
+def my_exit():
+    global process_menu
+    process_menu = False
+
+def set_delay():
+    sleep_time = 0
+
+def my_go_back():
+    navigator.go_back()
+               
+prod_menu_dict = {
+    "title": "L0 Main Menu",
+    "items": [
+      {
+        "title": "1 Display->",
+        "items": [
+          { "title": "1.1 Depth", "action": display_depth},
+          { "title": "1.2 Pressure", "action": display_pressure},
+          { "title": "1.3 Go Back", "action": my_go_back
+          }
+        ]
+      },
+      {
+        "title": "2 History->",
+        "items": [
+          { "title": "2.1 Events", "action": "Events"},
+          { "title": "2.2 Depth", "action": "Depth"},
+          { "title": "2.3 Pressure", "action": "Pressure"},
+          { "title": "2.4 Manual Switch", "action": "Manual Switch"},
+          { "title": "2.5 Timer", "action": "Timer"},
+          { "title": "2.6 Stats", "action": "Stats"},
+          { "title": "2.7 Go back", "action": my_go_back}
+        ]
+      },
+      {
+        "title": "3 Actions->",
+        "items": [
+          { "title": "3.1 Flush", "action": "Flush Data"},
+          { "title": "3.2 Reset", "action": "Soft Reset"},
+          { "title": "3.3 Go back", "action": my_go_back}
+        ]
+      },
+      {
+        "title": "4 Config->",
+        "items": [
+          { "title": "4.1 Show", "action": "Show Config"},
+          { "title": "4.2 Set Config->",
+            "items": [
+                { "title": " Delay", "value": 15},
+                { "title": " B/L Time", "value": 20 },
+                { "title": " Min Depth", "value" : 400},
+                { "title": " Max Depth", "value": 1700},
+                { "title": " Go back", "action": my_go_back}
+            ]
+          },
+          { "title": "4.3 Save Config", "action": "Save Config"},
+          { "title": "4.4 Load Config", "action": "Load Config"},
+          { "title": "4.5 Go back", "action": my_go_back}
+        ]
+      },
+    {
+        "title": "5 Exit", "action": my_exit
+    }
+    ]
+}
+
+  
+# current_menu = menu_structure["Main Menu"]
+#print(f'current_menu is type {type(current_menu)}')
+new_menu = prod_menu_dict
 system      = SimpleDevice()            #initialise my FSM.
 wf          = MyWiFi()
 
@@ -56,6 +136,46 @@ prsspmp_led = Pin(14, Pin.OUT)
 solenoid    = Pin(2, Pin.OUT, value=0)          # MUST ensure we don't close solenoid on startup... pump may already be running !!!  Note: Low == Open
 vbus_sense  = Pin('WL_GPIO2', Pin.IN)           # external power monitoring of VBUS
 led         = Pin('LED', Pin.OUT)
+
+# Create pins for encoder lines and the onboard button
+
+enc_btn     = Pin(18, Pin.IN, Pin.PULL_UP)
+enc_a       = Pin(19, Pin.IN)
+enc_b       = Pin(20, Pin.IN)
+
+count       = 0
+
+navigator   = MenuNavigator(new_menu, lcd)
+# Define a handler function for encoder line A
+def encoder_a_IRQ(pin):
+    global last_time
+
+    new_time = utime.ticks_ms()
+    if (new_time - last_time) > 200:
+        if enc_a.value() == enc_b.value():
+            navigator.next()
+        else:
+            navigator.previous()
+    last_time = new_time
+
+def encoder_btn_IRQ(pin):
+    global last_time
+
+    new_time = utime.ticks_ms()
+    # if it has been more that 1/5 of a second since the last event, we have a new event
+    mode = navigator.mode
+    if (new_time - last_time) > 200:
+      if mode == "menu":
+          navigator.enter()
+      elif mode == "value_change":
+          navigator.set()
+    last_time = new_time
+
+def rotary_menu_mode():
+    
+  # Initialise the interupt to fire on rising edges
+  enc_a.irq(trigger=Pin.IRQ_RISING, handler=encoder_a_IRQ)
+  enc_btn.irq(trigger=Pin.IRQ_FALLING, handler=encoder_btn_IRQ)
 
 # Misc stuff
 conv_fac 	= 3.3 / 65535
@@ -622,6 +742,8 @@ def init_everything_else():
 
     presspump = Pump("PressurePump", False)
     free_space_KB = free_space()
+    if free_space_KB < MIN_FREE_SPACE:
+        raiseAlarm("Free space", free_space_KB)
 
     init_ringbuffers()
 
