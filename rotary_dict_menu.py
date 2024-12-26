@@ -38,33 +38,19 @@ def encoder_btn_IRQ(pin):
 
     new_time = utime.ticks_ms()
     # if it has been more that 1/5 of a second since the last event, we have a new event
-    if (new_time - last_time) > 500: 
-        navigator.enter()
-        last_time = new_time
+    mode = navigator.mode
+    if (new_time - last_time) > 200:
+      if mode == "menu":
+          navigator.enter()
+      elif mode == "value_change":
+          navigator.set()
+    last_time = new_time
 
 def rotary_menu_mode():
     
   # Initialise the interupt to fire on rising edges
   enc_a.irq(trigger=Pin.IRQ_RISING, handler=encoder_a_IRQ)
   enc_btn.irq(trigger=Pin.IRQ_FALLING, handler=encoder_btn_IRQ)
-
-
-# def show_help():
-#     print("Help Menu Opened")
-
-# def start_game():
-#     print("Starting Game...")
-
-# def exit_program():
-#     print("Exiting Program...")
-
-# menu_structure = {
-#     "Main Menu": {
-#         "Play": {"action": start_game},
-#         "Help": {"action": show_help},
-#         "Exit": {"action": exit_program},
-#     }
-# }
 
 def display_depth():
     display_mode = "depth"
@@ -122,11 +108,11 @@ prod_menu_dict = {
           { "title": "4.1 Show", "action": "Show Config"},
           { "title": "4.2 Set Config->",
             "items": [
-                { "title": " 4.2.1 Delay", "action": "Set Delay"},
-                { "title": " 4.2.2 B/L Time", "action": "Set B/L Time"},
-                { "title": " 4.2.3 Min Depth", "action": "Set MIN"},
-                { "title": " 4.2.4 Max Depth", "action": "Set MAX"},
-                { "title": " 4.2.5 Go back", "action": my_go_back}
+                { "title": " Delay", "value": 15},
+                { "title": " B/L Time", "value": 20 },
+                { "title": " Min Depth", "value" : 400},
+                { "title": " Max Depth", "value": 1700},
+                { "title": " Go back", "action": my_go_back}
             ]
           },
           { "title": "4.3 Save Config", "action": "Save Config"},

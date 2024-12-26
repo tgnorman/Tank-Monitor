@@ -9,6 +9,9 @@ class MenuNavigator:
         self.current_level = [menu]  # Stack to keep track of menu levels
         self.current_index = 0
         self.device = dev
+        self.mode = "menu"
+        self.paramval = 0
+        self.new_value = 0
         self.display_current_item()
 
     def get_current_item(self):
@@ -20,22 +23,38 @@ class MenuNavigator:
         self.device.setCursor(0,0)
         self.device.printout(item['title'])
         print(item['title'])
+        if "value" in item:
+            self.device.setCursor(0, 1)
+            self.device.printout(item['value'])
 #        print("Current Item: ", item)
 #        print(f"Current Item: {item['title']}")
 
     def next(self):
-        if self.current_index < len(self.current_level[-1]["items"]) - 1:
-            self.current_index += 1
-            self.display_current_item()
-        # else:
-        #     print("End of menu reached.")
+        if self.mode == "menu":
+            if self.current_index < len(self.current_level[-1]["items"]) - 1:
+                self.current_index += 1
+                self.display_current_item()
+        else:
+            item = self.get_current_item()
+            if self.new_value == 0:
+                self.new_value = item['value']
+            self.new_value += 5
+            self.device.setCursor(0, 1)
+            self.device.printout(str(self.new_value) + "      ")
 
     def previous(self):
-        if self.current_index > 0:
-            self.current_index -= 1
-            self.display_current_item()
-        # else:
-        #     print("Start of menu reached.")
+        if self.mode == "menu":
+            if self.current_index > 0:
+                self.current_index -= 1
+                self.display_current_item()
+        else:
+            item = self.get_current_item()
+            if self.new_value == 0:
+                self.new_value = item['value']
+            if self.new_value > 5:
+                self.new_value -= 5
+                self.device.setCursor(0, 1)
+                self.device.printout(str(self.new_value) + "      ")
     
     def go_back(self):
         if len(self.current_level) > 1:
@@ -64,9 +83,19 @@ class MenuNavigator:
     #             else:
                 print(f"Executing action: {item['action']}")
         elif "value" in item:
+            self.mode = "value_change"
             param = item['title']
             val = item['value']
-            print(f'{param=}, {val=}')
+            print(f' {param} = {val}')
 
         else:
             print("No further levels or actions available.")
+    
+    def set(self):
+        item = self.get_current_item()
+#        param = item['title']
+#        val = self.new_value
+#        print(f'New {param} = {val}')
+        item['value'] = self.new_value
+#        print(item)
+        self.mode = "menu"
