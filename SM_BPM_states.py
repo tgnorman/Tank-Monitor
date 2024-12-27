@@ -62,6 +62,8 @@ class READY(State):
             return PumpOFF()
         if event == "OFF NAK":
             return self
+        if event == "START MENU":
+            return MenuMode()
         return self
 
 class PumpPendingON(State):
@@ -88,7 +90,7 @@ class PumpPendingOFF(State):
     def on_event(self, event):
         if event == 'OFF ACK':
             return PumpOFF()
-        if event == "OFF NAK":
+        if event == 'OFF NAK':
             return PumpON()
         return self
     
@@ -99,5 +101,13 @@ class PumpOFF(State):
         if event == 'ON REQ':
             return PumpPendingON()
         return self
-    
+
+class MenuMode(State):
+# when messsing with menu via rotary encoder
+
+    def on_event(self, event):
+        if event == "EXIT MENU":
+            return READY()
+        return self
+                
 # End of our states.

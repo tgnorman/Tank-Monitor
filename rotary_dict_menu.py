@@ -13,6 +13,8 @@ enc_b   = Pin(20, Pin.IN)
 last_time = 0 # the last time we pressed the button
 count = 0
 
+# for debug testing... a variable I will try t access from class Navigator method...
+logring = ["first", "second", "third"]
 # Define a handler function for encoder line A
 # def encoder_a_IRQ(pin):
 #     global count
@@ -44,6 +46,8 @@ def encoder_btn_IRQ(pin):
           navigator.enter()
       elif mode == "value_change":
           navigator.set()
+      elif mode == "view_history":
+          navigator.go_back()
     last_time = new_time
 
 def rotary_menu_mode():
@@ -69,7 +73,28 @@ def set_delay():
 
 def my_go_back():
     navigator.go_back()
-               
+
+def dump_config(menu: dict):
+    for x, y in menu.items():
+      print(x, y)
+    # v1 = menu[' Delay']['Working_val]']
+    # v2 = menu[' B/L Time']['Working_val]']
+    # v3 = menu[' Min Depth']['Working_val]']
+    # v4 = menu[' Max Depth']['Working_val]']
+    # print(f'{v1=} {v2=} {v3=} {v4=}')
+
+def show_events():
+    pass
+
+def show_depth():
+    navigator.mode = "view_history"
+
+def show_pressure():
+    pass
+
+def housekeeping():
+    pass
+           
 prod_menu_dict = {
     "title": "L0 Main Menu",
     "items": [
@@ -85,9 +110,9 @@ prod_menu_dict = {
       {
         "title": "2 History->",
         "items": [
-          { "title": "2.1 Events", "action": "Events"},
-          { "title": "2.2 Depth", "action": "Depth"},
-          { "title": "2.3 Pressure", "action": "Pressure"},
+          { "title": "2.1 Events", "action": show_events},
+          { "title": "2.2 Depth", "action": show_depth},
+          { "title": "2.3 Pressure", "action": show_pressure},
           { "title": "2.4 Manual Switch", "action": "Manual Switch"},
           { "title": "2.5 Timer", "action": "Timer"},
           { "title": "2.6 Stats", "action": "Stats"},
@@ -97,7 +122,7 @@ prod_menu_dict = {
       {
         "title": "3 Actions->",
         "items": [
-          { "title": "3.1 Flush", "action": "Flush Data"},
+          { "title": "3.1 Flush", "action": housekeeping},
           { "title": "3.2 Reset", "action": "Soft Reset"},
           { "title": "3.3 Go back", "action": my_go_back}
         ]
@@ -105,19 +130,18 @@ prod_menu_dict = {
       {
         "title": "4 Config->",
         "items": [
-          { "title": "4.1 Show", "action": "Show Config"},
-          { "title": "4.2 Set Config->",
+          { "title": "4.1 Set Config->",
             "items": [
-                { "title": " Delay", "value": 15},
-                { "title": " B/L Time", "value": 20 },
-                { "title": " Min Depth", "value" : 400},
-                { "title": " Max Depth", "value": 1700},
-                { "title": " Go back", "action": my_go_back}
+                { "title": " Delay",     "value": {"Default_val": 15,   "Working_val" : 0}},
+                { "title": " B/L Time",  "value": {"Default_val": 20,   "Working_val" : 0}},
+                { "title": " Min Depth", "value": {"Default_val": 400,  "Working_val" : 0}},
+                { "title": " Max Depth", "value": {"Default_val": 1700, "Working_val" : 0}},
+                { "title": " Go back",  "action": my_go_back}
             ]
           },
-          { "title": "4.3 Save Config", "action": "Save Config"},
-          { "title": "4.4 Load Config", "action": "Load Config"},
-          { "title": "4.5 Go back", "action": my_go_back}
+          { "title": "4.2 Save Config", "action": "Save Config"},
+          { "title": "4.3 Load Config", "action": "Load Config"},
+          { "title": "4.4 Go back", "action": my_go_back}
         ]
       },
     {
@@ -125,13 +149,8 @@ prod_menu_dict = {
     }
     ]
 }
-
   
-# current_menu = menu_structure["Main Menu"]
-#print(f'current_menu is type {type(current_menu)}')
 new_menu = prod_menu_dict
-# print(f'p_m_d is type {type(prod_menu_dict)}')
-# print(f'new_menu is type {type(new_menu)}')
 
 # Initialize the navigator
 lcd 		= RGB1602.RGB1602(16,2)
@@ -141,27 +160,16 @@ navigator = MenuNavigator(new_menu, lcd)
 print("Created navigator")
 # Sample navigation sequence
 
-navigator.display_current_item()  # Show the first item in the main menu
-
 rotary_menu_mode()
+navigator.display_current_item()  # Show the first item in the main menu
+navigator.set_log_list(logring)
 
 process_menu = True
 while process_menu:
     utime.sleep(0.2)
 
-lcd.clear()
 print("That's all, folks!")
-#    print(count)
-    # if enc_btn.value() == 0:
-    #     print("Button pressed")
-    # # Navigate and execute actions
-
-    # if selection in current_menu:
-    #     action = current_menu[selection].get("action")
-    #     if callable(action):
-    #         action()  # Call the function
-    #     else:
-    #         print("No action assigned to this option.")
-    # else:
-    #     print("Invalid selection")
-    #     sleep(1)
+lcd.clear()
+lcd.setRGB(0,0,0)
+# print("new_menu Dump:")
+# dump_config(new_menu)
