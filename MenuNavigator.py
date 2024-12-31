@@ -11,8 +11,10 @@ class MenuNavigator:
         self.device = dev
         self.mode = "menu"
         self.new_value = 0
-        self.loglist = None
-        self.log_index = 0          # for log scrolling
+        self.eventlist = None
+        self.event_index = 0          # for log scrolling
+        self.switchlist = None
+        self.switch_index = 0
         self.display_current_item()
 
     def get_current_item(self):
@@ -43,21 +45,39 @@ class MenuNavigator:
             if self.new_value == 0:
                 print("Setting new_value to default...")
                 self.new_value = item['value']['Default_val']
-            self.new_value += 5
+            step = item['value']['Step']
+            self.new_value += step
             print(f'In NEXT self.new_value is {self.new_value}')
             self.device.setCursor(0, 1)
             self.device.printout(str(self.new_value) + "      ")
-        elif self.mode == "view_history":
-            if self.loglist is not None:
-                self.log_index = (self.log_index + 1) % len(self.loglist)     # check if this is right
-                hist_str = self.loglist[self.log_index]
-                print(f'in NEXT can I see loglist index {self.log_index} is {hist_str}')
-                self.device.setCursor(0, 1)
-                self.device.printout(f'{hist_str:<15}')
+        elif self.mode == "view_events" or self.mode == "view_switch":
+            if self.mode == "view_events":
+                if self.eventlist is not None:
+                    hist_str = self.eventlist[self.event_index]
+                    self.event_index = (self.event_index + 1) % len(self.eventlist)
+                else:
+                    hist_str = "Eventlist: None"
+            elif self.mode == "view_switch":
+                if self.switchlist is not None:
+                    hist_str = self.switchlist[self.switch_index]
+                    self.switch_index = (self.switch_index + 1) % len(self.switchlist)
+                else:
+                    hist_str = "Switchlist: None"
+            if type(hist_str) == tuple:
+                if(len(hist_str) > 0):
+                    datestamp = hist_str[0]
+                    log_txt = hist_str[1]
+                else:
+                    datestamp = f'{self.mode:<16}'
+                    log_txt   = "List is empty"
             else:
-                print("in NEXT loglist is None")
-                self.device.setCursor(0, 1)
-                self.device.printout("Loglist is None")
+                datestamp = "Err in NEXT"
+                log_txt = hist_str      # just copy above error string
+
+            self.device.setCursor(0, 0)
+            self.device.printout(f'{datestamp:<16}')
+            self.device.setCursor(0, 1)
+            self.device.printout(f'{log_txt:<16}')
 
     def previous(self):
         if self.mode == "menu":
@@ -72,22 +92,40 @@ class MenuNavigator:
             # if item['value']['Working_val'] == 0:
             if self.new_value == 0:
                 self.new_value = item['value']['Default_val']
-            if self.new_value > 5:
-                self.new_value -= 5
-                print(f'In PREV self.new_value is {self.new_value}')
+            step = item['value']['Step']
+            if self.new_value > step:
+                self.new_value -= step
+                # print(f'In PREV self.new_value is {self.new_value}')
                 self.device.setCursor(0, 1)
                 self.device.printout(str(self.new_value) + "      ")
-        elif self.mode == "view_history":
-            if self.loglist is not None:
-                self.log_index = (self.log_index - 1) % len(self.loglist)     # check if this is right
-                hist_str = self.loglist[self.log_index]
-                print(f'in PREV can I see loglist index {self.log_index} is {hist_str}')
-                self.device.setCursor(0, 1)
-                self.device.printout(f'{hist_str:<15}')
+        elif self.mode == "view_events" or self.mode == "view_switch":
+            if self.mode == "view_events":
+                if self.eventlist is not None:
+                    hist_str = self.eventlist[self.event_index]
+                    self.event_index = (self.event_index - 1) % len(self.eventlist)     # check if this is right
+                else:
+                    hist_str = "Eventlist: None"
+            elif self.mode == "view_switch":
+                if self.switchlist is not None:
+                    hist_str = self.switchlist[self.switch_index]
+                    self.switch_index = (self.switch_index - 1) % len(self.switchlist)     # check if this is right
+                else:
+                    hist_str = "Switchlist: None"
+            if type(hist_str) == tuple:
+                if(len(hist_str) > 0):
+                    datestamp = hist_str[0]
+                    log_txt = hist_str[1]
+                else:
+                    datestamp = f'{self.mode:<16}'
+                    log_txt   = "List is empty"
             else:
-                print("in PREV loglist is None")
-                self.device.setCursor(0, 1)
-                self.device.printout("Loglist is None")
+                datestamp = "Err in PREV"
+                log_txt = hist_str      # just copy above error string
+
+            self.device.setCursor(0, 0)
+            self.device.printout(f'{datestamp:<16}')
+            self.device.setCursor(0, 1)
+            self.device.printout(f'{log_txt:<16}')
     
     def go_back(self):
         if len(self.current_level) > 1:
@@ -110,14 +148,7 @@ class MenuNavigator:
             action = item['action']
             if callable(action):
                 action()                # do it...
-            elif "show_" in action:
-                print("--> Setting mode to view_history")
-                self.mode = "view_history"
             else:
-    #             if "BACK" in action.upper():
-    # #                print("Going up a level...")
-    #                 self.go_back()
-    #             else:
                 print(f"Executing action: {item['action']}")
         elif "value" in item:
             self.mode = "value_change"
@@ -141,6 +172,8 @@ class MenuNavigator:
         self.new_value = 0          # reset this, or we copy previous remnant value
         self.mode = "menu"
 
-    def set_log_list(self, myloglist):
-        self.loglist = myloglist
-        # print(f'set_log_list: {self.loglist}')
+    def set_event_list(self, myeventlist):
+        self.eventlist = myeventlist
+
+    def set_switch_list(self, myswitchlist):
+        self.switchlist = myswitchlist
