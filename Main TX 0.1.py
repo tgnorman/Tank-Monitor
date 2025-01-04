@@ -1,8 +1,6 @@
 # Trev's super dooper Tank/Pump monitoring system
 
-from PiicoDev_VL53L1X import PiicoDev_VL53L1X
-from PiicoDev_RV3028 import PiicoDev_RV3028
-from PiicoDev_Transceiver import PiicoDev_Transceiver
+# from PiicoDev_RV3028 import PiicoDev_RV3028
 import RGB1602
 import time
 import utime
@@ -10,29 +8,72 @@ import network
 import ntptime
 import os
 import random               # just for PP detect sim...
+import uasyncio
 from utime import sleep, ticks_us, ticks_diff
 from PiicoDev_Unified import sleep_ms
-from machine import Timer, Pin, ADC, Timer # Import Pin
+from PiicoDev_VL53L1X import PiicoDev_VL53L1X
+from PiicoDev_Transceiver import PiicoDev_Transceiver
+from machine import Timer, Pin, ADC, soft_reset # Import Pin
 from Pump import Pump               # get our Pump class
 from Tank import Tank
 from secrets import MyWiFi
-import uasyncio
 from MenuNavigator import MenuNavigator
 
 # OK... major leap... intro to FSM...
 from SM_SimpleFSM import SimpleDevice
 
+# constant/enums
+OP_MODE_AUTO        = 0
+OP_MODE_MENU        = 1
+OP_MODE_IRRIGATE    = 2
+
+END_IRRIGATION      = 9999
+
+# methods invoked from menu
 def display_depth():
+    global display_mode
+
     display_mode = "depth"
     print(f'{display_mode=}')
 
 def display_pressure():
+    global display_mode
+
     display_mode = "pressure"
     print(f'{display_mode=}')
 
+# This is cruddy code... would be nice to have a dict
+def update_config():
+    global mydelay, Min_Dist, Max_Dist, LCD_ON_TIME
+
+    for param_index in range(len(config_dict)):
+        param: str = new_menu['items'][3]['items'][0]['items'][param_index]['title']
+        new_working_value: int = new_menu['items'][3]['items'][0]['items'][param_index]['value']['Working_val']
+        if param in config_dict.keys():
+            # print(f"in update_config {param}: dict is {config_dict[param]} nwv is {new_working_value}")
+            if new_working_value > 0 and config_dict[param] != new_working_value:
+                config_dict[param] = new_working_value
+                print(f'Updated {param} to {new_working_value}')
+                lcd.setCursor(0,0)
+                lcd.printout(f'Updated {param}')
+                lcd.setCursor(0,1)
+                lcd.printout(f'to {new_working_value}')
+        else:
+            print(f"GAK! Config parameter {param} not found in config dictionary!")
+            lcd.setCursor(0,0)
+            lcd.printout("No dict entry:")
+            lcd.setCursor(0,1)
+            lcd.printout(param)
+
 def my_exit():
-    global process_menu
-    process_menu = False
+    global op_mode
+    # process_menu = False
+    lcd.setCursor(0,1)
+    lcd.printout(f'{"Exit Update":<16}')
+    update_config()
+    if op_mode != OP_MODE_IRRIGATE:
+        op_mode = OP_MODE_AUTO            # exit from MenuMode... or, stay in IRRIGATE
+    tim=Timer(period=LCD_ON_TIME * 1000, mode=Timer.ONE_SHOT, callback=lcd_off)
 
 def set_delay():
     sleep_time = 0
@@ -40,7 +81,211 @@ def set_delay():
 def my_go_back():
     navigator.go_back()
                
-prod_menu_dict = {
+def show_events():
+    navigator.mode = "view_events"
+
+def show_switch():
+    navigator.mode = "view_switch"
+
+def show_depth():
+    print("Show Depth Not implemented")
+
+def show_pressure():
+    print("Show Pressure Not implemented")
+
+def show_space():
+    lcd.setCursor(0,1)
+    lcd.printout(f'Free KB: {free_space():<6}')
+
+def my_reset():
+    ev_log.write(f"{event_time} SOFT RESET")
+    housekeeping(True)
+    soft_reset()
+
+def hardreset():
+    # ev_log.write(f"{event_time} HARD RESET")
+    # housekeeping(True)
+    pass
+
+def flush_data():
+    housekeeping(False)
+
+def housekeeping(close_files: bool):
+    print("Flushing data to flash...")
+    start_time = time.ticks_us()
+    f.flush()
+    ev_log.write(f"{event_time} STOP")
+    ev_log.write(f"\nMonitor shutdown at {display_time(secs_to_localtime(time.time()))}\n")
+    dump_pump_arg(borepump)
+    dump_event_ring()
+    dump_pump_arg(presspump)
+    ev_log.flush()
+    end_time = time.ticks_us()
+    if close_files:
+        f.close()
+        ev_log.close()
+
+    print(f"Cleanup completed in {time.ticks_diff(end_time, start_time)} microseconds")
+
+def showdir():
+    for f in os.ilistdir():
+        fn = f[0]
+        if "tank" in fn:
+            fstat = os.stat(fn)
+            fdate = fstat[7]
+            print(f'{fn}: time {display_time(secs_to_localtime(fdate))}')
+
+# def disable_pump(x):
+#     global pump_enabled
+
+#     pump_enabled = False
+#     print(f"{current_time()}: Pump now disabled")
+
+# def enable_pump(x):
+#     global pump_enabled
+
+#     pump_enabled = True
+#     print(f"{current_time()}: Pump now enabled")
+
+# def turn_on():
+#     print(f"{current_time()}:  Turning pump ON")
+
+# def turn_off():
+
+
+def toggle_borepump(x:Timer):
+    global timer_state, op_mode, irrigation_end_time
+
+    x_str = f'{x}'
+    period: int = int(int(x_str.split(',')[2].split('=')[1][0:-1]) / 1000)
+    milisecs = period
+    secs = int(milisecs / 1000)
+    mins = int(secs / 60)
+    print(f'in toggle, {period=} ... {secs} seconds... {mins} minutes')
+    if period != irrigation_end_time:
+        timer_state = (timer_state + 1) % 3
+        if   timer_state == 1:
+            print(f"{current_time()}: toggle - turning pump ON")
+            borepump_ON()        #turn_on()
+        elif timer_state == 2:
+            print(f"{current_time()}: toggle - turning pump OFF")
+            borepump_OFF()       #turn_off()
+        elif timer_state == 0:
+            print(f"{current_time()}: toggle - Doing nothing: {timer_state=}")
+    # print(f"{timer_state=}")
+    else:
+        op_mode = OP_MODE_AUTO
+        print(f"{current_time()}: in toggle... END IRRIGATION mode !  Now in {op_mode}")
+        if borepump.state:
+            borepump_OFF()       # to be sure, to be sure...
+            print(f"{current_time()}:in toggle, at END turning pump OFF.  Should already be OFF...")
+
+water_dict = {              # first cut... enter durations, not TOD.  Assume immediate start.  Not great, OK for test
+    "cycle1" : {"init" : 1, "run" : 2, "off" : 1},
+    "cycle2" : {"init" : 1, "run" : 2, "off" : 1},
+    "cycle3" : {"init" : 1, "run" : 2, "off" : 1},
+    "END"    : {"init" : 1, "run" : 1,  "off" : 1}
+    # "cycle3" : {"init" : 1, "run" : 5, "off" : 5}
+}
+
+water_list = [("cycle2", {"init" : 1, "run" : 2, "off" : 1}),
+              ("cycle1", {"init" : 1, "run" : 4, "off" : 2}),
+              ("cycle3", {"init" : 1, "run" : 4, "off" : 1}),
+              ("zzzEND", {"init" : 1, "run" : 6, "off" : 1})]
+
+def start_irrigation_schedule():
+    global timer_state, op_mode, irrigation_end_time           # cycle mod 3
+
+    if op_mode == OP_MODE_IRRIGATE:
+        print(f"Can't start irrigation program... already in {op_mode}")
+    else:
+        swl=sorted(water_list, key = lambda x: x[0])
+        print(f"{current_time()}: Starting timed watering...")
+        ev_log.write(f"{current_time()}: Starting timed watering\n")
+        op_mode = OP_MODE_IRRIGATE          # the trick is, how to reset this when we are done...
+
+        timer_state      = 0
+        next_switch_time = 0
+
+        for s in swl:
+            cyclename = s[0]
+            print(f"Adding timers for cycle {cyclename}")
+            if "end" in cyclename.lower():
+                t=s[1][k]
+                next_switch_time += t
+                print(f'{next_switch_time=}')
+                irrigation_end_time = next_switch_time*60*1000
+                timobj: Timer = Timer(period=irrigation_end_time, mode=Timer.ONE_SHOT, callback=toggle_borepump)
+                break
+            else:
+                for k in ["init", "run", "off"]:
+                    t=s[1][k]
+                    next_switch_time += t
+                    print(f'{next_switch_time=}')
+                    timobj: Timer = Timer(period=next_switch_time*60*1000, mode=Timer.ONE_SHOT, callback=toggle_borepump)
+
+        print("Watering Schedule created")
+
+def start_timed_watering():
+    global pump_enabled, timer_state, op_mode           # cycle mod 3
+
+# change operating mode... somehow
+    pump_enabled = True
+
+    tlist=([])
+    print(f"{current_time()}: Starting timed watering...")
+    ev_log.write(f"{current_time()}: Starting timed watering\n")
+    op_mode = OP_MODE_IRRIGATE          # the trick is, how to reset this when we are done...
+
+    timer_state = 0
+    next_switch_time = 0
+
+    for cycle, sched in water_dict.items():
+        cyclename   = cycle
+        print(f"Adding timer for cycle {cyclename}")
+        if "END" in cyclename:
+            timobj: Timer = Timer(period=END_IRRIGATION*1000, mode=Timer.ONE_SHOT, callback=toggle_borepump)
+            print(f'In s_t_w, END: {timobj=}')
+            tlist.append([cyclename, timobj])
+        else:
+            init_time = sched["init"]
+            next_switch_time += init_time
+            timobj: Timer = Timer(period=next_switch_time*60*1000, mode=Timer.ONE_SHOT, callback=toggle_borepump)
+            print(f'In s_t_w: {init_time=} {timobj=}')
+            tlist.append([cyclename + "A", timobj])
+            runtime     = sched["run"]
+            next_switch_time += runtime
+            timobj: Timer = Timer(period=next_switch_time*60*1000, mode=Timer.ONE_SHOT, callback=toggle_borepump)
+            print(f'In s_t_w: {runtime=} {timobj=}')
+            tlist.append([cyclename + "B", timobj])
+            offtime = sched["off"]
+            next_switch_time += offtime
+            timobj: Timer = Timer(period=next_switch_time*60*1000, mode=Timer.ONE_SHOT, callback=toggle_borepump)
+            print(f'In s_t_w: {offtime=} {timobj=}')
+            tlist.append([cyclename + "C", timobj])
+    print(tlist)
+    print("Watering Schedule created")
+    # print(tlist)
+
+#All menu-CONFIGURABLE parameters
+mydelay             = 60        # seconds
+LCD_ON_TIME         = 10        # seconds
+Min_Dist            = 500       # full
+Max_Dist            = 1400      # empty
+MAX_LINE_PRESSURE   = 700       # TBC... but this seems about right
+MIN_LINE_PRESSURE   = 300       # tweak after running... and this ONLY applies in OP_MODE_IRRIG
+MAX_CONTINUOUS_RUNMINS = 3 * 60    # 3 hours max runtime.  More than this looks like trouble
+
+config_dict = {
+    'Delay'         : mydelay,
+    'LCD'           : LCD_ON_TIME,
+    'MinDist'       : Min_Dist,
+    'MaxDist'       : Max_Dist,
+    'Max Pressure'  : MAX_LINE_PRESSURE,
+    'Min Pressure'  : MIN_LINE_PRESSURE,
+    'Max RunMins'   : MAX_CONTINUOUS_RUNMINS
+               }
+new_menu = {
     "title": "L0 Main Menu",
     "items": [
       {
@@ -48,46 +293,51 @@ prod_menu_dict = {
         "items": [
           { "title": "1.1 Depth", "action": display_depth},
           { "title": "1.2 Pressure", "action": display_pressure},
-          { "title": "1.3 Go Back", "action": my_go_back
+          { "title": "1.2 Space", "action": show_space},
+          { "title": "1.4 Go Back", "action": my_go_back
           }
         ]
       },
       {
         "title": "2 History->",
         "items": [
-          { "title": "2.1 Events", "action": "Events"},
-          { "title": "2.2 Depth", "action": "Depth"},
-          { "title": "2.3 Pressure", "action": "Pressure"},
-          { "title": "2.4 Manual Switch", "action": "Manual Switch"},
-          { "title": "2.5 Timer", "action": "Timer"},
-          { "title": "2.6 Stats", "action": "Stats"},
-          { "title": "2.7 Go back", "action": my_go_back}
+          { "title": "2.1 Events",   "action": show_events},
+          { "title": "2.2 Switch",   "action": show_switch},
+          { "title": "2.3 Depth",    "action": show_depth},
+          { "title": "2.4 Pressure", "action": show_pressure},
+          { "title": "2.5 Timer",    "action": "Timer"},
+          { "title": "2.6 Stats",    "action": "Stats"},
+          { "title": "2.7 Go back",  "action": my_go_back}
         ]
       },
       {
         "title": "3 Actions->",
         "items": [
-          { "title": "3.1 Flush", "action": "Flush Data"},
-          { "title": "3.2 Reset", "action": "Soft Reset"},
-          { "title": "3.3 Go back", "action": my_go_back}
+          { "title": "3.1 Timed Water",   "action": start_timed_watering},
+          { "title": "3.2 Flush",   "action": flush_data},
+          { "title": "3.3 Reset",   "action": my_reset},
+          { "title": "3.4 Files",   "action": showdir},
+          { "title": "3.5 Go back", "action": my_go_back}
         ]
       },
       {
         "title": "4 Config->",
         "items": [
-          { "title": "4.1 Show", "action": "Show Config"},
-          { "title": "4.2 Set Config->",
+          { "title": "4.1 Set Config->",
             "items": [
-                { "title": " Delay", "value": 15},
-                { "title": " B/L Time", "value": 20 },
-                { "title": " Min Depth", "value" : 400},
-                { "title": " Max Depth", "value": 1700},
-                { "title": " Go back", "action": my_go_back}
+                { "title": "Delay",        "value": {"Default_val": 15,   "Working_val" : mydelay,   "Step" : 5}},
+                { "title": "LCD",          "value": {"Default_val": 5,    "Working_val" : LCD_ON_TIME, "Step" : 2}},
+                { "title": "MinDist",      "value": {"Default_val": 500,  "Working_val" : Min_Dist,  "Step" : 100}},
+                { "title": "MaxDist",      "value": {"Default_val": 1400, "Working_val" : Max_Dist, "Step" : 100}},
+                { "title": "Max Pressure", "value": {"Default_val": 700,  "Working_val" : MAX_LINE_PRESSURE,  "Step" : 25}},                
+                { "title": "Min Pressure", "value": {"Default_val": 300,  "Working_val" : MIN_LINE_PRESSURE,  "Step" : 25}},
+                { "title": "Max RunMins",  "value": {"Default_val": 180,  "Working_val" : MAX_CONTINUOUS_RUNMINS,  "Step" : 10}},
+                { "title": "Go back",  "action": my_go_back}
             ]
           },
-          { "title": "4.3 Save Config", "action": "Save Config"},
-          { "title": "4.4 Load Config", "action": "Load Config"},
-          { "title": "4.5 Go back", "action": my_go_back}
+          { "title": "4.2 Save Config", "action": "Save Config"},
+          { "title": "4.3 Load Config", "action": "Load Config"},
+          { "title": "4.4 Go back", "action": my_go_back}
         ]
       },
     {
@@ -96,10 +346,6 @@ prod_menu_dict = {
     ]
 }
 
-  
-# current_menu = menu_structure["Main Menu"]
-#print(f'current_menu is type {type(current_menu)}')
-new_menu = prod_menu_dict
 system      = SimpleDevice()            #initialise my FSM.
 wf          = MyWiFi()
 
@@ -121,9 +367,7 @@ lcd 		= RGB1602.RGB1602(16,2)
 radio       = PiicoDev_Transceiver()
 RADIO_PAUSE = 1000
 MIN_FREE_SPACE = 100                # in KB...
-MAX_CONTINUOUS_RUNTIME = 3 * 60 * 60            # 3 hours max runtime.  More than this looks like trouble
 
-LCD_ON_TIME = 5000      # millisecs
 btnflag     = False
 
 # Pins
@@ -136,16 +380,18 @@ prsspmp_led = Pin(14, Pin.OUT)
 solenoid    = Pin(2, Pin.OUT, value=0)          # MUST ensure we don't close solenoid on startup... pump may already be running !!!  Note: Low == Open
 vbus_sense  = Pin('WL_GPIO2', Pin.IN)           # external power monitoring of VBUS
 led         = Pin('LED', Pin.OUT)
+bp_pressure = ADC(0)                            # Is thi right?  or should it be Pin 26
 
 # Create pins for encoder lines and the onboard button
 
 enc_btn     = Pin(18, Pin.IN, Pin.PULL_UP)
 enc_a       = Pin(19, Pin.IN)
 enc_b       = Pin(20, Pin.IN)
-
+last_time   = 0
 count       = 0
 
 navigator   = MenuNavigator(new_menu, lcd)
+op_mode = OP_MODE_AUTO
 # Define a handler function for encoder line A
 def encoder_a_IRQ(pin):
     global last_time
@@ -159,16 +405,27 @@ def encoder_a_IRQ(pin):
     last_time = new_time
 
 def encoder_btn_IRQ(pin):
-    global last_time
+    global last_time, op_mode
 
+    lcd_on()
     new_time = utime.ticks_ms()
     # if it has been more that 1/5 of a second since the last event, we have a new event
     mode = navigator.mode
     if (new_time - last_time) > 200:
-      if mode == "menu":
-          navigator.enter()
-      elif mode == "value_change":
-          navigator.set()
+        if op_mode == OP_MODE_MENU:
+            mode = navigator.mode
+            if mode == "menu":
+                navigator.enter()
+            elif mode == "value_change":
+                navigator.set()
+            elif "view" in mode:      # careful... if more modes are added, ensure they contain "view"
+                navigator.go_back()
+        else:
+            op_mode = OP_MODE_MENU
+            # system.on_event("START MENU")
+            # print(f"system.state: {system.state}")
+            navigator.go_to_first()
+            navigator.display_current_item()
     last_time = new_time
 
 def rotary_menu_mode():
@@ -192,8 +449,6 @@ fill_states = ["Overflow", "Full", "Near full", "Part full", "Near Empty", "Empt
 # Physical Constants
 Tank_Height = 1700
 OverFull	= 250
-Min_Dist    = 500           # full
-Max_Dist    = 1400          # empty
 Delta       = 50            # change indicating pump state change has occurred
 
 # Tank variables/attributes
@@ -205,24 +460,28 @@ min_ROC     = 0.15              # experimental.. might need to tweak.  To avoid 
 
 FLUSH_PERIOD = 2
 # Various constants
-if DEBUGLVL > 0:
-    mydelay = 5
-#    FLUSH_PERIOD = 5
-else:
-    mydelay = 5            # Sleep time... seconds, not ms...  Up from 5, using calculated data
+# if DEBUGLVL > 0:
+#     mydelay = 5
+# #    FLUSH_PERIOD = 5
+# else:
+#     mydelay = 5            # Sleep time... seconds, not ms...  Up from 5, using calculated data
 #    FLUSH_PERIOD = 15
 
 # logging stuff...
 log_freq    = 5
 last_logged_depth = 0
+last_kpa_reading = 0
 min_log_change_m = 0.001	# to save space... only write to file if significant change in level
+max_kpa_change   = 10       # update after pressure sensor active
 level_init  = False 		# to get started
 
-counter         = 0
 ringbufferindex = 0         # for SMA calculation... keep last n measures in a ring buffer
 
-LOGRINGSIZE     = 10        # max log ringbuffer length
-logindex        = 0         # for scrolling through error logs on screen
+EVENTRINGSIZE   = 10        # max log ringbuffer length
+SWITCHRINGSIZE  = 20
+eventindex      = 0         # for scrolling through error logs on screen
+switchindex     = 0
+
 # endregion
 
 # start doing stuff
@@ -257,13 +516,18 @@ lcdbtn.irq(handler=lcdbtn_pressed, trigger=Pin.IRQ_RISING)
 def lcd_off(x):
     lcd.setRGB(0,0,0)
 
+def lcd_on():
+    lcd.setRGB(170,170,138)
+
 async def check_lcd_btn():
-    global btnflag
+    global btnflag, op_mode
     while True:
         if btnflag:
 #            lcdbl_toggle()
-            lcd.setRGB(170,170,138)     # turn on, and...
-            tim=Timer(period=LCD_ON_TIME, mode=Timer.ONE_SHOT, callback=lcd_off)
+            lcd_on()    # turn on, and...
+            if op_mode != OP_MODE_MENU:
+                print(f'Setting LCD timer for {LCD_ON_TIME} seconds')
+                tim=Timer(period=LCD_ON_TIME * 1000, mode=Timer.ONE_SHOT, callback=lcd_off)
             btnflag = False
         await uasyncio.sleep(0.5)
 
@@ -335,10 +599,12 @@ def get_tank_depth():
 def updateData():
     global tank_is
     global depth_str
+    global pressure_str
     global depth
     global last_depth
     global depth_ROC
     global ringbuf, ringbufferindex, sma_depth
+    global bp_kpa
   
     get_tank_depth()
     ringbuf[ringbufferindex] = depth ; ringbufferindex = (ringbufferindex + 1) % ROC_AVERAGE
@@ -350,6 +616,21 @@ def updateData():
     if DEBUGLVL > 0: print(f"depth_ROC: {depth_ROC:.3f}")
     last_depth = sma_depth				# track change since last reading
     depth_str = f"{depth:.2f}m " + tank_is
+    bp_kpa = 20 + ringbufferindex * 200            # hack for testing... replace with ADC read when calibrated
+    pressure_str = f'{bp_kpa:3} kPa'    # might change this to be updated more frequently in a dedicated asyncio loop...
+
+
+def current_time()-> str:
+    now   = secs_to_localtime(time.time())      # getcurrent time, convert to local SA time
+    # year  = now[0]
+    month = now[1]
+    day   = now[2]
+    hour  = now[3]
+    min   = now[4]
+    sec   = now[5]
+    short_time = f"{hour:02}:{min:02}:{sec:02}"
+    str_time = str(month) + "/" + str(day) + " " + short_time 
+    return str_time
 
 def updateClock():
     global str_time, event_time
@@ -369,7 +650,7 @@ def log_switch_error(new_state):
     global ev_log, event_time
     print(f"!!! log_switch_error  !! {new_state}")
     ev_log.write(f"{event_time}: ERROR on switching to state {new_state}\n")
-    add_to_log_ring(f"{event_time}: ERROR switching to {new_state}")
+    add_to_event_ring(f"ERR swtch {new_state}")
     
 def parse_reply(rply):
     if DEBUGLVL > 1: print(f"in parse arg is {rply}")
@@ -393,119 +674,160 @@ def transmit_and_pause(msg, delay):
     radio.send(msg)
     sleep_ms(delay)
 
-def confirm_solenoid()-> bool:
-    sleep_ms(500)
-    return True                     #... remember to fix this when I have another detect circuit...
+def confirm_solenoid():
+    solenoid_state = sim_solenoid_detect()
+
+    if op_mode == OP_MODE_AUTO:
+        return solenoid_state
+    elif op_mode == OP_MODE_IRRIGATE:
+        return not solenoid_state
 
 def radio_time(local_time):
     global clock_adjust_ms
     return(local_time + clock_adjust_ms)
 
+def borepump_ON():
+    tup = ("ON", radio_time(time.time()))   # was previosuly counter... now, time
+#            print(tup)
+    system.on_event("ON REQ")
+    transmit_and_pause(tup, 2 * RADIO_PAUSE)    # that's two sleeps... as expecting immediate reply
+# try implicit CHECK... which should happen in my RX module as state_changed
+#            radio.send("CHECK")
+#            sleep_ms(RADIO_PAUSE)
+    if radio.receive():
+        rply = radio.message
+    #                print(f"radio.message (rm): {rm}")
+    #                print(f"received response: rply is {rply}")
+        valid_response, new_state = parse_reply(rply)
+    #                print(f"in ctlBP: rply is {valid_response} and {new_state}")
+        if valid_response and new_state > 0:
+            borepump.switch_pump(True)
+            add_to_switch_ring("PUMP ON")
+            ev_log.write(f"{event_time} ON\n")
+            system.on_event("ON ACK")
+        else:
+            log_switch_error(new_state)
+
+def borepump_OFF():
+    tup = ("OFF", radio_time(time.time()))
+#            print(tup)
+    system.on_event("OFF REQ")
+    transmit_and_pause(tup, 2 * RADIO_PAUSE)    # that's two sleeps... as expecting immediate reply
+# try implicit CHECK... which should happen in my RX module as state_changed
+#            radio.send("CHECK")
+#            sleep_ms(RADIO_PAUSE)
+    if radio.receive():
+        rply = radio.message
+        valid_response, new_state = parse_reply(rply)
+#                print(f"in ctlBP: rply is {valid_response} and {new_state}")
+        if valid_response and not new_state:        # this means I received confirmation that pump is OFF...
+            borepump.switch_pump(False)
+            add_to_switch_ring("PUMP OFF")
+            ev_log.write(f"{event_time} OFF\n")
+            system.on_event("OFF ACK")
+            if DEBUGLVL > 1: print("cBP: Closing valve")
+            solenoid.value(1)               # wait until pump OFF confirmed before closing valve !!!
+        else:
+            log_switch_error(new_state)
+
 def controlBorePump():
-    global tank_is, counter, radio, event_time, system
+    global tank_is, radio, event_time, system
     if tank_is == fill_states[0]:		# Overfull
-        buzzer.value(1)			# raise alarm
+        buzzer.value(1)			        # raise alarm
     else:
         buzzer.value(0)
     if tank_is == fill_states[len(fill_states) - 1]:		# Empty
         if not borepump.state:		# pump is off, we need to switch on
-            if DEBUGLVL > 1: print("cBP: Opening valve")
-            solenoid.value(0)
+            if op_mode != OP_MODE_IRRIGATE:
+                if DEBUGLVL > 1: print("cBP: Opening valve")
+                solenoid.value(0)
             if confirm_solenoid():
-                counter += 1
-                tup = ("ON", radio_time(time.time()))   # was previosuly counter... now, time
-    #            print(tup)
-                system.on_event("ON REQ")
-                transmit_and_pause(tup, 2 * RADIO_PAUSE)    # that's two sleeps... as expecting immediate reply
-    # try implicit CHECK... which should happen in my RX module as state_changed
-    #            radio.send("CHECK")
-    #            sleep_ms(RADIO_PAUSE)
-                if radio.receive():
-                    rply = radio.message
-    #                print(f"radio.message (rm): {rm}")
-    #                print(f"received response: rply is {rply}")
-                    valid_response, new_state = parse_reply(rply)
-    #                print(f"in ctlBP: rply is {valid_response} and {new_state}")
-                    if valid_response and new_state > 0:
-                        borepump.switch_pump(True)
-                        ev_log.write(f"{event_time} ON\n")
-                        system.on_event("ON ACK")
-                        if DEBUGLVL > 0: print(f"Class: Set borepump to state {borepump.state}")
-                    else:
-                        log_switch_error(new_state)
+                borepump_ON()
             else:               # dang... want to turn pump on, but solenoid looks OFF
                 raiseAlarm("NOT turning pump on... valve is CLOSED!", event_time)
     elif tank_is == fill_states[0] or tank_is == fill_states[1]:	# Full or Overfull
 #        bore_ctl.value(0)			# switch borepump OFF
         if borepump.state:			# pump is ON... need to turn OFF
- 
-            counter -= 1
-            tup = ("OFF", radio_time(time.time()))
-#            print(tup)
-            system.on_event("OFF REQ")
-            transmit_and_pause(tup, 2 * RADIO_PAUSE)    # that's two sleeps... as expecting immediate reply
-# try implicit CHECK... which should happen in my RX module as state_changed
-#            radio.send("CHECK")
-#            sleep_ms(RADIO_PAUSE)
-            if radio.receive():
-                rply = radio.message
-                valid_response, new_state = parse_reply(rply)
-#                print(f"in ctlBP: rply is {valid_response} and {new_state}")
-                if valid_response and not new_state:        # this means I received confirmation that pump is OFF...
-                    borepump.switch_pump(False)
-                    ev_log.write(f"{event_time} OFF\n")
-                    system.on_event("OFF ACK")
-                    if DEBUGLVL > 1: print("cBP: Closing valve")
-                    solenoid.value(1)               # wait until pump OFF confirmed before closing valve !!!
-                    if DEBUGLVL > 1: print(f"Class: Set borepump to state {borepump.state}")
-                else:
-                    log_switch_error(new_state)
+            if DEBUGLVL > 0: print("in controlBorePump, switching pump OFF")
+            borepump_OFF()
 
-def add_to_log_ring(s):
-    global logindex
+def add_to_event_ring(msg:str):
+    global eventring, eventindex
     
-    logring[logindex] = s
-    if len(logring) < LOGRINGSIZE:
-        logring.append("")
-#        logindex = len(logring)
-
-    logindex = (logindex + 1) % LOGRINGSIZE
-         
-def dump_log_ring():
-    if len(logring) < LOGRINGSIZE:
-        for i in range(logindex - 1, -1, -1):
-            s = logring[i]
-            if s != "": print(f"Errorlog {i}: {logring[i]}")
+    if len(eventring) == 1 and len(eventring[0]) == 0:
+        eventring[eventindex] = (str_time, msg)
     else:
-        i = logindex - 1            # start with last log entered
-        for k in range(LOGRINGSIZE):
-            s = logring[i]
-            if s != "": print(f"Errorlog {i}: {logring[i]}")
-            i = (i - 1) % LOGRINGSIZE
+        if len(eventring) < EVENTRINGSIZE:
+#            print("Appending...")
+            eventring.append((str_time, msg))
+            eventindex = (eventindex + 1) % EVENTRINGSIZE
+        else:
+            eventindex = (eventindex + 1) % EVENTRINGSIZE
+#            print(f"Overwriting index {eventindex}")
+            eventring[eventindex] = (str_time, msg)
+
+def add_to_switch_ring(msg:str):
+    global switchring, switchindex
+
+    if len(switchring) == 1 and len(switchring[0]) == 0:
+        switchring[switchindex] = (str_time, msg)
+    else:
+        if len(switchring) < SWITCHRINGSIZE:
+#            print("Appending...")
+            switchring.append((str_time, msg))
+            switchindex = (switchindex + 1) % SWITCHRINGSIZE
+        else:
+            switchindex = (switchindex + 1) % SWITCHRINGSIZE
+#            print(f"Overwriting index {switchindex}")
+            switchring[switchindex] = (str_time, msg)
+
+def dump_event_ring():                          # both rings are now tuples... (datestamp, msg)
+
+    ev_len = len(eventring)
+    # print(f"Eventring has {ev_len} records")
+    if ev_len > 0:
+        if ev_len < EVENTRINGSIZE:
+            for i in range(eventindex - 1, -1, -1):
+                s = eventring[i]
+                if len(s) > 0: print(f"Errorlog {i}: {s[0]} {s[1]}")
+        else:
+            i = (eventindex - 1) % EVENTRINGSIZE            # start with last log entered
+            for k in range(EVENTRINGSIZE):
+                s = eventring[i]
+                if len(s) > 0: print(f"Errorlog {i}: {s[0]} {s[1]}")
+                i = (i - 1) % EVENTRINGSIZE
+    else:
+        print("Eventring is empty")
     
 def raiseAlarm(param, val):
-    global logring, logindex
+    global eventring, eventindex
     global ev_log, event_time
     logstr = f"{event_time} ALARM {param}, value {val:.3g}"
+    ev_str = f"ALARM {param}, value {val:.3g}"
     print(logstr)
     ev_log.write(f"{logstr}\n")
-    add_to_log_ring(logstr)
+    add_to_event_ring(ev_str)
     
 def checkForAnomalies():
-    global borepump, max_ROC, depth_ROC, tank_is, MAX_CONTINUOUS_RUNTIME
+    global borepump, max_ROC, depth_ROC, tank_is, bp_kpa, MAX_CONTINUOUS_RUNMINS, MAX_LINE_PRESSURE
 
-    if borepump.state and tank_is == "Overflow":        # ideally, refer to a Tank object... but this will work for now
-        raiseAlarm("OVERFLOW and still ON", 999)        # probably should do more than this.. REALLY BAD scenario!
-    if abs(depth_ROC) > max_ROC:
-        raiseAlarm("Max ROC Exceeded", depth_ROC)
-    if depth_ROC > min_ROC and not borepump.state:      # pump is OFF but level is rising!
-        raiseAlarm("FILLING while OFF", depth_ROC)
-    if depth_ROC < -min_ROC and borepump.state:         # pump is ON but level is falling!
-        raiseAlarm("DRAINING while ON", depth_ROC)
-    if borepump.state:                                  # if pump is on, and has been on for more than max... do stuff!
-        runtime = time.time() - borepump.last_time_switched
-        if runtime > MAX_CONTINUOUS_RUNTIME:
-            raiseAlarm("RUNTIME EXCEEDED", runtime)
+    if borepump.state:                  # pump is ON
+        run_minutes = (time.time() - borepump.last_time_switched) / 60
+        if bp_kpa > MAX_LINE_PRESSURE:
+            raiseAlarm("Excess kPa", bp_kpa)
+        if op_mode == OP_MODE_IRRIGATE and  bp_kpa < MIN_LINE_PRESSURE:
+            raiseAlarm("Min Pressure", bp_kpa)
+        if run_minutes > MAX_CONTINUOUS_RUNMINS:            # if pump is on, and has been on for more than max... do stuff!
+            raiseAlarm("RUNTIME EXCEEDED", run_minutes)
+        if op_mode != OP_MODE_IRRIGATE:
+            if abs(depth_ROC) > max_ROC:
+                raiseAlarm("Max ROC Exceeded", depth_ROC)
+            if tank_is == "Overflow":        # ideally, refer to a Tank object... but this will work for now
+                raiseAlarm("OVERFLOW and still ON", 999)        # probably should do more than this.. REALLY BAD scenario!
+            if depth_ROC > min_ROC and not borepump.state:      # pump is OFF but level is rising!
+                raiseAlarm("FILLING while OFF", depth_ROC)
+            if depth_ROC < -min_ROC and borepump.state:         # pump is ON but level is falling!
+                raiseAlarm("DRAINING while ON", depth_ROC)                              
     
 def displayAndLog():
     global log_freq
@@ -513,29 +835,45 @@ def displayAndLog():
     global last_depth
     global level_init
     global last_logged_depth
-    global min_log_change_m   
-    lcd.clear()
-    lcd.setCursor(0, 0)
-    lcd.printout(str_time)
-    lcd.setCursor(0, 1)
-    lcd.printout(depth_str)
-#    temp = 27 - (temp_sensor.read_u16() * conv_fac - 0.706)/0.001721
-#    tempstr=f"{temp:.2f} C"  
-    logstr = str_time + f" {depth:.3f}\n"
-    dbgstr = str_time + f" {depth:.3f}m"    
+    global last_kpa_reading
+    global min_log_change_m
+    global display_mode
+
+    if op_mode != OP_MODE_MENU:
+        lcd.clear()
+        lcd.setCursor(0, 0)
+        lcd.printout(str_time)
+        if display_mode == "depth":
+            display_str = depth_str
+        elif display_mode == "pressure":
+            display_str = pressure_str
+        else:
+            display_str = "?? no display mode"
+        lcd.setCursor(0, 1)
+        lcd.printout(display_str)
+    temp = 27 - (temp_sensor.read_u16() * conv_fac - 0.706)/0.001721
+    tempstr=f"{temp:.2f} C"  
+    logstr = str_time + f" {depth:.3f} {bp_kpa:4}\n"
+    dbgstr = str_time + f" {depth:.3f}m {bp_kpa:4}kPa"    
 #    if rec_num % log_freq == 0:
 #    if rec_num == log_freq:			# avoid using mod... in case of overflow
 #        rec_num = 0					# just reset to zero
 #        print('Recnum mod zero...')
 #        f.write(logstr)
+    enter_log = False
     if not level_init:
         level_init = True
         last_logged_depth = depth
     else:
         level_change = abs(depth - last_logged_depth)
+        pressure_change = abs(last_kpa_reading - bp_kpa)
         if level_change > min_log_change_m:
             last_logged_depth = depth
-            f.write(logstr)   
+            enter_log = True
+        if pressure_change > max_kpa_change:
+            last_kpa_reading = bp_kpa
+            enter_log = True
+        if enter_log: f.write(logstr)
     print(dbgstr)
 
 def listen_to_radio():
@@ -557,9 +895,7 @@ def init_radio():
     if radio.receive():
         msg = radio.message
         print(f"Read {msg}")
-    # else:
-        # print("nothing received in init_radio")
-    # print("Pinging RX Pico...")
+
     while not ping_RX():
         print("Waiting for RX to respond...")
         sleep(1)
@@ -590,7 +926,6 @@ def get_initial_pump_state() -> bool:
         valid_response, new_state = parse_reply(rply)
         if valid_response and new_state > 0:
             initial_state = True
-#    print(f"Pump Initial state is {initial_state}")
     return initial_state
 
 def dump_pump_arg(p:Pump):
@@ -711,7 +1046,7 @@ def sync_clock():                   # initiate exchange of time info with RX, pu
     if DEBUGLVL > 0: print(f"Setting clock_adjust to {clock_adjust_ms}") 
 
 def init_ringbuffers():
-    global  ringbuf, ringbufferindex, logring, logindex
+    global  ringbuf, ringbufferindex, eventring, eventindex, switchring, switchindex
 
     ringbuf = [0.0]                 # start with a list containing zero...
     if ROC_AVERAGE > 1:             # expand it as needed...
@@ -720,13 +1055,15 @@ def init_ringbuffers():
     if DEBUGLVL > 0: print("Ringbuf is ", ringbuf)
     ringbufferindex = 0
 
-    logring = [""]
-    logindex = 0
+    eventring   = [tuple()]         # initialise to an empty tuple
+    eventindex  = 0
+    switchring  = [tuple()]
+    switchindex = 0
 
 def init_everything_else():
-    global borepump, steady_state, free_space_KB, presspump, vbus_on_time
+    global borepump, steady_state, free_space_KB, presspump, vbus_on_time, display_mode, navigator
     
-    lcd.setRGB(170,170,138)   
+    lcd_on()  
 # Get the current pump state and init my object    
     borepump = Pump("BorePump", get_initial_pump_state())
 
@@ -746,11 +1083,14 @@ def init_everything_else():
         raiseAlarm("Free space", free_space_KB)
 
     init_ringbuffers()
+    navigator.set_event_list(eventring)
+    navigator.set_switch_list(switchring)
 
 # ensure we start out right...
     steady_state = False
-
     vbus_on_time = time.time()      # init this... so we can test external
+    display_mode = "depth"
+    rotary_menu_mode()              # enable rotary encoder for menu ops
 
 def heartbeat() -> bool:
     global borepump
@@ -789,7 +1129,7 @@ def confirm_and_switch_solenoid(state):
             if DEBUGLVL > 0: print("Turning valve OFF")
             switch_valve(False)
 
-def free_space():
+def free_space()->int:
     # Get the filesystem stats
     stats = os.statvfs('/')
     
@@ -802,15 +1142,15 @@ def free_space():
     free_space_kb = free_blocks * block_size / 1024
     return free_space_kb
 
-def sim_pressure_pump_detect(x):
+def sim_pressure_pump_detect(x)->bool:            # to be hacked when I connect the CT circuit
     p = random.random()
 
     return True if p > x else False
 
-def sim_solenoid_detect():
-    pass
+def sim_solenoid_detect()->bool:
+    return True
 
-async def regular_flush(m):
+async def regular_flush(m)->None:
     while True:
         f.flush()
         ev_log.flush()
@@ -831,23 +1171,6 @@ async def regular_flush(m):
 #     sleep(1)
 #     mypp.irq(trigger=Pin.IRQ_RISING|Pin.IRQ_FALLING, handler=mypp_handler)
 
-def housekeeping(close_files: bool):
-    print("Flushing data to flash...")
-    start_time = time.ticks_us()
-    f.flush()
-    ev_log.write(f"{event_time} STOP")
-    ev_log.write(f"\nMonitor shutdown at {display_time(secs_to_localtime(time.time()))}\n")
-    dump_pump_arg(borepump)
-    dump_log_ring()
-    ev_log.write("Next Pump dump...\n")
-    dump_pump_arg(presspump)
-    ev_log.flush()
-    end_time = time.ticks_us()
-    if close_files:
-        f.close()
-        ev_log.close()
-
-    print(f"Cleanup completed in {time.ticks_diff(end_time, start_time)} microseconds")
 
 def monitor_vbus():
     global vbus_on_time, report_outage
@@ -858,7 +1181,7 @@ def monitor_vbus():
         report_outage = True
     else:
         if (now - vbus_on_time >= MAX_OUTAGE) and report_outage:
-            s = f">>: {display_time(secs_to_localtime(time.time()))}  Power off for more than {MAX_OUTAGE} seconds\n"
+            s = f"{display_time(secs_to_localtime(time.time()))}  Power off for more than {MAX_OUTAGE} seconds\n"
             ev_log.write(s)  # seconds since last saw power 
             report_outage = False
             housekeeping(False)
@@ -875,12 +1198,12 @@ async def blinkx2():
         await uasyncio.sleep_ms(1000)
 
 async def do_main_loop():
-    global event_time, ev_log, steady_state, housetank, system
+    global event_time, ev_log, steady_state, housetank, system, op_mode
 
     print("RUNNING START")
     rec_num=0
     #radio.rfm69_reset
-    lcd.setRGB(170,170,138)
+    lcd_on()
 # first cut at how to progress SM on start-up.  Not clear if this is optimal.  Maybe better to drive this inside SM methods
 
     if not system:              # yikes... don't have a SM ??
@@ -934,10 +1257,14 @@ async def do_main_loop():
     uasyncio.create_task(regular_flush(FLUSH_PERIOD))           # flush data every 15 minutes
     uasyncio.create_task(blinkx2())                             # visual indicator we are running
 
+    start_irrigation_schedule()      # just to test without ISR issues...
+
     while True:
         updateClock()			# get datetime stuff
         updateData()			# monitor water depth
-        controlBorePump()		# do whatever
+        if op_mode != OP_MODE_IRRIGATE: 
+            if DEBUGLVL > 0: print(f"in do_main_loop, op_mode is {op_mode} and controlBorePump() starting now")
+            controlBorePump()		# do nothing if in IRRIGATE mode
 #        listen_to_radio()		# check for badness
         displayAndLog()			# record it
         if steady_state: checkForAnomalies()	    # test for weirdness
@@ -958,10 +1285,11 @@ def main() -> None:
         print("I see a cancelled uasyncio thing")
 
     except KeyboardInterrupt:
-        lcd.setRGB(0,0,0)		                # turn off backlight
+        lcd_off('')	                # turn off backlight
         print('\n### Program Interrupted by the user')
     # turn everything OFF
-        borepump.switch_pump(False)             # turn pump OFF
+        if borepump is not None:                # in case i bail before this is defined...
+            borepump.switch_pump(False)             # turn pump OFF
     #    confirm_and_switch_solenoid(False)     #  *** DO NOT DO THIS ***  If live, this will close valve while pump.
     #           to be real sure, don't even test if pump is off... just leave it... for now.
 
