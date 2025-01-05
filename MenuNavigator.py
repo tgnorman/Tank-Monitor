@@ -42,10 +42,11 @@ class MenuNavigator:
             item = self.get_current_item()
             print(f'In NEXT, item is {item}')
             # if item['value']['Working_val'] == 0:
-            if self.new_value == 0:
-                print("Setting new_value to default...")
-                self.new_value = item['value']['Default_val']
+            # if self.new_value == 0:
+            #     print("Setting new_value to default...")
+            #     self.new_value = item['value']['Default_val']
             step = item['value']['Step']
+# no if neeed for inc...            
             self.new_value += step
             print(f'In NEXT self.new_value is {self.new_value}')
             self.device.setCursor(0, 1)
@@ -66,13 +67,13 @@ class MenuNavigator:
             if type(hist_str) == tuple:
                 if(len(hist_str) > 0):
                     datestamp = hist_str[0]
-                    log_txt = hist_str[1]
+                    log_txt   = hist_str[1]
                 else:
                     datestamp = f'{self.mode:<16}'
-                    log_txt   = "List is empty"
+                    log_txt   = "Nothing here"
             else:
                 datestamp = "Err in NEXT"
-                log_txt = hist_str      # just copy above error string
+                log_txt   = "hist not a tuple"
 
             self.device.setCursor(0, 0)
             self.device.printout(f'{datestamp:<16}')
@@ -84,18 +85,18 @@ class MenuNavigator:
             menu_len = len(self.current_level[-1]["items"])
             # if self.current_index < len(self.current_level[-1]["items"]) - 1:
             self.current_index = (self.current_index - 1) % menu_len
-            # if self.current_index > 0:
-                # self.current_index -= 1
             self.display_current_item()
         elif self.mode == "value_change":
             item = self.get_current_item()
+            print(f'In PREV, item is {item}')
             # if item['value']['Working_val'] == 0:
-            if self.new_value == 0:
-                self.new_value = item['value']['Default_val']
+            # if self.new_value == 0:
+            #     print("Setting new_value to default...")
+            #     self.new_value = item['value']['Default_val']
             step = item['value']['Step']
             if self.new_value > step:
                 self.new_value -= step
-                # print(f'In PREV self.new_value is {self.new_value}')
+                print(f'In PREV self.new_value is {self.new_value}')
                 self.device.setCursor(0, 1)
                 self.device.printout(str(self.new_value) + "      ")
         elif self.mode == "view_events" or self.mode == "view_switch":
@@ -114,13 +115,13 @@ class MenuNavigator:
             if type(hist_str) == tuple:
                 if(len(hist_str) > 0):
                     datestamp = hist_str[0]
-                    log_txt = hist_str[1]
+                    log_txt   = hist_str[1]
                 else:
                     datestamp = f'{self.mode:<16}'
-                    log_txt   = "List is empty"
+                    log_txt   = "Nothing here"
             else:
                 datestamp = "Err in PREV"
-                log_txt = hist_str      # just copy above error string
+                log_txt   = "hist not a tuple"
 
             self.device.setCursor(0, 0)
             self.device.printout(f'{datestamp:<16}')
@@ -132,6 +133,7 @@ class MenuNavigator:
             self.current_level.pop()  # Go up one level in the menu
             self.current_index = 0
             self.mode = "menu"
+            self.new_value = 0
 #            print(f"Going back to previous menu level {len(self.current_level)}")
             self.display_current_item()
         else:
@@ -154,20 +156,23 @@ class MenuNavigator:
             self.mode = "value_change"
             param = item['title']
             val = item['value']
+            self.new_value = item['value']['Working_val']
             print(f'In ENTER {param} = {val}')
         else:
             print("No further levels or actions available.")
     
-        print(f"In ENTER, mode is now {self.mode}")
+        # print(f"In ENTER, mode is now {self.mode}")
 
     def set(self):
         item = self.get_current_item()
 #        param = item['title']
 #        val = self.new_value
 #        print(f'New {param} = {val}')
-        print(f'In SET before change, item is: {item}')
-        item['value']['Working_val'] =  self.new_value
-        print(f'In SET after  change, item is: {item}')
+        # print(f'In SET before change, item is: {item}')
+        if item['value']['Working_val'] !=  self.new_value and self.new_value > 0:
+            item['value']['Working_val'] =  self.new_value
+            print(f"In SET, updated Working Value to {self.new_value}")
+        # print(f'In SET after  change, item is: {item}')
 
         self.new_value = 0          # reset this, or we copy previous remnant value
         self.mode = "menu"
@@ -177,3 +182,6 @@ class MenuNavigator:
 
     def set_switch_list(self, myswitchlist):
         self.switchlist = myswitchlist
+
+    def go_to_first(self):
+        self.current_index = 0

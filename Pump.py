@@ -7,7 +7,8 @@ import time
 class Pump:
     def __init__(self, ID, start_state):        # ability to start in ON state... need to sync with RX on startup
         self.state = start_state
-        self.last_time_switched = time.time() 	# localtime tuple would be nice... but need to write a decoder
+        self.start_time = time.time()           # time this instance was created
+        self.last_time_switched = self.start_time 	# localtime tuple would be nice... but need to write a decoder
         self.cum_seconds_on = 0					# NOTE:  Dependency on above in calc of cum_secs in switch_pump
         self.num_switch_events = 0
         self.ID = ID
