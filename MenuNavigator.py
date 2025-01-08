@@ -25,7 +25,7 @@ class MenuNavigator:
         self.device.clear()
         self.device.setCursor(0,0)
         self.device.printout(item['title'])
-        print(item['title'])
+        # print(item['title'])
         if "value" in item:
             self.device.setCursor(0, 1)
             self.device.printout(item['value']['Working_val'])
@@ -40,7 +40,7 @@ class MenuNavigator:
             self.display_current_item()
         elif self.mode == "value_change":
             item = self.get_current_item()
-            print(f'In NEXT, item is {item}')
+            # print(f'In NEXT, item is {item}')
             # if item['value']['Working_val'] == 0:
             # if self.new_value == 0:
             #     print("Setting new_value to default...")
@@ -48,7 +48,7 @@ class MenuNavigator:
             step = item['value']['Step']
 # no if neeed for inc...            
             self.new_value += step
-            print(f'In NEXT self.new_value is {self.new_value}')
+            # print(f'In NEXT self.new_value is {self.new_value}')
             self.device.setCursor(0, 1)
             self.device.printout(str(self.new_value) + "      ")
         elif self.mode == "view_events" or self.mode == "view_switch":
@@ -88,7 +88,7 @@ class MenuNavigator:
             self.display_current_item()
         elif self.mode == "value_change":
             item = self.get_current_item()
-            print(f'In PREV, item is {item}')
+            # print(f'In PREV, item is {item}')
             # if item['value']['Working_val'] == 0:
             # if self.new_value == 0:
             #     print("Setting new_value to default...")
@@ -96,7 +96,7 @@ class MenuNavigator:
             step = item['value']['Step']
             if self.new_value > step:
                 self.new_value -= step
-                print(f'In PREV self.new_value is {self.new_value}')
+                # print(f'In PREV self.new_value is {self.new_value}')
                 self.device.setCursor(0, 1)
                 self.device.printout(str(self.new_value) + "      ")
         elif self.mode == "view_events" or self.mode == "view_switch":
@@ -137,7 +137,7 @@ class MenuNavigator:
 #            print(f"Going back to previous menu level {len(self.current_level)}")
             self.display_current_item()
         else:
-            print("Already at the top-level menu.")
+            print("Already at the top-level menu.  This should not happen...")
 
     def enter(self):
         item = self.get_current_item()
@@ -151,15 +151,15 @@ class MenuNavigator:
             if callable(action):
                 action()                # do it...
             else:
-                print(f"Executing action: {item['action']}")
+                print(f"Simulate Executing action: {item['action']}")
         elif "value" in item:
             self.mode = "value_change"
             param = item['title']
             val = item['value']
             self.new_value = item['value']['Working_val']
-            print(f'In ENTER {param} = {val}')
+            # print(f'In ENTER {param} = {val}')
         else:
-            print("No further levels or actions available.")
+            print(f"Unknown type in item... check menu def.  {item}")
     
         # print(f"In ENTER, mode is now {self.mode}")
 
@@ -171,7 +171,7 @@ class MenuNavigator:
         # print(f'In SET before change, item is: {item}')
         if item['value']['Working_val'] !=  self.new_value and self.new_value > 0:
             item['value']['Working_val'] =  self.new_value
-            print(f"In SET, updated Working Value to {self.new_value}")
+            # print(f"In SET, updated Working Value to {self.new_value}")
         # print(f'In SET after  change, item is: {item}')
 
         self.new_value = 0          # reset this, or we copy previous remnant value

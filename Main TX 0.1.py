@@ -1,4 +1,5 @@
 # Trev's super dooper Tank/Pump monitoring system
+# region IMPORTS
 
 # from PiicoDev_RV3028 import PiicoDev_RV3028
 import RGB1602
@@ -22,6 +23,8 @@ from MenuNavigator import MenuNavigator
 
 # OK... major leap... intro to FSM...
 from SM_SimpleFSM import SimpleDevice
+# endregion
+# region initial declarations etc
 
 # constant/enums
 OP_MODE_AUTO        = 0
@@ -31,21 +34,134 @@ OP_MODE_MAINT       = 2
 UI_MODE_NORM        = 0
 UI_MODE_MENU        = 1
 
-TIMERSCALE          = 6     # permits fast speed debugging... normally, set to 60 for "minutes"
-DEFAULT_CYCLE       = 5
+TIMERSCALE          = 10            # permits fast speed debugging... normally, set to 60 for "minutes" in timed ops
+DEFAULT_CYCLE       = 5             # for timed stuff... might eliminate the default thing...
 
-# methods invoked from menu
-def display_depth():
-    global display_mode
+RADIO_PAUSE         = 1000
+MIN_FREE_SPACE      = 100           # in KB...
 
-    display_mode = "depth"
-    print(f'{display_mode=}')
+FLUSH_PERIOD        = 2
+ROTARY_PERIOD_MS    = 100           # needs to be short... check rotary ISR variables
 
-def display_pressure():
-    global display_mode
+EVENTRINGSIZE       = 20            # max log ringbuffer length
+SWITCHRINGSIZE      = 20
 
-    display_mode = "pressure"
-    print(f'{display_mode=}')
+MAX_OUTAGE          = 20            # seconds of no power
+
+#All menu-CONFIGURABLE parameters
+mydelay             = 5            # seconds, main loop period
+LCD_ON_TIME         = 600            # seconds
+Min_Dist            = 500           # full
+Max_Dist            = 1400          # empty
+MAX_LINE_PRESSURE   = 700           # TBC... but this seems about right
+MIN_LINE_PRESSURE   = 300           # tweak after running... and this ONLY applies in OP_MODE_IRRIG
+NO_LINE_PRESSURE    = 15            # tweak this too... applies in ANY pump-on mode
+MAX_CONTIN_RUNMINS  = 60            # 3 hours max runtime.  More than this looks like trouble
+
+SIMULATE_PUMP       = True          # debugging aid...replace pump switches with a PRINT
+DEBUGLVL            = 0
+ROC_AVERAGE         = 5             # make 1 for NO averaging... otherwise do an SMA of this period.  Need a ring buffer?
+
+# Physical Constants
+Tank_Height         = 1700
+OverFull	        = 250
+Delta               = 50            # change indicating pump state change has occurred
+TEMP_CONV_FACTOR 	= 3.3 / 65535   # looks like 3.3V / max res of 16-bit ADC ??
+
+# Tank variables/attributes
+depth               = 0
+last_depth          = 0
+depth_ROC           = 0
+max_ROC             = 0.2			# change in metres/minute... soon to be measured on SMA/ring buffer
+min_ROC             = 0.15          # experimental.. might need to tweak.  To avoid noise in anomaly tests
+
+op_mode             = OP_MODE_AUTO
+ui_mode             = UI_MODE_NORM
+
+# logging stuff...
+LOG_FREQ            = 80
+last_logged_depth   = 0
+last_logged_kpa     = 0
+min_log_change_m    = 0.001	        # to save space... only write to file if significant change in level
+max_kpa_change      = 10            # update after pressure sensor active
+level_init          = False 		# to get started
+
+ringbufferindex     = 0             # for SMA calculation... keep last n measures in a ring buffer
+eventindex          = 0             # for scrolling through error logs on screen
+switchindex         = 0
+
+lcdbtnflag          = True          # this should immediately trigger my asyncio timer on startup...
+
+# Misc stuff
+steady_state        = False         # if not, then don't check for anomalies
+clock_adjust_ms     = 0             # will be set later... this just to ensure it is ALWAYS something
+report_outage       = True          # do I report next power outage?
+
+# Gather all tank-related stuff with a view to making a class...
+housetank           = Tank("Empty")                     # make my tank object
+
+# New state...
+fill_states         = ["Overflow", "Full", "Near full", "Part full", "Near Empty", "Empty"]
+
+# Pins
+vsys                = ADC(3)                            # one day I'll monitor this for over/under...
+temp_sensor         = ADC(4)			                # Internal temperature sensor is connected to ADC channel 4
+lcdbtn 	            = Pin(6, Pin.IN, Pin.PULL_UP)		# check if IN is correct!
+buzzer 		        = Pin(16, Pin.OUT)
+presspmp            = Pin(15, Pin.IN, Pin.PULL_UP)      # prep for pressure pump monitor.  Needs output from opamp circuit
+prsspmp_led         = Pin(14, Pin.OUT)
+solenoid            = Pin(2, Pin.OUT, value=0)          # MUST ensure we don't close solenoid on startup... pump may already be running !!!  Note: Low == Open
+vbus_sense          = Pin('WL_GPIO2', Pin.IN)           # external power monitoring of VBUS
+led                 = Pin('LED', Pin.OUT)
+bp_pressure         = ADC(0)                            # Is this right?  or should it be Pin 26
+
+# Create pins for encoder lines and the onboard button
+
+enc_btn             = Pin(18, Pin.IN, Pin.PULL_UP)
+enc_a               = Pin(19, Pin.IN)
+enc_b               = Pin(20, Pin.IN)
+last_time           = 0
+count               = 0
+
+
+system              = SimpleDevice()                    #initialise my FSM.
+wf                  = MyWiFi()
+# Create PiicoDev sensor objects
+#First... I2C devices
+distSensor 	        = PiicoDev_VL53L1X()
+lcd 		        = RGB1602.RGB1602(16,2)
+radio               = PiicoDev_Transceiver()
+#rtc 		        = PiicoDev_RV3028()                 # Initialise the RTC module, enable charging
+
+# Configure your WiFi SSID and password
+ssid                = wf.ssid
+password            = wf.password
+# endregion
+# region DICTIONARIES
+config_dict         = {
+    'Delay'         : mydelay,
+    'LCD'           : LCD_ON_TIME,
+    'MinDist'       : Min_Dist,
+    'MaxDist'       : Max_Dist,
+    'Max Pressure'  : MAX_LINE_PRESSURE,
+    'Min Pressure'  : MIN_LINE_PRESSURE,
+    'No Pressure'   : NO_LINE_PRESSURE,
+    'Max RunMins'   : MAX_CONTIN_RUNMINS
+            }
+
+timer_dict          = {
+    'Cycle1'        : DEFAULT_CYCLE,
+    'Cycle2'        : DEFAULT_CYCLE,
+    'Cycle3'        : DEFAULT_CYCLE
+              }
+    
+water_list = [("cycle1", {"init" : 2, "run" : 2, "off" : 3}),
+              ("cycle2", {"init" : 4, "run" : 5, "off" : 3}),
+              ("cycle3", {"init" : 1, "run" : 2, "off" : 3}),
+            #   ("cycle4", {"init" : 1, "run" : 5, "off" : 1}),
+            #   ("cycle5", {"init" : 1, "run" : 1, "off" : 1}),
+            #   ("cycle6", {"init" : 1, "run" : 1, "off" : 1}),
+              ("zzzEND", {"init" : 1, "run" : 8, "off" : 9})]
 
 def update_config():
     
@@ -57,14 +173,15 @@ def update_config():
             if new_working_value > 0 and config_dict[param] != new_working_value:
                 config_dict[param] = new_working_value
                 print(f'Updated {param} to {new_working_value}')
+                lcd.clear()
                 lcd.setCursor(0,0)
                 lcd.printout(f'Updated {param}')
                 lcd.setCursor(0,1)
-                lcd.printout(f'to {new_working_value}')
+                lcd.printout(f'to {new_working_value:<13}')
         else:
             print(f"GAK! Config parameter {param} not found in config dictionary!")
             lcd.setCursor(0,0)
-            lcd.printout("No dict entry:")
+            lcd.printout("No dict entry:  ")
             lcd.setCursor(0,1)
             lcd.printout(param)
 
@@ -86,21 +203,157 @@ def update_timers():
         else:
             print(f"GAK! Config parameter {param} not found in timer dictionary!")
             lcd.setCursor(0,0)
-            lcd.printout("No dict entry:")
+            lcd.printout("No dict entry:  ")
             lcd.setCursor(0,1)
             lcd.printout(param)
+# endregion
+# region TIMED IRRIGATION
+def toggle_borepump(x:Timer):
+    global timer_state, op_mode, sl_index, my_timer, cyclename, cycle_end_time, nextcycle_ON_time
 
-    print(f"{timer_dict=}")
+    x_str = f'{x}'
+    period: int = int(int(x_str.split(',')[2].split('=')[1][0:-1]) / 1000)
+    milisecs = period
+    secs = int(milisecs / 1000)
+    mins = int(secs / 60)
+    mem = gc.mem_free()
+    # need to use tuples to get this... cant index dictionary, as unordered.  D'oh...
+    cyclename = str(sl_index)
+    # print(f'{current_time()} in toggle, {sl_index=}, {cyclename=}, {timer_state=}, {period=},  {secs} seconds... {mins} minutes... {mem} free')
+    if op_mode == OP_MODE_IRRIGATE:
+        if sl_index < len(slist) - 1:
+            timer_state = (timer_state + 1) % 3
+            now = time.time()
+            if  timer_state == 1:
+                # print(f"{current_time()}: TOGGLE - turning pump ON")
+                diff = slist[sl_index + 1] - slist[sl_index]        # look forward to next timer event
+                cycle_end_time = now + diff * TIMERSCALE
+                diff = slist[sl_index + 3] - slist[sl_index]
+                nextcycle_ON_time = now + diff * TIMERSCALE
+                # nextcycle_ON_time = now + (slist[sl_index + 1] + slist[sl_index + 2] + slist[sl_index + 3]) * TIMERSCALE
+                borepump_ON()        #turn_on()
+            elif timer_state == 2:
+                # diff = slist[sl_index + 2] - slist[sl_index]
+                # nextcycle_ON_time = now + diff * TIMERSCALE
+                # print(f"{current_time()}: TOGGLE - turning pump OFF")
+                borepump_OFF()       #turn_off()
+            elif timer_state == 0:
+                pass
+                # diff = slist[sl_index + 1] - slist[sl_index]
+                # nextcycle_ON_time = now + diff * TIMERSCALE
+                # print(f"{current_time()}: TOGGLE - Doing nothing")
+            if sl_index == len(slist) - 2:              # we must be in penultimate cycle, or last cycle
+                nextcycle_ON_time = now 
 
-def my_exit():                      # exit from MENU mode
+            # print(f" end cycle {display_time(secs_to_localtime(cycle_end_time))}\nnext cycle {display_time(secs_to_localtime(nextcycle_ON_time))}")
+        # now, set up next timer
+            sl_index += 1
+            diff = slist[sl_index] - slist[sl_index - 1]
+            # print(f"Creating timer for index {sl_index}, {slist[sl_index]}, {diff=}")
+            # if my_timer is not None:
+            #     my_timer.deinit()
+            my_timer = Timer(period=diff*TIMERSCALE*1000, mode=Timer.ONE_SHOT, callback=toggle_borepump)
+        # print(f"{timer_state=}")
+        else:
+            op_mode = OP_MODE_AUTO
+            print(f"{current_time()}: in TOGGLE... END IRRIGATION mode !  Now in {op_mode}")
+            if borepump.state:
+                borepump_OFF()       # to be sure, to be sure...
+                print(f"{current_time()}:in toggle, at END turning pump OFF.  Should already be OFF...")
+        if mem < 60000:
+            print("Collecting garbage...")              # moved to AFTER timer created... might avoid the couple seconds discrepancy.  TBC
+            gc.collect()
+    else:
+        print(f'{current_time()} in toggle {op_mode=}.  Why are we here??')
+
+def start_irrigation_schedule():
+    global timer_state, op_mode, slist, sl_index, my_timer, cycle_end_time, num_cycles          # cycle mod 3
+
+    try:
+        if op_mode == OP_MODE_IRRIGATE:
+            print(f"Can't start irrigation program... already in {op_mode}")
+        else:
+            swl=sorted(water_list, key = lambda x: x[0])
+            print(f"{current_time()}: Starting timed watering...")
+            ev_log.write(f"{current_time()}: Starting timed watering\n")
+            op_mode          = OP_MODE_IRRIGATE          # the trick is, how to reset this when we are done...
+
+            timer_state      = 0
+            sl_index         = 0
+            next_switch_time = 0
+            cycle_end_time   = 0
+            num_cycles       = 0
+            
+            slist.clear()
+
+            for s in swl:
+                cyclename = s[0]
+                # print(f"Adding timer nodes to slist for cycle {cyclename}")
+                if "end" in cyclename.lower():
+                    t=s[1]["init"]
+                    next_switch_time += t
+                    # print(f'{next_switch_time=}')
+                    # print(f"Irrigation end time: {next_switch_time}")
+                    slist.append(next_switch_time)
+                    break
+                else:
+                    for k in ["init", "run", "off"]:
+                        t=s[1][k]
+                        if k == "init" and t == 0:
+                            # print(f"Skipping {cyclename}")
+                            break
+                        else:
+                            next_switch_time += t
+                            # print(f'{next_switch_time=}')
+                            slist.append(next_switch_time)
+                            num_cycles += 1
+
+            slist.sort()
+            # print(f"Initiating timers: first target is {slist[0]}.  Total {len(slist)} targets")
+            sl_index = 0
+            my_timer = Timer(period=slist[sl_index]*TIMERSCALE*1000, mode=Timer.ONE_SHOT, callback=toggle_borepump)
+            # print(slist)
+            lcd.setCursor(0,1)
+            lcd.printout(f"Schedule created")
+            # print("Watering Schedule created")
+            return
+        
+    except MemoryError:
+        print("MemoryError caught")
+        print(f"before gc free mem: {gc.mem_free()}")
+        gc.collect()
+        print(f" after gc free mem: {gc.mem_free()}")
+
+    except Exception as e:
+        print(f"Exception caught in start_irrigation_schedule: {e}")
+        print(f"before gc free mem: {gc.mem_free()}")
+        gc.collect()
+        print(f" after gc free mem: {gc.mem_free()}")
+# endregion
+# region MENU METHODS
+# methods invoked from menu
+
+def exit_menu():                      # exit from MENU mode
     global ui_mode
     # process_menu = False
     lcd.setCursor(0,1)
-    lcd.printout(f'{"Exit Update":<16}')
+    lcd.printout(f'{"Exit & Update":<16}')
     update_config()
     update_timers()
     ui_mode = UI_MODE_NORM
     tim=Timer(period=config_dict["LCD"] * 1000, mode=Timer.ONE_SHOT, callback=lcd_off)
+
+def display_depth():
+    global display_mode
+
+    display_mode = "depth"
+    print(f'{display_mode=}')
+
+def display_pressure():
+    global display_mode
+
+    display_mode = "pressure"
+    print(f'{display_mode=}')
 
 def my_go_back():
     navigator.go_back()
@@ -158,137 +411,6 @@ def showdir():
             fstat = os.stat(fn)
             fdate = fstat[7]
             print(f'{fn}: time {display_time(secs_to_localtime(fdate))}')
-    
-water_list = [("cycle1", {"init" : 4, "run" : 20, "off" : 5}),
-              ("cycle2", {"init" : 4, "run" : 20, "off" : 5}),
-              ("cycle3", {"init" : 4, "run" : 5, "off" : 1}),
-            #   ("cycle4", {"init" : 1, "run" : 5, "off" : 1}),
-            #   ("cycle5", {"init" : 1, "run" : 1, "off" : 1}),
-            #   ("cycle6", {"init" : 1, "run" : 1, "off" : 1}),
-              ("zzzEND", {"init" : 4, "run" : 6, "off" : 1})]
-
-def toggle_borepump(x:Timer):
-    global timer_state, op_mode, sl_index, my_timer
-
-    x_str = f'{x}'
-    period: int = int(int(x_str.split(',')[2].split('=')[1][0:-1]) / 1000)
-    milisecs = period
-    secs = int(milisecs / 1000)
-    mins = int(secs / 60)
-    mem = gc.mem_free()
-    print(f'{current_time()} in toggle, {sl_index=}, {timer_state=}, {period=},  {secs} seconds... {mins} minutes... {mem} free')
-    if op_mode == OP_MODE_IRRIGATE:
-        if mem < 60000:
-            print("Collecting garbage...")
-            gc.collect()
-        if sl_index < len(slist) - 1:
-            timer_state = (timer_state + 1) % 3
-            if   timer_state == 1:
-                print(f"{current_time()}: TOGGLE - turning pump ON")
-                borepump_ON()        #turn_on()
-            elif timer_state == 2:
-                print(f"{current_time()}: TOGGLE - turning pump OFF")
-                borepump_OFF()       #turn_off()
-            elif timer_state == 0:
-                print(f"{current_time()}: TOGGLE - Doing nothing")
-        # now, set up next timer
-            sl_index += 1
-            diff = slist[sl_index] - slist[sl_index - 1]
-            print(f"Creating timer for index {sl_index}, {slist[sl_index]}, {diff=}")
-            # if my_timer is not None:
-            #     my_timer.deinit()
-            my_timer = Timer(period=diff*TIMERSCALE*1000, mode=Timer.ONE_SHOT, callback=toggle_borepump)
-        # print(f"{timer_state=}")
-        else:
-            op_mode = OP_MODE_AUTO
-            print(f"{current_time()}: in TOGGLE... END IRRIGATION mode !  Now in {op_mode}")
-            if borepump.state:
-                borepump_OFF()       # to be sure, to be sure...
-                print(f"{current_time()}:in toggle, at END turning pump OFF.  Should already be OFF...")
-    else:
-        print(f'{current_time()} in toggle {op_mode=}.  Why ??')
-
-def start_irrigation_schedule():
-    global timer_state, op_mode, slist, sl_index, my_timer          # cycle mod 3
-
-    try:
-        if op_mode == OP_MODE_IRRIGATE:
-            print(f"Can't start irrigation program... already in {op_mode}")
-        else:
-            swl=sorted(water_list, key = lambda x: x[0])
-            print(f"{current_time()}: Starting timed watering...")
-            ev_log.write(f"{current_time()}: Starting timed watering\n")
-            op_mode = OP_MODE_IRRIGATE          # the trick is, how to reset this when we are done...
-
-            timer_state      = 0
-            sl_index         = 0
-            next_switch_time = 0
-            slist.clear()
-
-            for s in swl:
-                cyclename = s[0]
-                print(f"Adding timer nodes to slist for cycle {cyclename}")
-                if "end" in cyclename.lower():
-                    t=s[1][k]
-                    next_switch_time += t
-                    print(f'{next_switch_time=}')
-                    print(f"Irrigation end time set: {next_switch_time}")
-                    slist.append(next_switch_time)
-                    break
-                else:
-                    for k in ["init", "run", "off"]:
-                        t=s[1][k]
-                        next_switch_time += t
-                        print(f'{next_switch_time=}')
-                        slist.append(next_switch_time)
-
-            slist.sort()
-            print(f"Initiating timers: first target is {slist[0]}.  Total {len(slist)} targets")
-            sl_index = 0
-            my_timer = Timer(period=slist[sl_index]*TIMERSCALE*1000, mode=Timer.ONE_SHOT, callback=toggle_borepump)
-            print(slist)
-
-            print("Watering Schedule created")
-            return
-        
-    except MemoryError:
-        print("MemoryError caught")
-        print(f"before gc free mem: {gc.mem_free()}")
-        gc.collect()
-        print(f" after gc free mem: {gc.mem_free()}")
-
-    except Exception as e:
-        print(f"Exception caught in start_irrigation_schedule: {e}")
-        print(f"before gc free mem: {gc.mem_free()}")
-        gc.collect()
-        print(f" after gc free mem: {gc.mem_free()}")
-        
-#All menu-CONFIGURABLE parameters
-mydelay             = 5        # seconds
-LCD_ON_TIME         = 10        # seconds
-Min_Dist            = 500       # full
-Max_Dist            = 1400      # empty
-MAX_LINE_PRESSURE   = 700       # TBC... but this seems about right
-MIN_LINE_PRESSURE   = 300       # tweak after running... and this ONLY applies in OP_MODE_IRRIG
-NO_LINE_PRESSURE    = 15        # tweak this too... applies in ANY pump-on mode
-MAX_CONTINUOUS_RUNMINS = 1 * 30    # 3 hours max runtime.  More than this looks like trouble
-
-config_dict = {
-    'Delay'         : mydelay,
-    'LCD'           : LCD_ON_TIME,
-    'MinDist'       : Min_Dist,
-    'MaxDist'       : Max_Dist,
-    'Max Pressure'  : MAX_LINE_PRESSURE,
-    'Min Pressure'  : MIN_LINE_PRESSURE,
-    'No Pressure'   : NO_LINE_PRESSURE,
-    'Max RunMins'   : MAX_CONTINUOUS_RUNMINS
-               }
-
-timer_dict = {
-    'Cycle1'        : DEFAULT_CYCLE,
-    'Cycle2'        : DEFAULT_CYCLE,
-    'Cycle3'        : DEFAULT_CYCLE
-              }
 
 new_menu = {
     "title": "L0 Main Menu",
@@ -337,7 +459,7 @@ new_menu = {
                 { "title": "Max Pressure", "value": {"Default_val": 700,  "Working_val" : MAX_LINE_PRESSURE,        "Step" : 25}},                
                 { "title": "Min Pressure", "value": {"Default_val": 300,  "Working_val" : MIN_LINE_PRESSURE,        "Step" : 25}},
                 { "title": "No Pressure",  "value": {"Default_val": 15,   "Working_val" : NO_LINE_PRESSURE,         "Step" : 1}},
-                { "title": "Max RunMins",  "value": {"Default_val": 180,  "Working_val" : MAX_CONTINUOUS_RUNMINS,   "Step" : 10}},
+                { "title": "Max RunMins",  "value": {"Default_val": 180,  "Working_val" : MAX_CONTIN_RUNMINS,   "Step" : 10}},
                 { "title": "Go back",  "action": my_go_back}
             ]
           },
@@ -355,58 +477,12 @@ new_menu = {
         ]
       },
     {
-        "title": "5 Exit", "action": my_exit
+        "title": "5 Exit", "action": exit_menu
     }
     ]
 }
 
-system      = SimpleDevice()            #initialise my FSM.
-wf          = MyWiFi()
-
-DEBUGLVL    = 0
-ROC_AVERAGE = 5         # make 1 for NO averaging... otherwise do an SMA of this period.  Need a ring buffer?
-
-# region initial declarations etc
-# Configure your WiFi SSID and password
-ssid        = wf.ssid
-password    = wf.password
-
-# Create PiicoDev sensor objects
-
-#First... I2C devices
-distSensor 	= PiicoDev_VL53L1X()
-#rtc 		= PiicoDev_RV3028()     # Initialise the RTC module, enable charging
-lcd 		= RGB1602.RGB1602(16,2)
-
-radio       = PiicoDev_Transceiver()
-RADIO_PAUSE = 1000
-MIN_FREE_SPACE = 100                # in KB...
-
-lcdbtnflag     = True               # this should immediately trigger my asyncio timer on startup...
-
-# Pins
-vsys        = ADC(3)                            # one day I'll monitor this for over/under...
-temp_sensor = ADC(4)			                # Internal temperature sensor is connected to ADC channel 4
-lcdbtn 	    = Pin(6, Pin.IN, Pin.PULL_UP)		# check if IN is correct!
-buzzer 		= Pin(16, Pin.OUT)
-presspmp    = Pin(15, Pin.IN, Pin.PULL_UP)      # prep for pressure pump monitor.  Needs output from opamp circuit
-prsspmp_led = Pin(14, Pin.OUT)
-solenoid    = Pin(2, Pin.OUT, value=0)          # MUST ensure we don't close solenoid on startup... pump may already be running !!!  Note: Low == Open
-vbus_sense  = Pin('WL_GPIO2', Pin.IN)           # external power monitoring of VBUS
-led         = Pin('LED', Pin.OUT)
-bp_pressure = ADC(0)                            # Is this right?  or should it be Pin 26
-
-# Create pins for encoder lines and the onboard button
-
-enc_btn     = Pin(18, Pin.IN, Pin.PULL_UP)
-enc_a       = Pin(19, Pin.IN)
-enc_b       = Pin(20, Pin.IN)
-last_time   = 0
-count       = 0
-
 navigator   = MenuNavigator(new_menu, lcd)
-op_mode = OP_MODE_AUTO
-ui_mode = UI_MODE_NORM
 
 def encoder_a_IRQ(pin):
     global enc_a_last_time, encoder_count
@@ -429,84 +505,50 @@ def encoder_btn_IRQ(pin):
         encoder_btn_state = True
     enc_btn_last_time = new_time
 
-def rotary_menu_mode():
+def enable_controls():
     
    # Enable the interupt handlers
     enc_a.irq(trigger=Pin.IRQ_RISING, handler=encoder_a_IRQ)
     enc_btn.irq(trigger=Pin.IRQ_FALLING, handler=encoder_btn_IRQ)
 
-# Misc stuff
-conv_fac 	= 3.3 / 65535
-steady_state = False                # if not, then don't check for anomalies
-clock_adjust_ms = 0                 # will be set later... this just to ensure it is ALWAYS something
-MAX_OUTAGE  = 20                     # seconds of no power
-report_outage    = True
-
-# Gather all tank-related stuff with a view to making a class...
-housetank   = Tank("Empty")         # make my tank object
-
-# New state...
-fill_states = ["Overflow", "Full", "Near full", "Part full", "Near Empty", "Empty"]
-# Physical Constants
-Tank_Height = 1700
-OverFull	= 250
-Delta       = 50            # change indicating pump state change has occurred
-
-# Tank variables/attributes
-depth       = 0
-last_depth  = 0
-depth_ROC   = 0
-max_ROC     = 0.2			    # change in metres/minute... soon to be measured on SMA/ring buffer
-min_ROC     = 0.15              # experimental.. might need to tweak.  To avoid noise in anomaly tests
-
-FLUSH_PERIOD = 2
-ROTARY_PERIOD_MS = 100           # needs to be short... check rotary ISR variables
-
-# logging stuff...
-log_freq    = 5
-last_logged_depth = 0
-last_logged_kpa = 0
-min_log_change_m = 0.001	# to save space... only write to file if significant change in level
-max_kpa_change   = 10       # update after pressure sensor active
-level_init  = False 		# to get started
-
-ringbufferindex = 0         # for SMA calculation... keep last n measures in a ring buffer
-
-EVENTRINGSIZE   = 10        # max log ringbuffer length
-SWITCHRINGSIZE  = 20
-eventindex      = 0         # for scrolling through error logs on screen
-switchindex     = 0
-
+    lcdbtn.irq(handler=lcdbtn_pressed, trigger=Pin.IRQ_RISING)
 # endregion
-
-# start doing stuff
-buzzer.value(0)			    # turn buzzer off
-lcd.clear()
-#rtc.getDateTime()
-
-# how I will monitor pressure pump state...
+# region PRESS PUMP
+# # how I will monitor pressure pump state...
 def pp_callback(pin):
     presspmp.irq(handler=None)
     v = pin.value()
     presspump.switch_pump(v)
     print("Pressure Pump Pin triggered:", v)
     sleep_ms(100)
-    presspmp.irq(trigger=Pin.IRQ_RISING|Pin.IRQ_FALLING, handler=pp_callback)
 
-# Configure the pin
+presspmp.irq(trigger=Pin.IRQ_RISING|Pin.IRQ_FALLING, handler=pp_callback)
 
 # Attach the ISR for both rising and falling edges
-presspmp.irq(trigger=Pin.IRQ_RISING|Pin.IRQ_FALLING, handler=pp_callback)
+#
 #presspmp.irq(trigger=Pin.IRQ_FALLING, handler=pp_LO_callback)
+#
+# def mypp_handler(pin):
+#     global l, mypp
+#
+#     mypp.irq(handler=None)
+#     v = pin.value()
+#     if v:
+#         print(str_HI)
+#         l.write(str_HI)
+#     else:
+#         print(str_LO)
+#         l.write(str_LO)
+#     l.flush()
+#     sleep(1)
+#     mypp.irq(trigger=Pin.IRQ_RISING|Pin.IRQ_FALLING, handler=mypp_handler)
 
-# CHANGE THIS... do after initialising internal clock
-
+# endregion
+# region LCD
 def lcdbtn_pressed(x):          # my lcd button ISR
     global lcdbtnflag
     lcdbtnflag = True
     sleep_ms(300)
-
-lcdbtn.irq(handler=lcdbtn_pressed, trigger=Pin.IRQ_RISING)
 
 def lcd_off(x):
     lcd.setRGB(0,0,0)
@@ -524,30 +566,32 @@ async def check_lcd_btn():
                 tim=Timer(period=config_dict["LCD"] * 1000, mode=Timer.ONE_SHOT, callback=lcd_off)
             lcdbtnflag = False
         await uasyncio.sleep(0.5)
-
+# endregion
+# region UNUSED methods
 # def Pico_RTC():
 #     tod   = rtc.timestamp()
 #     year  = tod.split()[0].split("-")[0]
 #     month = tod.split()[0].split("-")[1]
 #     day   = tod.split()[0].split("-")[2]
 #     shortyear = year[2:]
-
+#endregion
+# region MAIN METHODS
 def init_logging():
     global year, month, day, shortyear
     global f, ev_log, pp_log
 
-    now   = secs_to_localtime(time.time())      # getcurrent time, convert to local SA time
-    year  = now[0]
-    month = now[1]
-    day   = now[2]
-    shortyear = str(year)[2:]
-    datestr = f"{shortyear}{month:02}{day:02}"
-    daylogname  = f'tank {datestr}.txt'
-    pplogname   = f'pressure {datestr}.txt'
-    eventlogname = 'borepump_events.txt'
-    f      = open(daylogname, "a")
-    ev_log = open(eventlogname, "a")
-    pp_log = open(pplogname, "a")
+    now             = secs_to_localtime(time.time())      # getcurrent time, convert to local SA time
+    year            = now[0]
+    month           = now[1]
+    day             = now[2]
+    shortyear       = str(year)[2:]
+    datestr         = f"{shortyear}{month:02}{day:02}"
+    daylogname      = f'tank {datestr}.txt'
+    pplogname       = f'pressure {datestr}.txt'
+    eventlogname    = 'borepump_events.txt'
+    f               = open(daylogname, "a")
+    ev_log          = open(eventlogname, "a")
+    pp_log          = open(pplogname, "a")
 
 def get_fill_state(d):
     if d > config_dict["MaxDist"]:
@@ -606,8 +650,7 @@ def updateData():
     depth_str = f"{depth:.2f}m " + tank_is
     bp_kpa = 300 + ringbufferindex * 100            # hack for testing... replace with ADC read when calibrated
     pressure_str = f'{bp_kpa:3} kPa'    # might change this to be updated more frequently in a dedicated asyncio loop...
-    temp = 27 - (temp_sensor.read_u16() * conv_fac - 0.706)/0.001721
-
+    temp = 27 - (temp_sensor.read_u16() * TEMP_CONV_FACTOR - 0.706)/0.001721
 
 def current_time()-> str:
     now   = secs_to_localtime(time.time())      # getcurrent time, convert to local SA time
@@ -676,48 +719,54 @@ def radio_time(local_time):
     return(local_time + clock_adjust_ms)
 
 def borepump_ON():
-    tup = ("ON", radio_time(time.time()))   # was previosuly counter... now, time
-#            print(tup)
-    system.on_event("ON REQ")
-    transmit_and_pause(tup, 2 * RADIO_PAUSE)    # that's two sleeps... as expecting immediate reply
-# try implicit CHECK... which should happen in my RX module as state_changed
-#            radio.send("CHECK")
-#            sleep_ms(RADIO_PAUSE)
-    if radio.receive():
-        rply = radio.message
-    #                print(f"radio.message (rm): {rm}")
-    #                print(f"received response: rply is {rply}")
-        valid_response, new_state = parse_reply(rply)
-    #                print(f"in ctlBP: rply is {valid_response} and {new_state}")
-        if valid_response and new_state > 0:
-            borepump.switch_pump(True)
-            add_to_switch_ring("PUMP ON")
-            ev_log.write(f"{event_time} ON\n")
-            system.on_event("ON ACK")
-        else:
-            log_switch_error(new_state)
+    if SIMULATE_PUMP:
+        print("SIM Pump ON")
+    else:
+        tup = ("ON", radio_time(time.time()))   # was previosuly counter... now, time
+    #            print(tup)
+        system.on_event("ON REQ")
+        transmit_and_pause(tup, 2 * RADIO_PAUSE)    # that's two sleeps... as expecting immediate reply
+    # try implicit CHECK... which should happen in my RX module as state_changed
+    #            radio.send("CHECK")
+    #            sleep_ms(RADIO_PAUSE)
+        if radio.receive():
+            rply = radio.message
+        #                print(f"radio.message (rm): {rm}")
+        #                print(f"received response: rply is {rply}")
+            valid_response, new_state = parse_reply(rply)
+        #                print(f"in ctlBP: rply is {valid_response} and {new_state}")
+            if valid_response and new_state > 0:
+                borepump.switch_pump(True)
+                add_to_switch_ring("PUMP ON")
+                ev_log.write(f"{event_time} ON\n")
+                system.on_event("ON ACK")
+            else:
+                log_switch_error(new_state)
 
 def borepump_OFF():
-    tup = ("OFF", radio_time(time.time()))
-#            print(tup)
-    system.on_event("OFF REQ")
-    transmit_and_pause(tup, 2 * RADIO_PAUSE)    # that's two sleeps... as expecting immediate reply
-# try implicit CHECK... which should happen in my RX module as state_changed
-#            radio.send("CHECK")
-#            sleep_ms(RADIO_PAUSE)
-    if radio.receive():
-        rply = radio.message
-        valid_response, new_state = parse_reply(rply)
-#                print(f"in ctlBP: rply is {valid_response} and {new_state}")
-        if valid_response and not new_state:        # this means I received confirmation that pump is OFF...
-            borepump.switch_pump(False)
-            add_to_switch_ring("PUMP OFF")
-            ev_log.write(f"{event_time} OFF\n")
-            system.on_event("OFF ACK")
-            if DEBUGLVL > 1: print("cBP: Closing valve")
-            solenoid.value(1)               # wait until pump OFF confirmed before closing valve !!!
-        else:
-            log_switch_error(new_state)
+    if SIMULATE_PUMP:
+        print("SIM Pump OFF")
+    else:
+        tup = ("OFF", radio_time(time.time()))
+    #            print(tup)
+        system.on_event("OFF REQ")
+        transmit_and_pause(tup, 2 * RADIO_PAUSE)    # that's two sleeps... as expecting immediate reply
+    # try implicit CHECK... which should happen in my RX module as state_changed
+    #            radio.send("CHECK")
+    #            sleep_ms(RADIO_PAUSE)
+        if radio.receive():
+            rply = radio.message
+            valid_response, new_state = parse_reply(rply)
+    #                print(f"in ctlBP: rply is {valid_response} and {new_state}")
+            if valid_response and not new_state:        # this means I received confirmation that pump is OFF...
+                borepump.switch_pump(False)
+                add_to_switch_ring("PUMP OFF")
+                ev_log.write(f"{event_time} OFF\n")
+                system.on_event("OFF ACK")
+                if DEBUGLVL > 1: print("cBP: Closing valve")
+                solenoid.value(1)               # wait until pump OFF confirmed before closing valve !!!
+            else:
+                log_switch_error(new_state)
 
 def controlBorePump():
     global tank_is, radio, event_time, system
@@ -851,17 +900,40 @@ def DisplayData()->None:
         lcd.clear()
         lcd.setCursor(0, 0)
         lcd.printout(str_time)
-        if display_mode == "depth":
-            display_str = depth_str
-        elif display_mode == "pressure":
-            display_str = pressure_str
-        else:
-            display_str = "?? no display mode"
+        if op_mode == OP_MODE_AUTO:
+            if display_mode == "depth":
+                display_str = depth_str
+            elif display_mode == "pressure":
+                display_str = pressure_str
+            else:
+                display_str = "?? no display mode"
+        elif op_mode == OP_MODE_IRRIGATE:
+            if cycle_end_time > 0:
+                now = time.time()
+                secs_remaining = cycle_end_time - now
+                # print(f"In Display, {secs_remaining=}")
+                if sl_index == num_cycles:
+                    display_str = f"End TWM {pressure_str}"
+                else:
+                    if secs_remaining < 0:                              # explain... it works, but is cryptic!
+                        secs_to_next_ON = nextcycle_ON_time - now       # what if this is negative ???  
+                        if secs_to_next_ON < 60:
+                            display_str = f"Wait {secs_to_next_ON}s {pressure_str}"
+                        else:
+                            display_str = f"Wait {int(secs_to_next_ON / 60)}m {pressure_str}"
+                    else:
+                        if secs_remaining > 60:
+                            disp_time = f"{int(secs_remaining / 60)}m"
+                        else:
+                            disp_time = f"{secs_remaining}s"
+                        display_str = f"C{sl_index + 1}/{num_cycles} {disp_time} {pressure_str}"
+            else:
+                display_str = "Cycle Pending..."
         lcd.setCursor(0, 1)
-        lcd.printout(display_str)
+        lcd.printout(f"{display_str:<16}")
 
 def LogData()->None:
-    global log_freq
+    global LOG_FREQ
     global level_init
     global last_logged_depth
     global last_logged_kpa
@@ -1077,7 +1149,7 @@ def init_ringbuffers():
 
 def init_everything_else():
     global borepump, steady_state, free_space_KB, presspump, vbus_on_time, display_mode, navigator, encoder_count, encoder_btn_state, enc_a_last_time, enc_btn_last_time
-    global slist
+    global slist, cycle_end_time
 
     encoder_count       = 0       # to track rotary next/prevs
     enc_a_last_time     = utime.ticks_ms()
@@ -1085,7 +1157,7 @@ def init_everything_else():
     enc_btn_last_time   = enc_a_last_time
 
     slist=[]
-    
+
     lcd_on()  
 # Get the current pump state and init my object    
     borepump = Pump("BorePump", get_initial_pump_state())
@@ -1113,7 +1185,7 @@ def init_everything_else():
     steady_state = False
     vbus_on_time = time.time()      # init this... so we can test external
     display_mode = "depth"
-    rotary_menu_mode()              # enable rotary encoder for menu ops
+    enable_controls()              # enable rotary encoder, LCD B/L button etc
 
 def heartbeat() -> bool:
     global borepump
@@ -1174,12 +1246,27 @@ def sim_pressure_pump_detect(x)->bool:            # to be hacked when I connect 
 def sim_solenoid_detect()->bool:
     return True
 
+def monitor_vbus():
+    global vbus_on_time, report_outage
+
+    now = time.time()
+    if vbus_sense.value():
+        vbus_on_time = now
+        report_outage = True
+    else:
+        if (now - vbus_on_time >= MAX_OUTAGE) and report_outage:
+            s = f"{display_time(secs_to_localtime(time.time()))}  Power off for more than {MAX_OUTAGE} seconds\n"
+            ev_log.write(s)  # seconds since last saw power 
+            report_outage = False
+            housekeeping(False)
+
+# endregion
+# region ASYNCIO defs
 async def regular_flush(m)->None:
     while True:
         f.flush()
         ev_log.flush()
         await uasyncio.sleep(m)
-
 
 async def check_rotary_state(menu_sleep:int)->None:
     global ui_mode, encoder_count, encoder_btn_state
@@ -1219,36 +1306,6 @@ async def check_rotary_state(menu_sleep:int)->None:
 
         await uasyncio.sleep_ms(menu_sleep)
 
-# def mypp_handler(pin):
-#     global l, mypp
-
-#     mypp.irq(handler=None)
-#     v = pin.value()
-#     if v:
-#         print(str_HI)
-#         l.write(str_HI)
-#     else:
-#         print(str_LO)
-#         l.write(str_LO)
-# #    l.flush()
-#     sleep(1)
-#     mypp.irq(trigger=Pin.IRQ_RISING|Pin.IRQ_FALLING, handler=mypp_handler)
-
-
-def monitor_vbus():
-    global vbus_on_time, report_outage
-
-    now = time.time()
-    if vbus_sense.value():
-        vbus_on_time = now
-        report_outage = True
-    else:
-        if (now - vbus_on_time >= MAX_OUTAGE) and report_outage:
-            s = f"{display_time(secs_to_localtime(time.time()))}  Power off for more than {MAX_OUTAGE} seconds\n"
-            ev_log.write(s)  # seconds since last saw power 
-            report_outage = False
-            housekeeping(False)
-
 async def blinkx2():
     while True:
         led.value(1)
@@ -1263,11 +1320,12 @@ async def blinkx2():
 async def do_main_loop():
     global event_time, ev_log, steady_state, housetank, system, op_mode
 
-    print("RUNNING START")
-    rec_num=0
-    #radio.rfm69_reset
+    print("RUNNING do_main_loop()")
+    # start doing stuff
+    buzzer.value(0)			    # turn buzzer off
+    lcd.clear()
     lcd_on()
-# first cut at how to progress SM on start-up.  Not clear if this is optimal.  Maybe better to drive this inside SM methods
+    #radio.rfm69_reset
 
     if not system:              # yikes... don't have a SM ??
         if DEBUGLVL > 0:
@@ -1318,9 +1376,12 @@ async def do_main_loop():
 # start coroutines..
     uasyncio.create_task(blinkx2())                             # visual indicator we are running
     uasyncio.create_task(check_lcd_btn())                       # start up lcd_button widget
-    uasyncio.create_task(regular_flush(FLUSH_PERIOD))           # flush data every 15 minutes
-    uasyncio.create_task(check_rotary_state(ROTARY_PERIOD_MS))  # flush data every 15 minutes
+    uasyncio.create_task(regular_flush(FLUSH_PERIOD))           # flush data every FLUSH_PERIOD minutes
+    uasyncio.create_task(check_rotary_state(ROTARY_PERIOD_MS))  # check rotary every ROTARY_PERIOD_MS milliseconds
 
+    start_irrigation_schedule()     # so I don't have to mess with rotary to test timer stuff
+
+    rec_num=0
     while True:
         updateClock()			                    # get datetime stuff
         updateData()			                    # monitor water depth
@@ -1332,8 +1393,8 @@ async def do_main_loop():
     #        listen_to_radio()		                # check for badness
             DisplayData()
 # experimental...
-            if rec_num % 3 == 0:           
-                LogData()			                    # record it
+            if rec_num % LOG_FREQ == 0:           
+                LogData()			                # record it
             if steady_state: checkForAnomalies()	# test for weirdness
             rec_num += 1
             if rec_num > ROC_AVERAGE and not steady_state: steady_state = True    # just ignore data until ringbuf is fully populated
@@ -1343,6 +1404,8 @@ async def do_main_loop():
             monitor_vbus()                          # escape clause... to trigger dump...
         # print(f"{event_time} main loop: {rec_num=}, {op_mode=}, {steady_state=}")
         await uasyncio.sleep_ms(delay_ms)
+
+# endregion
 
 def main() -> None:
     try:
