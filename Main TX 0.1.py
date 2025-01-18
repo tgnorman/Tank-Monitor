@@ -34,8 +34,9 @@ OP_MODE_MAINT       = 2
 UI_MODE_NORM        = 0
 UI_MODE_MENU        = 1
 
-TIMERSCALE          = 10            # permits fast speed debugging... normally, set to 60 for "minutes" in timed ops
-DEFAULT_CYCLE       = 5             # for timed stuff... might eliminate the default thing...
+TIMERSCALE          = 60             # permits fast speed debugging... normally, set to 60 for "minutes" in timed ops
+DEFAULT_CYCLE       = 30             # for timed stuff... might eliminate the default thing...
+DEFAULT_DUTY_CYCLE  = 40                # % ON time for irrigation program
 
 RADIO_PAUSE         = 1000
 MIN_FREE_SPACE      = 100           # in KB...
@@ -49,8 +50,8 @@ SWITCHRINGSIZE      = 20
 MAX_OUTAGE          = 20            # seconds of no power
 
 #All menu-CONFIGURABLE parameters
-mydelay             = 5            # seconds, main loop period
-LCD_ON_TIME         = 600            # seconds
+mydelay             = 30            # seconds, main loop period
+LCD_ON_TIME         = 180            # seconds
 Min_Dist            = 500           # full
 Max_Dist            = 1400          # empty
 MAX_LINE_PRESSURE   = 700           # TBC... but this seems about right
@@ -58,7 +59,7 @@ MIN_LINE_PRESSURE   = 300           # tweak after running... and this ONLY appli
 NO_LINE_PRESSURE    = 15            # tweak this too... applies in ANY pump-on mode
 MAX_CONTIN_RUNMINS  = 60            # 3 hours max runtime.  More than this looks like trouble
 
-SIMULATE_PUMP       = True          # debugging aid...replace pump switches with a PRINT
+SIMULATE_PUMP       = False         # debugging aid...replace pump switches with a PRINT
 DEBUGLVL            = 0
 ROC_AVERAGE         = 5             # make 1 for NO averaging... otherwise do an SMA of this period.  Need a ring buffer?
 
@@ -79,10 +80,10 @@ op_mode             = OP_MODE_AUTO
 ui_mode             = UI_MODE_NORM
 
 # logging stuff...
-LOG_FREQ            = 80
+LOG_FREQ            = 1
 last_logged_depth   = 0
 last_logged_kpa     = 0
-min_log_change_m    = 0.001	        # to save space... only write to file if significant change in level
+min_log_change_m    = 0.005         # to save space... only write to file if significant change in level
 max_kpa_change      = 10            # update after pressure sensor active
 level_init          = False 		# to get started
 
@@ -123,11 +124,10 @@ enc_b               = Pin(20, Pin.IN)
 last_time           = 0
 count               = 0
 
-
 system              = SimpleDevice()                    #initialise my FSM.
 wf                  = MyWiFi()
+
 # Create PiicoDev sensor objects
-#First... I2C devices
 distSensor 	        = PiicoDev_VL53L1X()
 lcd 		        = RGB1602.RGB1602(16,2)
 radio               = PiicoDev_Transceiver()
@@ -152,16 +152,18 @@ config_dict         = {
 timer_dict          = {
     'Cycle1'        : DEFAULT_CYCLE,
     'Cycle2'        : DEFAULT_CYCLE,
-    'Cycle3'        : DEFAULT_CYCLE
+    'Cycle3'        : DEFAULT_CYCLE,
+    'Duty Cycle'    : DEFAULT_DUTY_CYCLE
               }
     
-water_list = [("cycle1", {"init" : 2, "run" : 2, "off" : 3}),
-              ("cycle2", {"init" : 4, "run" : 5, "off" : 3}),
-              ("cycle3", {"init" : 1, "run" : 2, "off" : 3}),
-            #   ("cycle4", {"init" : 1, "run" : 5, "off" : 1}),
-            #   ("cycle5", {"init" : 1, "run" : 1, "off" : 1}),
-            #   ("cycle6", {"init" : 1, "run" : 1, "off" : 1}),
-              ("zzzEND", {"init" : 1, "run" : 8, "off" : 9})]
+program_list = [
+              ("Cycle1", {"init" : 10, "run" : 20, "off" : 19}),
+              ("Cycle2", {"init" : 1, "run" : 20, "off" : 19}),
+              ("Cycle3", {"init" : 1, "run" : 20, "off" : 19}),
+              ("Cycle4", {"init" : 1, "run" : 42, "off" : 1}),
+            #   ("Cycle5", {"init" : 1, "run" : 1, "off" : 1}),
+            #   ("Cycle6", {"init" : 1, "run" : 1, "off" : 1}),
+              ("zzzEND", {"init" : 1, "run" : 1, "off" : 1})]
 
 def update_config():
     
@@ -172,14 +174,15 @@ def update_config():
             # print(f"in update_config {param}: dict is {config_dict[param]} nwv is {new_working_value}")
             if new_working_value > 0 and config_dict[param] != new_working_value:
                 config_dict[param] = new_working_value
-                print(f'Updated {param} to {new_working_value}')
+                # print(f'Updated config_dict {param} to {new_working_value}')
                 lcd.clear()
                 lcd.setCursor(0,0)
                 lcd.printout(f'Updated {param}')
                 lcd.setCursor(0,1)
-                lcd.printout(f'to {new_working_value:<13}')
+                lcd.printout(f'to {new_working_value}')
         else:
             print(f"GAK! Config parameter {param} not found in config dictionary!")
+            lcd.clear()
             lcd.setCursor(0,0)
             lcd.printout("No dict entry:  ")
             lcd.setCursor(0,1)
@@ -195,22 +198,48 @@ def update_timers():
             # print(f"in update_timers {param}: dict is {timer_dict[param]} nwv is {new_working_value}")
             if new_working_value > 0 and timer_dict[param] != new_working_value:
                 timer_dict[param] = new_working_value
-                print(f'Updated {param} to {new_working_value}')
+                # print(f'Updated timer_dict {param} to {new_working_value}')
+                lcd.clear()
                 lcd.setCursor(0,0)
                 lcd.printout(f'Updated {param}')
                 lcd.setCursor(0,1)
                 lcd.printout(f'to {new_working_value}')
         else:
             print(f"GAK! Config parameter {param} not found in timer dictionary!")
+            lcd.clear()
             lcd.setCursor(0,0)
             lcd.printout("No dict entry:  ")
             lcd.setCursor(0,1)
             lcd.printout(param)
+    print(f"{timer_dict=}")
+
+def update_program_data()->None:
+# This transfers run times from timer_dict to my programed water schedule, and also applies duty cycle to OFF
+
+# FIrst, update timer_dict
+    update_timers()
+
+    dc = timer_dict["Duty Cycle"]
+    adjusted_dc = max(min(dc, 95), 5)          # NORMALISE TO RANGE 5 - 95
+    for s in program_list:
+        cyclename = s[0]
+        if cyclename in timer_dict.keys():
+            on_time = timer_dict[cyclename]
+        else:
+            on_time = s[1]["run"]
+        off_time = int(on_time * (100/adjusted_dc - 1) )
+        # print(f"{cyclename=} {on_time=}  {off_time=}")
+        s[1]["run"] = on_time
+        s[1]["off"] = off_time
+
+    print(f"{program_list=}")
+
 # endregion
 # region TIMED IRRIGATION
 def toggle_borepump(x:Timer):
-    global timer_state, op_mode, sl_index, my_timer, cyclename, cycle_end_time, nextcycle_ON_time
+    global my_timer, timer_state, op_mode, sl_index, cyclename, cycle_end_time, nextcycle_ON_time, program_pending
 
+    program_pending = False
     x_str = f'{x}'
     period: int = int(int(x_str.split(',')[2].split('=')[1][0:-1]) / 1000)
     milisecs = period
@@ -256,7 +285,7 @@ def toggle_borepump(x:Timer):
         # print(f"{timer_state=}")
         else:
             op_mode = OP_MODE_AUTO
-            print(f"{current_time()}: in TOGGLE... END IRRIGATION mode !  Now in {op_mode}")
+            # print(f"{current_time()}: in TOGGLE... END IRRIGATION mode !  Now in {op_mode}")
             if borepump.state:
                 borepump_OFF()       # to be sure, to be sure...
                 print(f"{current_time()}:in toggle, at END turning pump OFF.  Should already be OFF...")
@@ -266,16 +295,34 @@ def toggle_borepump(x:Timer):
     else:
         print(f'{current_time()} in toggle {op_mode=}.  Why are we here??')
 
+def apply_duty_cycle()-> None:
+
+    # swl=sorted(water_list, key = lambda x: x[0])          # this does NOT work... makes a copy of list, not a ref
+    dc = timer_dict["Duty Cycle"]
+    adjusted_dc = max(min(dc, 95), 5)          # NORMALISE TO RANGE 5 - 95a=[]
+    print(f"{adjusted_dc=}")
+    for s in program_list:
+        on_time = s[1]["run"]
+        off_time = int(on_time * (100/adjusted_dc - 1) )
+        print(f"{on_time=}  {off_time=}")
+        s[1]["off"] = off_time
+    # print(f"Duty cycle: {dc} ...{adjusted_dc=}\nadjusted water_list: {water_list}")
+    
 def start_irrigation_schedule():
-    global timer_state, op_mode, slist, sl_index, my_timer, cycle_end_time, num_cycles          # cycle mod 3
+    global my_timer, timer_state, op_mode, slist, sl_index, cycle_end_time, num_cycles, program_pending, program_start_time        # cycle mod 3
 
     try:
         if op_mode == OP_MODE_IRRIGATE:
             print(f"Can't start irrigation program... already in {op_mode}")
+            lcd.setCursor(0,1)
+            lcd.printout("Already running!")
         else:
-            swl=sorted(water_list, key = lambda x: x[0])
-            print(f"{current_time()}: Starting timed watering...")
-            ev_log.write(f"{current_time()}: Starting timed watering\n")
+            apply_duty_cycle()                  # what it says
+            swl=sorted(program_list, key = lambda x: x[0])
+            prog_str = f"{current_time()}: Starting timed watering..."
+            print(prog_str)
+            add_to_event_ring("Start PROG")
+            ev_log.write(prog_str + "\n")
             op_mode          = OP_MODE_IRRIGATE          # the trick is, how to reset this when we are done...
 
             timer_state      = 0
@@ -310,11 +357,16 @@ def start_irrigation_schedule():
 
             slist.sort()
             # print(f"Initiating timers: first target is {slist[0]}.  Total {len(slist)} targets")
-            sl_index = 0
-            my_timer = Timer(period=slist[sl_index]*TIMERSCALE*1000, mode=Timer.ONE_SHOT, callback=toggle_borepump)
-            # print(slist)
+            sched_start = int(slist[0] * TIMERSCALE / 60)
+            start_hrs = int(sched_start/60)
+            start_mins = sched_start % 60
+            program_pending = True
+            program_start_time = time.time() + sched_start * 60
+            my_timer = Timer(period=slist[0]*TIMERSCALE*1000, mode=Timer.ONE_SHOT, callback=toggle_borepump)
+            print(slist)
+            # print(f"{sched_start=}")
             lcd.setCursor(0,1)
-            lcd.printout(f"Schedule created")
+            lcd.printout(f"Schd strt {start_hrs:>2}:{start_mins:02}m")
             # print("Watering Schedule created")
             return
         
@@ -343,6 +395,25 @@ def exit_menu():                      # exit from MENU mode
     ui_mode = UI_MODE_NORM
     tim=Timer(period=config_dict["LCD"] * 1000, mode=Timer.ONE_SHOT, callback=lcd_off)
 
+def cancel_program()->None:
+    global program_pending, op_mode
+
+    program_pending = False
+    op_mode = OP_MODE_AUTO
+
+    if my_timer is not None:
+        my_timer.deinit()
+        print("Program timer CANCELLED")
+
+    if borepump.state:
+        borepump_OFF()
+
+    lcd.setCursor(0,1)
+    lcd.printout("Prog CANCELLED")
+
+    add_to_event_ring("Prog cancelled")
+    ev_log.write(f"{current_time()}: Prog cancelled\n")
+    
 def display_depth():
     global display_mode
 
@@ -394,15 +465,15 @@ def housekeeping(close_files: bool):
     ev_log.write(f"{event_time} STOP")
     ev_log.write(f"\nMonitor shutdown at {display_time(secs_to_localtime(time.time()))}\n")
     dump_pump_arg(borepump)
-    dump_event_ring()
     dump_pump_arg(presspump)
+    dump_event_ring()
     ev_log.flush()
     end_time = time.ticks_us()
     if close_files:
         f.close()
         ev_log.close()
 
-    print(f"Cleanup completed in {time.ticks_diff(end_time, start_time)} microseconds")
+    print(f"Cleanup completed in {int(time.ticks_diff(end_time, start_time) / 1000)} milliseconds")
 
 def showdir():
     for f in os.ilistdir():
@@ -412,16 +483,25 @@ def showdir():
             fdate = fstat[7]
             print(f'{fn}: time {display_time(secs_to_localtime(fdate))}')
 
+def show_duty_cycle():
+    boredc: float = borepump.calc_duty_cycle()
+    presdc: float = presspump.calc_duty_cycle()
+    lcd.setCursor(0,0)
+    lcd.printout(f"PP d/c {presdc:>7,.2f}%")
+    lcd.setCursor(0,1)
+    lcd.printout(f"BP d/c {boredc:>7,.2f}%")
+
+
 new_menu = {
     "title": "L0 Main Menu",
     "items": [
       {
         "title": "1 Display->",
         "items": [
-          { "title": "1.1 Depth", "action": display_depth},
+          { "title": "1.1 Depth",    "action": display_depth},
           { "title": "1.2 Pressure", "action": display_pressure},
-          { "title": "1.2 Space", "action": show_space},
-          { "title": "1.4 Go Back", "action": my_go_back
+          { "title": "1.3 Space",    "action": show_space},
+          { "title": "1.4 Go Back",  "action": my_go_back
           }
         ]
       },
@@ -430,21 +510,21 @@ new_menu = {
         "items": [
           { "title": "2.1 Events",   "action": show_events},
           { "title": "2.2 Switch",   "action": show_switch},
-          { "title": "2.3 Depth",    "action": show_depth},
-          { "title": "2.4 Pressure", "action": show_pressure},
-          { "title": "2.5 Timer",    "action": "Timer"},
-          { "title": "2.6 Stats",    "action": "Stats"},
-          { "title": "2.7 Go back",  "action": my_go_back}
+          { "title": "2.3 Stats",    "action": show_duty_cycle},
+          { "title": "2.4 Depth",    "action": show_depth},
+          { "title": "2.5 Pressure", "action": show_pressure},
+          { "title": "2.6 Go back",  "action": my_go_back}
         ]
       },
       {
         "title": "3 Actions->",
         "items": [
-          { "title": "3.1 Timed Water",   "action": start_irrigation_schedule},
-          { "title": "3.2 Flush",   "action": flush_data},
-          { "title": "3.3 Reset",   "action": my_reset},
-          { "title": "3.4 Files",   "action": showdir},
-          { "title": "3.5 Go back", "action": my_go_back}
+          { "title": "3.1 Timed Water", "action": start_irrigation_schedule},
+          { "title": "3.2 Cancel Prog", "action": cancel_program},
+          { "title": "3.3 Flush",       "action": flush_data},
+          { "title": "3.4 Reset",       "action": my_reset},
+          { "title": "3.5 Files",       "action": showdir},
+          { "title": "3.6 Go back",     "action": my_go_back}
         ]
       },
       {
@@ -459,21 +539,24 @@ new_menu = {
                 { "title": "Max Pressure", "value": {"Default_val": 700,  "Working_val" : MAX_LINE_PRESSURE,        "Step" : 25}},                
                 { "title": "Min Pressure", "value": {"Default_val": 300,  "Working_val" : MIN_LINE_PRESSURE,        "Step" : 25}},
                 { "title": "No Pressure",  "value": {"Default_val": 15,   "Working_val" : NO_LINE_PRESSURE,         "Step" : 1}},
-                { "title": "Max RunMins",  "value": {"Default_val": 180,  "Working_val" : MAX_CONTIN_RUNMINS,   "Step" : 10}},
+                { "title": "Max RunMins",  "value": {"Default_val": 180,  "Working_val" : MAX_CONTIN_RUNMINS,       "Step" : 10}},
+                { "title": "Save config",  "action": update_config},
                 { "title": "Go back",  "action": my_go_back}
             ]
           },
            { "title": "4.2 Set Timers->",
             "items": [
-                { "title": "Cycle1",  "value": {"Default_val": 5,  "Working_val" : DEFAULT_CYCLE, "Step" : 5}},
-                { "title": "Cycle2",  "value": {"Default_val": 5,  "Working_val" : DEFAULT_CYCLE, "Step" : 5}},
-                { "title": "Cycle3",  "value": {"Default_val": 5,  "Working_val" : DEFAULT_CYCLE, "Step" : 5}},
+                { "title": "Cycle1",       "value": {"Default_val": 5,   "Working_val" : DEFAULT_CYCLE,         "Step" : 5}},
+                { "title": "Cycle2",       "value": {"Default_val": 5,   "Working_val" : DEFAULT_CYCLE,         "Step" : 5}},
+                { "title": "Cycle3",       "value": {"Default_val": 5,   "Working_val" : DEFAULT_CYCLE,         "Step" : 5}},
+                { "title": "Duty Cycle",   "value": {"Default_val": 50,  "Working_val" : DEFAULT_DUTY_CYCLE,    "Step" : 5}},
+                { "title": "Update program", "action": update_program_data},
                 { "title": "Go back", "action": my_go_back}
             ]
           },
-          { "title": "4.3 Save Config", "action": "Save Config"},
+          { "title": "4.3 Save Config", "action": update_config},
           { "title": "4.4 Load Config", "action": "Load Config"},
-          { "title": "4.5 Go back", "action": my_go_back}
+          { "title": "4.5 Go back",     "action": my_go_back}
         ]
       },
     {
@@ -505,43 +588,22 @@ def encoder_btn_IRQ(pin):
         encoder_btn_state = True
     enc_btn_last_time = new_time
 
+def pp_callback(pin):
+    presspmp.irq(handler=None)
+    v = pin.value()
+    presspump.switch_pump(v)
+    # print("Pressure Pump Pin triggered:", v)
+    sleep_ms(100)
+    presspmp.irq(trigger=Pin.IRQ_RISING|Pin.IRQ_FALLING, handler=pp_callback)
+
 def enable_controls():
     
    # Enable the interupt handlers
     enc_a.irq(trigger=Pin.IRQ_RISING, handler=encoder_a_IRQ)
     enc_btn.irq(trigger=Pin.IRQ_FALLING, handler=encoder_btn_IRQ)
 
-    lcdbtn.irq(handler=lcdbtn_pressed, trigger=Pin.IRQ_RISING)
-# endregion
-# region PRESS PUMP
-# # how I will monitor pressure pump state...
-def pp_callback(pin):
-    presspmp.irq(handler=None)
-    v = pin.value()
-    presspump.switch_pump(v)
-    print("Pressure Pump Pin triggered:", v)
-    sleep_ms(100)
-
-presspmp.irq(trigger=Pin.IRQ_RISING|Pin.IRQ_FALLING, handler=pp_callback)
-
-# Attach the ISR for both rising and falling edges
-#
-#presspmp.irq(trigger=Pin.IRQ_FALLING, handler=pp_LO_callback)
-#
-# def mypp_handler(pin):
-#     global l, mypp
-#
-#     mypp.irq(handler=None)
-#     v = pin.value()
-#     if v:
-#         print(str_HI)
-#         l.write(str_HI)
-#     else:
-#         print(str_LO)
-#         l.write(str_LO)
-#     l.flush()
-#     sleep(1)
-#     mypp.irq(trigger=Pin.IRQ_RISING|Pin.IRQ_FALLING, handler=mypp_handler)
+    lcdbtn.irq(trigger=Pin.IRQ_RISING, handler=lcdbtn_pressed)
+    presspmp.irq(trigger=Pin.IRQ_RISING|Pin.IRQ_FALLING, handler=pp_callback)
 
 # endregion
 # region LCD
@@ -551,7 +613,8 @@ def lcdbtn_pressed(x):          # my lcd button ISR
     sleep_ms(300)
 
 def lcd_off(x):
-    lcd.setRGB(0,0,0)
+    if ui_mode != UI_MODE_MENU:
+        lcd.setRGB(0,0,0)
 
 def lcd_on():
     lcd.setRGB(170,170,138)
@@ -793,7 +856,7 @@ def add_to_event_ring(msg:str):
     global eventring, eventindex
     
     if len(eventring) == 1 and len(eventring[0]) == 0:
-        eventring[eventindex] = (str_time, msg)
+        eventring[eventindex] = (current_time(), msg)
     else:
         if len(eventring) < EVENTRINGSIZE:
 #            print("Appending...")
@@ -802,7 +865,7 @@ def add_to_event_ring(msg:str):
         else:
             eventindex = (eventindex + 1) % EVENTRINGSIZE
 #            print(f"Overwriting index {eventindex}")
-            eventring[eventindex] = (str_time, msg)
+            eventring[eventindex] = (current_time(), msg)
 
 def add_to_switch_ring(msg:str):
     global switchring, switchindex
@@ -827,12 +890,12 @@ def dump_event_ring():                          # both rings are now tuples... (
         if ev_len < EVENTRINGSIZE:
             for i in range(eventindex - 1, -1, -1):
                 s = eventring[i]
-                if len(s) > 0: print(f"Errorlog {i}: {s[0]} {s[1]}")
+                if len(s) > 0: print(f"Event log {i}: {s[0]} {s[1]}")
         else:
             i = (eventindex - 1) % EVENTRINGSIZE            # start with last log entered
             for k in range(EVENTRINGSIZE):
                 s = eventring[i]
-                if len(s) > 0: print(f"Errorlog {i}: {s[0]} {s[1]}")
+                if len(s) > 0: print(f"Event log {i}: {s[0]} {s[1]}")
                 i = (i - 1) % EVENTRINGSIZE
     else:
         print("Eventring is empty")
@@ -879,7 +942,6 @@ def abort_pumping()-> None:
     lcd.setCursor(0,1)
     lcd.printout("MAINTENANCE MODE")
     op_mode = OP_MODE_MAINT
-# do a SM thing here... TBD            
 
 def check_for_critical_states() -> None:
 
@@ -908,8 +970,14 @@ def DisplayData()->None:
             else:
                 display_str = "?? no display mode"
         elif op_mode == OP_MODE_IRRIGATE:
-            if cycle_end_time > 0:
-                now = time.time()
+            now = time.time()
+            if program_pending:                                         # programmed cycle waiting to start
+                delay_minutes = int((program_start_time - now) / 60)
+                # print(f"{delay_minutes=}")
+                start_hrs = int(delay_minutes/60)
+                start_mins = delay_minutes % 60
+                display_str = f"Prog strt {start_hrs:>2}:{start_mins:02}m"
+            elif cycle_end_time > 0:
                 secs_remaining = cycle_end_time - now
                 # print(f"In Display, {secs_remaining=}")
                 if sl_index == num_cycles:
@@ -928,7 +996,7 @@ def DisplayData()->None:
                             disp_time = f"{secs_remaining}s"
                         display_str = f"C{sl_index + 1}/{num_cycles} {disp_time} {pressure_str}"
             else:
-                display_str = "Cycle Pending..."
+                display_str = "IRRIG MODE...??"
         lcd.setCursor(0, 1)
         lcd.printout(f"{display_str:<16}")
 
@@ -1027,10 +1095,13 @@ def dump_pump_arg(p:Pump):
     hours = int(dc_secs % (60*60*24) / (60*60))
     mins  = int(dc_secs % (60*60) / 60)
     secs  = int(dc_secs % 60)
+
+    dc: float = p.calc_duty_cycle()
     
     ev_log.write(f"Last switch time:   {display_time(secs_to_localtime(p.last_time_switched))}\n")
     ev_log.write(f"Total switches this period: {p.num_switch_events}\n")
     ev_log.write(f"Cumulative runtime: {days} days {hours} hours {mins} minutes {secs} seconds\n")
+    ev_log.write(f"Duty cycle: {dc:.2f}%\n")
     ev_log.flush()
 
 def connect_wifi():
@@ -1149,7 +1220,7 @@ def init_ringbuffers():
 
 def init_everything_else():
     global borepump, steady_state, free_space_KB, presspump, vbus_on_time, display_mode, navigator, encoder_count, encoder_btn_state, enc_a_last_time, enc_btn_last_time
-    global slist, cycle_end_time
+    global slist, cycle_end_time, program_pending
 
     encoder_count       = 0       # to track rotary next/prevs
     enc_a_last_time     = utime.ticks_ms()
@@ -1185,6 +1256,8 @@ def init_everything_else():
     steady_state = False
     vbus_on_time = time.time()      # init this... so we can test external
     display_mode = "depth"
+    program_pending = False         # no program
+
     enable_controls()              # enable rotary encoder, LCD B/L button etc
 
 def heartbeat() -> bool:
@@ -1379,7 +1452,7 @@ async def do_main_loop():
     uasyncio.create_task(regular_flush(FLUSH_PERIOD))           # flush data every FLUSH_PERIOD minutes
     uasyncio.create_task(check_rotary_state(ROTARY_PERIOD_MS))  # check rotary every ROTARY_PERIOD_MS milliseconds
 
-    start_irrigation_schedule()     # so I don't have to mess with rotary to test timer stuff
+    # start_irrigation_schedule()     # so I don't have to mess with rotary to test timer stuff
 
     rec_num=0
     while True:
@@ -1393,7 +1466,7 @@ async def do_main_loop():
     #        listen_to_radio()		                # check for badness
             DisplayData()
 # experimental...
-            if rec_num % LOG_FREQ == 0:           
+            if op_mode != OP_MODE_IRRIGATE and rec_num % LOG_FREQ == 0:           
                 LogData()			                # record it
             if steady_state: checkForAnomalies()	# test for weirdness
             rec_num += 1
@@ -1408,6 +1481,7 @@ async def do_main_loop():
 # endregion
 
 def main() -> None:
+    global ui_mode
     try:
         uasyncio.run(do_main_loop())
 
@@ -1415,6 +1489,7 @@ def main() -> None:
         print("I see a cancelled uasyncio thing")
 
     except KeyboardInterrupt:
+        ui_mode = UI_MODE_NORM
         lcd_off('')	                # turn off backlight
         print('\n### Program Interrupted by the user')
     # turn everything OFF
