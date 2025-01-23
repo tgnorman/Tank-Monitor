@@ -1,13 +1,11 @@
 # My first real OO class...
-#from PiicoDev_Transceiver import PiicoDev_Transceiver... no radio stuff yet
-# better init logic re last_time_switched
 
 import time
 
 class Pump:
     def __init__(self, ID, start_state):        # ability to start in ON state... need to sync with RX on startup
         self.state = start_state
-        self.start_time = time.time()           # time this instance was created
+        self.start_time = time.time()
         self.last_time_switched = self.start_time 	# localtime tuple would be nice... but need to write a decoder
         self.cum_seconds_on = 0					# NOTE:  Dependency on above in calc of cum_secs in switch_pump
         self.num_switch_events = 0
@@ -15,6 +13,13 @@ class Pump:
 #        self.radio = PiicoDev_Transceiver()
         print(f"New pump {ID} created")
         self.showstate()
+
+    def calc_duty_cycle(self)->float:
+        time_now = time.time()
+        total_time = time_now - self.start_time
+        dc = self.cum_seconds_on/total_time * 100
+        print(f"Duty cycle of {self.ID} is: {dc:.2f}%")
+        return dc
 
     def showstate(self):
         if self.state:

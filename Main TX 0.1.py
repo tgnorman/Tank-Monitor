@@ -34,15 +34,16 @@ OP_MODE_MAINT       = 2
 UI_MODE_NORM        = 0
 UI_MODE_MENU        = 1
 
-TIMERSCALE          = 60             # permits fast speed debugging... normally, set to 60 for "minutes" in timed ops
-DEFAULT_CYCLE       = 30             # for timed stuff... might eliminate the default thing...
-DEFAULT_DUTY_CYCLE  = 40                # % ON time for irrigation program
+TIMERSCALE          = 60            # permits fast speed debugging... normally, set to 60 for "minutes" in timed ops
+DEFAULT_CYCLE       = 30            # for timed stuff... might eliminate the default thing...
+DEFAULT_DUTY_CYCLE  = 40            # % ON time for irrigation program
 
 RADIO_PAUSE         = 1000
 MIN_FREE_SPACE      = 100           # in KB...
 
 FLUSH_PERIOD        = 2
-ROTARY_PERIOD_MS    = 100           # needs to be short... check rotary ISR variables
+DEBOUNCE_ROTARY     = 100
+ROTARY_PERIOD_MS    = 200           # needs to be short... check rotary ISR variables
 
 EVENTRINGSIZE       = 20            # max log ringbuffer length
 SWITCHRINGSIZE      = 20
@@ -51,7 +52,7 @@ MAX_OUTAGE          = 20            # seconds of no power
 
 #All menu-CONFIGURABLE parameters
 mydelay             = 30            # seconds, main loop period
-LCD_ON_TIME         = 180            # seconds
+LCD_ON_TIME         = 60            # seconds
 Min_Dist            = 500           # full
 Max_Dist            = 1400          # empty
 MAX_LINE_PRESSURE   = 700           # TBC... but this seems about right
@@ -150,6 +151,7 @@ config_dict         = {
             }
 
 timer_dict          = {
+    'Start Delay'   : 1,
     'Cycle1'        : DEFAULT_CYCLE,
     'Cycle2'        : DEFAULT_CYCLE,
     'Cycle3'        : DEFAULT_CYCLE,
@@ -157,10 +159,10 @@ timer_dict          = {
               }
     
 program_list = [
-              ("Cycle1", {"init" : 10, "run" : 20, "off" : 19}),
-              ("Cycle2", {"init" : 1, "run" : 20, "off" : 19}),
-              ("Cycle3", {"init" : 1, "run" : 20, "off" : 19}),
-              ("Cycle4", {"init" : 1, "run" : 42, "off" : 1}),
+              ("Cycle1", {"init" : 1, "run" : 30, "off" : 29}),
+              ("Cycle2", {"init" : 1, "run" : 30, "off" : 29}),
+              ("Cycle3", {"init" : 1, "run" : 30, "off" : 29}),
+            #   ("Cycle4", {"init" : 1, "run" : 30, "off" : 1}),
             #   ("Cycle5", {"init" : 1, "run" : 1, "off" : 1}),
             #   ("Cycle6", {"init" : 1, "run" : 1, "off" : 1}),
               ("zzzEND", {"init" : 1, "run" : 1, "off" : 1})]
@@ -211,13 +213,13 @@ def update_timers():
             lcd.printout("No dict entry:  ")
             lcd.setCursor(0,1)
             lcd.printout(param)
-    print(f"{timer_dict=}")
+    # print(f"{timer_dict=}")
 
 def update_program_data()->None:
 # This transfers run times from timer_dict to my programed water schedule, and also applies duty cycle to OFF
 
 # FIrst, update timer_dict
-    update_timers()
+    # update_timers()
 
     dc = timer_dict["Duty Cycle"]
     adjusted_dc = max(min(dc, 95), 5)          # NORMALISE TO RANGE 5 - 95
@@ -231,8 +233,10 @@ def update_program_data()->None:
         # print(f"{cyclename=} {on_time=}  {off_time=}")
         s[1]["run"] = on_time
         s[1]["off"] = off_time
+# now... fix start delay directly from menu
+    program_list[0][1]["init"] = new_menu['items'][3]['items'][1]['items'][0]['value']['Working_val']   # YUK... assumes cycle1 is first in list
 
-    print(f"{program_list=}")
+    # print(f"{program_list=}")
 
 # endregion
 # region TIMED IRRIGATION
@@ -300,13 +304,14 @@ def apply_duty_cycle()-> None:
     # swl=sorted(water_list, key = lambda x: x[0])          # this does NOT work... makes a copy of list, not a ref
     dc = timer_dict["Duty Cycle"]
     adjusted_dc = max(min(dc, 95), 5)          # NORMALISE TO RANGE 5 - 95a=[]
-    print(f"{adjusted_dc=}")
+    # print(f"{adjusted_dc=}")
     for s in program_list:
         on_time = s[1]["run"]
         off_time = int(on_time * (100/adjusted_dc - 1) )
-        print(f"{on_time=}  {off_time=}")
+        # print(f"{on_time=}  {off_time=}")
         s[1]["off"] = off_time
     # print(f"Duty cycle: {dc} ...{adjusted_dc=}\nadjusted water_list: {water_list}")
+
     
 def start_irrigation_schedule():
     global my_timer, timer_state, op_mode, slist, sl_index, cycle_end_time, num_cycles, program_pending, program_start_time        # cycle mod 3
@@ -391,7 +396,7 @@ def exit_menu():                      # exit from MENU mode
     lcd.setCursor(0,1)
     lcd.printout(f'{"Exit & Update":<16}')
     update_config()
-    update_timers()
+    # update_timers()
     ui_mode = UI_MODE_NORM
     tim=Timer(period=config_dict["LCD"] * 1000, mode=Timer.ONE_SHOT, callback=lcd_off)
 
@@ -431,6 +436,9 @@ def my_go_back():
                
 def show_events():
     navigator.mode = "view_events"
+               
+def show_program():
+    navigator.mode = "view_program"
 
 def show_switch():
     navigator.mode = "view_switch"
@@ -491,7 +499,67 @@ def show_duty_cycle():
     lcd.setCursor(0,1)
     lcd.printout(f"BP d/c {boredc:>7,.2f}%")
 
+def find_last_cycle()-> int:
+# find the last entry with "Cycle" in name/title
+    pos=0
+    while pos < len(program_list) - 1 and "Cycle" in program_list[pos][0]:
+        # print(f'{pos=} {program_list[pos][0]}')
+        pos += 1
+    if not "Cycle" in program_list[pos][0]:
+        # print(f'exit at {pos=} {program_list[pos][0]}, return {pos - 1}')
+        return (pos - 1)
 
+def add_cycle()-> None:
+    last_cycle_pos = find_last_cycle()
+    # print(f'In add_cycle, {last_cycle_pos=}')
+    last_cycle_id = int(program_list[last_cycle_pos][0][-1])
+    new_cycle_id = last_cycle_id + 1
+    new_cycle_name = "Cycle" + str(new_cycle_id)
+    new_tuple = tuple((new_cycle_name, program_list[last_cycle_pos][1]))     # copy init, run, off from previous last entry
+    # print(f"new cycle is: {new_tuple}")
+    # program_list.append(new_tuple)
+    program_list.insert(last_cycle_pos + 1, new_tuple)
+    lcd.setCursor(0,1)
+    lcd.printout(f'{new_cycle_name} added')
+    print("Now... try to update the menu itself!!")
+    sub_menu_list: list = navigator.current_level[-1]["items"]         # this is a stack... get last entry
+    print(f'{navigator.current_index=}')
+    print(f'{sub_menu_list}')
+    print(f'sub_menu_list is type {type(sub_menu_list)}')
+    old_menu_item:dict = sub_menu_list[navigator.current_index - 2]
+    new_menu_item = old_menu_item.copy()
+    new_menu_item["title"] = new_cycle_name
+    print(f'{new_menu_item=}')
+    sub_menu_list.insert(navigator.current_index - 1, new_menu_item)    # only go back 1 slot
+    # navigator.current_index += 1        # is this needed ???
+    print(f'{sub_menu_list=}')
+
+def remove_cycle()-> None:
+    last_cycle_pos = find_last_cycle()
+    cycle_name = program_list[last_cycle_pos][0]
+    # print(f'In remove_cycle, {last_cycle_pos=}')
+    if last_cycle_pos > 0:
+        del program_list[last_cycle_pos]
+        lcd.setCursor(0,1)
+        lcd.printout(f'{cycle_name} deleted')
+        print("Now... try to update the menu itself!!")
+        sub_menu_list: list = navigator.current_level[-1]["items"]         # this is a stack... get last entry
+        print(f'{navigator.current_index=}')
+        print(f'{sub_menu_list}')
+        print(f'sub_menu_list is type {type(sub_menu_list)}')
+        # new_menu_item = sub_menu_list[navigator.current_index - 2]
+        # new_menu_item["title"] = new_cycle_name
+        # print(f'{new_menu_item=}')
+        if "Cycle" in sub_menu_list[navigator.current_index - 3]["title"]:
+            del sub_menu_list[navigator.current_index - 3]      # check the 3...
+            # navigator.current_index -= 1        # is this needed ???
+        print(f'{sub_menu_list=}')
+    else:
+        lcd.setCursor(0,1)
+        lcd.printout('Cant delete more')
+        # print(f'remove_cycle: bad value {last_cycle_pos}')
+    # print(f'{program_list=}')
+    
 new_menu = {
     "title": "L0 Main Menu",
     "items": [
@@ -510,10 +578,11 @@ new_menu = {
         "items": [
           { "title": "2.1 Events",   "action": show_events},
           { "title": "2.2 Switch",   "action": show_switch},
-          { "title": "2.3 Stats",    "action": show_duty_cycle},
-          { "title": "2.4 Depth",    "action": show_depth},
-          { "title": "2.5 Pressure", "action": show_pressure},
-          { "title": "2.6 Go back",  "action": my_go_back}
+          { "title": "2.3 Program",  "action": show_program},
+          { "title": "2.4 Stats",    "action": show_duty_cycle},
+          { "title": "2.5 Depth",    "action": show_depth},
+          { "title": "2.6 Pressure", "action": show_pressure},
+          { "title": "2.7 Go back",  "action": my_go_back}
         ]
       },
       {
@@ -541,17 +610,20 @@ new_menu = {
                 { "title": "No Pressure",  "value": {"Default_val": 15,   "Working_val" : NO_LINE_PRESSURE,         "Step" : 1}},
                 { "title": "Max RunMins",  "value": {"Default_val": 180,  "Working_val" : MAX_CONTIN_RUNMINS,       "Step" : 10}},
                 { "title": "Save config",  "action": update_config},
-                { "title": "Go back",  "action": my_go_back}
+                { "title": "Go back",      "action": my_go_back}
             ]
           },
            { "title": "4.2 Set Timers->",
             "items": [
-                { "title": "Cycle1",       "value": {"Default_val": 5,   "Working_val" : DEFAULT_CYCLE,         "Step" : 5}},
-                { "title": "Cycle2",       "value": {"Default_val": 5,   "Working_val" : DEFAULT_CYCLE,         "Step" : 5}},
-                { "title": "Cycle3",       "value": {"Default_val": 5,   "Working_val" : DEFAULT_CYCLE,         "Step" : 5}},
+                { "title": "Start Delay",  "value": {"Default_val": 5,   "Working_val" : 1,         "Step" : 15}},
+                { "title": "Cycle1",       "value": {"Default_val": 1,   "Working_val" : DEFAULT_CYCLE,         "Step" : 5}},
+                { "title": "Cycle2",       "value": {"Default_val": 2,   "Working_val" : DEFAULT_CYCLE,         "Step" : 5}},
+                { "title": "Cycle3",       "value": {"Default_val": 3,   "Working_val" : DEFAULT_CYCLE,         "Step" : 5}},
                 { "title": "Duty Cycle",   "value": {"Default_val": 50,  "Working_val" : DEFAULT_DUTY_CYCLE,    "Step" : 5}},
+                { "title": "Add cycle",      "action": add_cycle},
+                { "title": "Delete cycle",   "action": remove_cycle},
                 { "title": "Update program", "action": update_program_data},
-                { "title": "Go back", "action": my_go_back}
+                { "title": "Go back",        "action": my_go_back}
             ]
           },
           { "title": "4.3 Save Config", "action": update_config},
@@ -571,13 +643,15 @@ def encoder_a_IRQ(pin):
     global enc_a_last_time, encoder_count
 
     new_time = utime.ticks_ms()
-    if (new_time - enc_a_last_time) > 200:
+    if (new_time - enc_a_last_time) > DEBOUNCE_ROTARY:
         if enc_a.value() == enc_b.value():
             encoder_count += 1
             # navigator.next()
         else:
             encoder_count -= 1
             # navigator.previous()
+    else:
+        print(".", end="")
     enc_a_last_time = new_time
 
 def encoder_btn_IRQ(pin):
@@ -981,20 +1055,22 @@ def DisplayData()->None:
                 secs_remaining = cycle_end_time - now
                 # print(f"In Display, {secs_remaining=}")
                 if sl_index == num_cycles:
-                    display_str = f"End TWM {pressure_str}"
+                    display_str = f"End TWM soon"
                 else:
+                    cycle_number     = int(sl_index / 3) + 1
+                    total_cycles = int(num_cycles / 3)
                     if secs_remaining < 0:                              # explain... it works, but is cryptic!
                         secs_to_next_ON = nextcycle_ON_time - now       # what if this is negative ???  
                         if secs_to_next_ON < 60:
-                            display_str = f"Wait {secs_to_next_ON}s {pressure_str}"
+                            display_str = f"Wait {cycle_number}/{total_cycles} {secs_to_next_ON}s"
                         else:
-                            display_str = f"Wait {int(secs_to_next_ON / 60)}m {pressure_str}"
+                            display_str = f"Wait {cycle_number}/{total_cycles} {int(secs_to_next_ON / 60)}m"
                     else:
                         if secs_remaining > 60:
                             disp_time = f"{int(secs_remaining / 60)}m"
                         else:
                             disp_time = f"{secs_remaining}s"
-                        display_str = f"C{sl_index + 1}/{num_cycles} {disp_time} {pressure_str}"
+                        display_str = f"C{cycle_number}/{total_cycles} {disp_time} {pressure_str}"
             else:
                 display_str = "IRRIG MODE...??"
         lcd.setCursor(0, 1)
@@ -1251,6 +1327,7 @@ def init_everything_else():
     init_ringbuffers()
     navigator.set_event_list(eventring)
     navigator.set_switch_list(switchring)
+    navigator.set_program_list(program_list)
 
 # ensure we start out right...
     steady_state = False
@@ -1492,6 +1569,9 @@ def main() -> None:
         ui_mode = UI_MODE_NORM
         lcd_off('')	                # turn off backlight
         print('\n### Program Interrupted by the user')
+        if op_mode == OP_MODE_IRRIGATE:
+            cancel_program()
+            
     # turn everything OFF
         if borepump is not None:                # in case i bail before this is defined...
             if borepump.state:

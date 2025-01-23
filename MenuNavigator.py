@@ -15,6 +15,8 @@ class MenuNavigator:
         self.event_index = 0          # for log scrolling
         self.switchlist = None
         self.switch_index = 0
+        self.program_list = None
+        self.program_index = 0
         self.display_current_item()
 
     def get_current_item(self):
@@ -51,7 +53,8 @@ class MenuNavigator:
             # print(f'In NEXT self.new_value is {self.new_value}')
             self.device.setCursor(0, 1)
             self.device.printout(str(self.new_value) + "      ")
-        elif self.mode == "view_events" or self.mode == "view_switch":
+        elif "view_" in self.mode: #self.mode == "view_events" or self.mode == "view_switch":
+            # print(f'In NEXT {self.mode=}')
             if self.mode == "view_events":
                 if self.eventlist is not None:
                     hist_str = self.eventlist[self.event_index]
@@ -64,6 +67,17 @@ class MenuNavigator:
                     self.switch_index = (self.switch_index + 1) % len(self.switchlist)
                 else:
                     hist_str = "Switchlist: None"
+            elif self.mode == "view_program":
+                if self.program_list is not None:
+                    prog_name = self.program_list[self.program_index][0]
+                    prog_duration = self.program_list[self.program_index][1]["run"]
+                    prog_wait = self.program_list[self.program_index][1]["off"]
+                    prog_str = f'Run {prog_duration} Off {prog_wait}'
+                    hist_str = tuple((prog_name, prog_str))
+                    # print(f'In NEXT {hist_str=}')
+                    self.program_index = (self.program_index + 1) % len(self.program_list)
+                else:
+                    hist_str = "Prog list: None"
             if type(hist_str) == tuple:
                 if(len(hist_str) > 0):
                     datestamp = hist_str[0]
@@ -99,7 +113,8 @@ class MenuNavigator:
                 # print(f'In PREV self.new_value is {self.new_value}')
                 self.device.setCursor(0, 1)
                 self.device.printout(str(self.new_value) + "      ")
-        elif self.mode == "view_events" or self.mode == "view_switch":
+        elif "view_" in self.mode:  #self.mode == "view_events" or self.mode == "view_switch":
+            # print(f'In PREV {self.mode=}')
             if self.mode == "view_events":
                 if self.eventlist is not None:
                     hist_str = self.eventlist[self.event_index]
@@ -112,6 +127,17 @@ class MenuNavigator:
                     self.switch_index = (self.switch_index - 1) % len(self.switchlist)     # check if this is right
                 else:
                     hist_str = "Switchlist: None"
+            elif self.mode == "view_program":
+                if self.program_list is not None:
+                    prog_name = self.program_list[self.program_index][0]
+                    prog_duration = self.program_list[self.program_index][1]["run"]
+                    prog_wait = self.program_list[self.program_index][1]["off"]
+                    prog_str = f'Run {prog_duration} Off {prog_wait}'
+                    hist_str = tuple((prog_name, prog_str))
+                    # print(f'In PREV {hist_str=}')
+                    self.program_index = (self.program_index - 1) % len(self.program_list)
+                else:
+                    hist_str = "Prog list: None"
             if type(hist_str) == tuple:
                 if(len(hist_str) > 0):
                     datestamp = hist_str[0]
@@ -182,6 +208,9 @@ class MenuNavigator:
 
     def set_switch_list(self, myswitchlist):
         self.switchlist = myswitchlist
+
+    def set_program_list(self, mylist):
+        self.program_list = mylist
 
     def go_to_first(self):
         self.current_index = 0
