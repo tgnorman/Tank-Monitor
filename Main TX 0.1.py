@@ -7,15 +7,16 @@ import time
 import utime
 import network
 import ntptime
-import os
+import uos
 import random               # just for PP detect sim...
 import uasyncio
 import gc
+import umail
 from utime import sleep, ticks_us, ticks_diff
 from PiicoDev_Unified import sleep_ms
 from PiicoDev_VL53L1X import PiicoDev_VL53L1X
 from PiicoDev_Transceiver import PiicoDev_Transceiver
-from machine import Timer, Pin, ADC, soft_reset # Import Pin
+from umachine import Timer, Pin, ADC, soft_reset # Import Pin
 from Pump import Pump               # get our Pump class
 from Tank import Tank
 from secrets import MyWiFi
@@ -39,7 +40,8 @@ DEFAULT_CYCLE       = 30            # for timed stuff... might eliminate the def
 DEFAULT_DUTY_CYCLE  = 40            # % ON time for irrigation program
 
 RADIO_PAUSE         = 1000
-MIN_FREE_SPACE      = 100           # in KB...
+FREE_SPACE_LOWATER  = 150           # in KB...
+FREE_SPACE_HIWATER  = 400
 
 FLUSH_PERIOD        = 2
 DEBOUNCE_ROTARY     = 100
@@ -51,7 +53,7 @@ SWITCHRINGSIZE      = 20
 MAX_OUTAGE          = 20            # seconds of no power
 
 #All menu-CONFIGURABLE parameters
-mydelay             = 30            # seconds, main loop period
+mydelay             = 15            # seconds, main loop period
 LCD_ON_TIME         = 60            # seconds
 Min_Dist            = 500           # full
 Max_Dist            = 1400          # empty
@@ -84,8 +86,8 @@ ui_mode             = UI_MODE_NORM
 LOG_FREQ            = 1
 last_logged_depth   = 0
 last_logged_kpa     = 0
-min_log_change_m    = 0.005         # to save space... only write to file if significant change in level
-max_kpa_change      = 10            # update after pressure sensor active
+min_log_change_m    = 0.02          # to save space... only write to file if significant change in level
+MAX_KPA_CHANGE      = 10            # update after pressure sensor active
 level_init          = False 		# to get started
 
 ringbufferindex     = 0             # for SMA calculation... keep last n measures in a ring buffer
@@ -98,6 +100,7 @@ lcdbtnflag          = True          # this should immediately trigger my asyncio
 steady_state        = False         # if not, then don't check for anomalies
 clock_adjust_ms     = 0             # will be set later... this just to ensure it is ALWAYS something
 report_outage       = True          # do I report next power outage?
+sys_start_time      = 0   # for uptime report
 
 # Gather all tank-related stuff with a view to making a class...
 housetank           = Tank("Empty")                     # make my tank object
@@ -125,7 +128,7 @@ enc_b               = Pin(20, Pin.IN)
 last_time           = 0
 count               = 0
 
-system              = SimpleDevice()                    #initialise my FSM.
+system              = SimpleDevice()                    # initialise my FSM.
 wf                  = MyWiFi()
 
 # Create PiicoDev sensor objects
@@ -137,6 +140,61 @@ radio               = PiicoDev_Transceiver()
 # Configure your WiFi SSID and password
 ssid                = wf.ssid
 password            = wf.password
+
+SMTP_SERVER         = "smtp.gmail.com"
+SMTP_PORT           = 465
+
+# Email account credentials
+FROM_EMAIL          = "gmtgn55@gmail.com"
+FROM_PASSWORD       = wf.gmailAppPassword
+TO_EMAIL            = "trevor.norman4@icloud.com"
+# endregion
+# region email
+def send_email(to:str, subj:str, body:str):
+    smtp = umail.SMTP(SMTP_SERVER, SMTP_PORT, ssl=True)
+    smtp.login(FROM_EMAIL, FROM_PASSWORD)
+
+    # Send the email
+    smtp.to(TO_EMAIL)
+    smtp.write(f"From: {FROM_EMAIL}\n")
+    smtp.write(f"To: {to}\n")
+    smtp.write(f"Subject: {subj}\n")
+    smtp.write("\n")  # Separate headers from the body with a newline
+    smtp.write(f"{body}\n")
+
+    # Close the SMTP connection
+    code = smtp.send()
+    smtp.quit()
+    print(f"Email sent!... return code {code}")
+
+def send_file(to:str, subj:str, filename:str)->int:
+
+    try:
+        f = open(filename, "r")
+
+        smtp = umail.SMTP(SMTP_SERVER, SMTP_PORT, ssl=True)
+        smtp.login(FROM_EMAIL, FROM_PASSWORD)
+
+        # Send the email
+        smtp.to(TO_EMAIL)
+        smtp.write(f"From: {FROM_EMAIL}\n")
+        smtp.write(f"To: {to}\n")
+        smtp.write(f"Subject: {subj}: {filename}\n")
+        smtp.write("\n")  # Separate headers from the body with a newline
+
+        for l in f:
+            smtp.write(f"{l}")
+
+        f.close()
+        code = smtp.send()
+        print(f"File sent!... return code {code[0]}")
+        smtp.quit()
+        return int(code[0])
+
+    except:
+        print(f"GAK! Can't open file {filename}")
+        return -1
+
 # endregion
 # region DICTIONARIES
 config_dict         = {
@@ -151,21 +209,14 @@ config_dict         = {
             }
 
 timer_dict          = {
-    'Start Delay'   : 1,
-    'Cycle1'        : DEFAULT_CYCLE,
-    'Cycle2'        : DEFAULT_CYCLE,
-    'Cycle3'        : DEFAULT_CYCLE,
+    'Start Delay'   : 0,
     'Duty Cycle'    : DEFAULT_DUTY_CYCLE
               }
     
 program_list = [
-              ("Cycle1", {"init" : 1, "run" : 30, "off" : 29}),
-              ("Cycle2", {"init" : 1, "run" : 30, "off" : 29}),
-              ("Cycle3", {"init" : 1, "run" : 30, "off" : 29}),
-            #   ("Cycle4", {"init" : 1, "run" : 30, "off" : 1}),
-            #   ("Cycle5", {"init" : 1, "run" : 1, "off" : 1}),
-            #   ("Cycle6", {"init" : 1, "run" : 1, "off" : 1}),
-              ("zzzEND", {"init" : 1, "run" : 1, "off" : 1})]
+              ("Cycle1", {"init" : 0, "run" : 30, "off" : 45}),
+              ("Cycle2", {"init" : 1, "run" : 30, "off" : 45}),
+              ("Cycle3", {"init" : 1, "run" : 30, "off" : 0})]
 
 def update_config():
     
@@ -190,10 +241,10 @@ def update_config():
             lcd.setCursor(0,1)
             lcd.printout(param)
 
-def update_timers():
+def update_timer_params():
     
     for param_index in range(len(timer_dict)):
-        param: str             = new_menu['items'][3]['items'][1]['items'][param_index]['title']
+        param: str             = new_menu['items'][3]['items'][1]['items'][param_index]['title']    # GAK... more bad dependencies
         new_working_value: int = new_menu['items'][3]['items'][1]['items'][param_index]['value']['Working_val']
         # print(f">> {param=}, {new_working_value}")
         if param in timer_dict.keys():
@@ -203,45 +254,56 @@ def update_timers():
                 # print(f'Updated timer_dict {param} to {new_working_value}')
                 lcd.clear()
                 lcd.setCursor(0,0)
-                lcd.printout(f'Updated {param}')
+                lcd.printout('Updated param')
                 lcd.setCursor(0,1)
-                lcd.printout(f'to {new_working_value}')
-        else:
-            print(f"GAK! Config parameter {param} not found in timer dictionary!")
-            lcd.clear()
-            lcd.setCursor(0,0)
-            lcd.printout("No dict entry:  ")
-            lcd.setCursor(0,1)
-            lcd.printout(param)
+                lcd.printout(f'{param}: {new_working_value}')
+        # else:
+        #     print(f"GAK! Config parameter {param} not found in timer dictionary!")
+        #     lcd.clear()
+        #     lcd.setCursor(0,0)
+        #     lcd.printout("No dict entry:  ")
+        #     lcd.setCursor(0,1)
+        #     lcd.printout(param)
     # print(f"{timer_dict=}")
 
 def update_program_data()->None:
 # This transfers run times from timer_dict to my programed water schedule, and also applies duty cycle to OFF
 
-# FIrst, update timer_dict
-    # update_timers()
+# First, update timer_dict
+    update_timer_params()
 
-    dc = timer_dict["Duty Cycle"]
+    dc = timer_dict["Duty Cycle"]           # this is still getting data indirectly...
     adjusted_dc = max(min(dc, 95), 5)          # NORMALISE TO RANGE 5 - 95
+    i = 1                                 # this feels wrong...
     for s in program_list:
+        i += 1
         cyclename = s[0]
-        if cyclename in timer_dict.keys():
-            on_time = timer_dict[cyclename]
-        else:
-            on_time = s[1]["run"]
-        off_time = int(on_time * (100/adjusted_dc - 1) )
-        # print(f"{cyclename=} {on_time=}  {off_time=}")
-        s[1]["run"] = on_time
-        s[1]["off"] = off_time
-# now... fix start delay directly from menu
-    program_list[0][1]["init"] = new_menu['items'][3]['items'][1]['items'][0]['value']['Working_val']   # YUK... assumes cycle1 is first in list
+        # if cyclename in timer_dict.keys():
+        #     on_time = timer_dict[cyclename]
+        # else:
+        #     on_time = s[1]["run"]
+        menu_title = new_menu['items'][3]['items'][1]['items'][i]['title']
+        if cyclename == menu_title:         # found correct menu item
+            on_time = new_menu['items'][3]['items'][1]['items'][i]['value']['Working_val']
+            off_time = int(on_time * (100/adjusted_dc - 1) )
+            # print(f"{cyclename=} {on_time=}  {off_time=}")
+            s[1]["run"] = on_time
+            s[1]["off"] = off_time
+        else:                       # Oops... this doesn't look right...
+            print(f"Found {menu_title}, expecting {cyclename}")
 
+# now... fix start delay directly from menu
+    program_list[0][1]["init"] = timer_dict["Start Delay"]      # another indirect data val...
+    program_list[-1][1]["off"] = 0              # reset last cycle OFF time to 1
+
+    lcd.setCursor(0,1)
+    lcd.printout("program updated")
     # print(f"{program_list=}")
 
 # endregion
 # region TIMED IRRIGATION
 def toggle_borepump(x:Timer):
-    global my_timer, timer_state, op_mode, sl_index, cyclename, cycle_end_time, nextcycle_ON_time, program_pending
+    global my_timer, timer_state, op_mode, sl_index, cyclename, ON_cycle_end_time, next_ON_cycle_time, program_pending
 
     program_pending = False
     x_str = f'{x}'
@@ -260,9 +322,12 @@ def toggle_borepump(x:Timer):
             if  timer_state == 1:
                 # print(f"{current_time()}: TOGGLE - turning pump ON")
                 diff = slist[sl_index + 1] - slist[sl_index]        # look forward to next timer event
-                cycle_end_time = now + diff * TIMERSCALE
-                diff = slist[sl_index + 3] - slist[sl_index]
-                nextcycle_ON_time = now + diff * TIMERSCALE
+                ON_cycle_end_time = now + diff * TIMERSCALE
+                if sl_index < len(slist) - 3:
+                    diff = slist[sl_index + 3] - slist[sl_index]
+                else:
+                    diff = -2           # there is no next on time...
+                next_ON_cycle_time = now + diff * TIMERSCALE
                 # nextcycle_ON_time = now + (slist[sl_index + 1] + slist[sl_index + 2] + slist[sl_index + 3]) * TIMERSCALE
                 borepump_ON()        #turn_on()
             elif timer_state == 2:
@@ -276,18 +341,24 @@ def toggle_borepump(x:Timer):
                 # nextcycle_ON_time = now + diff * TIMERSCALE
                 # print(f"{current_time()}: TOGGLE - Doing nothing")
             if sl_index == len(slist) - 2:              # we must be in penultimate cycle, or last cycle
-                nextcycle_ON_time = now 
+                next_ON_cycle_time = now - 2 * TIMERSCALE
 
-            # print(f" end cycle {display_time(secs_to_localtime(cycle_end_time))}\nnext cycle {display_time(secs_to_localtime(nextcycle_ON_time))}")
-        # now, set up next timer
+            # print(f" end cycle {display_time(secs_to_localtime(ON_cycle_end_time))}\nnext cycle {display_time(secs_to_localtime(next_ON_cycle_time))}")
+            # now, set up next timer
             sl_index += 1
             diff = slist[sl_index] - slist[sl_index - 1]
-            # print(f"Creating timer for index {sl_index}, {slist[sl_index]}, {diff=}")
-            # if my_timer is not None:
-            #     my_timer.deinit()
+            print(f"Creating timer for index {sl_index}, {slist[sl_index]}, {diff=}")
+
             my_timer = Timer(period=diff*TIMERSCALE*1000, mode=Timer.ONE_SHOT, callback=toggle_borepump)
-        # print(f"{timer_state=}")
+            # print(f"{timer_state=}")
         else:
+            prog_str = f"{current_time()}: Ending timed watering..."
+            print(prog_str)
+            add_to_event_ring("End PROG")
+            ev_log.write(prog_str + "\n")
+
+            DisplayData()       # show status immediately, don't wait for next loop ??
+
             op_mode = OP_MODE_AUTO
             # print(f"{current_time()}: in TOGGLE... END IRRIGATION mode !  Now in {op_mode}")
             if borepump.state:
@@ -301,20 +372,18 @@ def toggle_borepump(x:Timer):
 
 def apply_duty_cycle()-> None:
 
-    # swl=sorted(water_list, key = lambda x: x[0])          # this does NOT work... makes a copy of list, not a ref
     dc = timer_dict["Duty Cycle"]
     adjusted_dc = max(min(dc, 95), 5)          # NORMALISE TO RANGE 5 - 95a=[]
-    # print(f"{adjusted_dc=}")
     for s in program_list:
         on_time = s[1]["run"]
         off_time = int(on_time * (100/adjusted_dc - 1) )
         # print(f"{on_time=}  {off_time=}")
         s[1]["off"] = off_time
-    # print(f"Duty cycle: {dc} ...{adjusted_dc=}\nadjusted water_list: {water_list}")
 
+    # print(f"Duty cycle: {dc} ...{adjusted_dc=}\nadjusted water_list: {water_list}")
     
 def start_irrigation_schedule():
-    global my_timer, timer_state, op_mode, slist, sl_index, cycle_end_time, num_cycles, program_pending, program_start_time        # cycle mod 3
+    global my_timer, timer_state, op_mode, slist, sl_index, ON_cycle_end_time, num_cycles, program_pending, program_start_time        # cycle mod 3
 
     try:
         if op_mode == OP_MODE_IRRIGATE:
@@ -322,8 +391,8 @@ def start_irrigation_schedule():
             lcd.setCursor(0,1)
             lcd.printout("Already running!")
         else:
-            apply_duty_cycle()                  # what it says
-            swl=sorted(program_list, key = lambda x: x[0])
+            # apply_duty_cycle()                  # what it says
+            swl=sorted(program_list, key = lambda x: x[0])      # so, the source of things is program_list... need to ensure that is updated
             prog_str = f"{current_time()}: Starting timed watering..."
             print(prog_str)
             add_to_event_ring("Start PROG")
@@ -332,8 +401,9 @@ def start_irrigation_schedule():
 
             timer_state      = 0
             sl_index         = 0
+            # next_switch_time = timer_dict["Start Delay"] ... no, we add this in in the loop below.  
             next_switch_time = 0
-            cycle_end_time   = 0
+            ON_cycle_end_time= 0
             num_cycles       = 0
             
             slist.clear()
@@ -341,32 +411,23 @@ def start_irrigation_schedule():
             for s in swl:
                 cyclename = s[0]
                 # print(f"Adding timer nodes to slist for cycle {cyclename}")
-                if "end" in cyclename.lower():
-                    t=s[1]["init"]
+                for k in ["init", "run", "off"]:
+                    t=s[1][k]
+                    # if k == "init" and t == 0:
+                    #     print(f"Skipping {cyclename}")
+                    #     break
+                    # else:
                     next_switch_time += t
                     # print(f'{next_switch_time=}')
-                    # print(f"Irrigation end time: {next_switch_time}")
                     slist.append(next_switch_time)
-                    break
-                else:
-                    for k in ["init", "run", "off"]:
-                        t=s[1][k]
-                        if k == "init" and t == 0:
-                            # print(f"Skipping {cyclename}")
-                            break
-                        else:
-                            next_switch_time += t
-                            # print(f'{next_switch_time=}')
-                            slist.append(next_switch_time)
-                            num_cycles += 1
-
+                    num_cycles += 1
             slist.sort()
             # print(f"Initiating timers: first target is {slist[0]}.  Total {len(slist)} targets")
-            sched_start = int(slist[0] * TIMERSCALE / 60)
-            start_hrs = int(sched_start/60)
-            start_mins = sched_start % 60
+            sched_start_mins = int(slist[0] * TIMERSCALE / 60)
+            start_hrs = int(sched_start_mins/60)
+            start_mins = sched_start_mins % 60
             program_pending = True
-            program_start_time = time.time() + sched_start * 60
+            program_start_time = time.time() + sched_start_mins * 60
             my_timer = Timer(period=slist[0]*TIMERSCALE*1000, mode=Timer.ONE_SHOT, callback=toggle_borepump)
             print(slist)
             # print(f"{sched_start=}")
@@ -389,6 +450,16 @@ def start_irrigation_schedule():
 # endregion
 # region MENU METHODS
 # methods invoked from menu
+def Change_Mode(newmode)-> None:
+    global ui_mode
+    if newmode == UI_MODE_MENU:
+        ui_mode = UI_MODE_MENU
+        lcd.setRGB(240, 30, 240)
+    elif newmode == UI_MODE_NORM:
+        ui_mode = UI_MODE_NORM
+        lcd.setRGB(170,170,138)
+    else:
+        print(f"Change_Mode: Unknown mode {newmode}")
 
 def exit_menu():                      # exit from MENU mode
     global ui_mode
@@ -396,8 +467,9 @@ def exit_menu():                      # exit from MENU mode
     lcd.setCursor(0,1)
     lcd.printout(f'{"Exit & Update":<16}')
     update_config()
-    # update_timers()
-    ui_mode = UI_MODE_NORM
+    update_timer_params()
+    Change_Mode(UI_MODE_NORM)
+    # ui_mode = UI_MODE_NORM
     tim=Timer(period=config_dict["LCD"] * 1000, mode=Timer.ONE_SHOT, callback=lcd_off)
 
 def cancel_program()->None:
@@ -469,7 +541,7 @@ def flush_data():
 def housekeeping(close_files: bool):
     print("Flushing data to flash...")
     start_time = time.ticks_us()
-    f.flush()
+    tank_log.flush()
     ev_log.write(f"{event_time} STOP")
     ev_log.write(f"\nMonitor shutdown at {display_time(secs_to_localtime(time.time()))}\n")
     dump_pump_arg(borepump)
@@ -478,16 +550,16 @@ def housekeeping(close_files: bool):
     ev_log.flush()
     end_time = time.ticks_us()
     if close_files:
-        f.close()
+        tank_log.close()
         ev_log.close()
 
     print(f"Cleanup completed in {int(time.ticks_diff(end_time, start_time) / 1000)} milliseconds")
 
 def showdir():
-    for f in os.ilistdir():
+    for f in uos.ilistdir():
         fn = f[0]
         if "tank" in fn:
-            fstat = os.stat(fn)
+            fstat = uos.stat(fn)
             fdate = fstat[7]
             print(f'{fn}: time {display_time(secs_to_localtime(fdate))}')
 
@@ -507,32 +579,45 @@ def find_last_cycle()-> int:
         pos += 1
     if not "Cycle" in program_list[pos][0]:
         # print(f'exit at {pos=} {program_list[pos][0]}, return {pos - 1}')
-        return (pos - 1)
+        pos -= 1
+    # print(f"find_last_cycle: {pos=}")
+    return pos
 
 def add_cycle()-> None:
+# This inserts a new row into program_list... and also updates the menu.  Can I do better??
+# Need to check creation of the list of time intervals in start_timed_watering thing...
+
     last_cycle_pos = find_last_cycle()
     # print(f'In add_cycle, {last_cycle_pos=}')
     last_cycle_id = int(program_list[last_cycle_pos][0][-1])
     new_cycle_id = last_cycle_id + 1
-    new_cycle_name = "Cycle" + str(new_cycle_id)
-    new_tuple = tuple((new_cycle_name, program_list[last_cycle_pos][1]))     # copy init, run, off from previous last entry
+    new_cycle_name: str = "Cycle" + str(new_cycle_id)
+    prev_dict: dict[str, int] = program_list[last_cycle_pos][1]         # copy init, run, off from previous last entry
+    new_dict = prev_dict.copy()
+    new_tuple: tuple[str, dict[str, int]] = (new_cycle_name, new_dict)
     # print(f"new cycle is: {new_tuple}")
     # program_list.append(new_tuple)
     program_list.insert(last_cycle_pos + 1, new_tuple)
     lcd.setCursor(0,1)
     lcd.printout(f'{new_cycle_name} added')
-    print("Now... try to update the menu itself!!")
-    sub_menu_list: list = navigator.current_level[-1]["items"]         # this is a stack... get last entry
-    print(f'{navigator.current_index=}')
-    print(f'{sub_menu_list}')
-    print(f'sub_menu_list is type {type(sub_menu_list)}')
-    old_menu_item:dict = sub_menu_list[navigator.current_index - 2]
+    # print("Now... try to update the menu itself!!")
+    sub_menu_list: list = navigator.current_level[-1]["items"]          # this is a stack... get last entry
+    # print(f'{navigator.current_index=}')
+    # print(f'{sub_menu_list}')
+    # print(f'sub_menu_list is type {type(sub_menu_list)}')
+    old_menu_item:dict = sub_menu_list[navigator.current_index - 1]     # YUK WARNING: bad dependency here !!!
     new_menu_item = old_menu_item.copy()
+    new_menu_value: dict = old_menu_item["value"].copy()
     new_menu_item["title"] = new_cycle_name
-    print(f'{new_menu_item=}')
-    sub_menu_list.insert(navigator.current_index - 1, new_menu_item)    # only go back 1 slot
-    # navigator.current_index += 1        # is this needed ???
-    print(f'{sub_menu_list=}')
+    new_menu_item["value"] = new_menu_value                             # be very careful to NOT use ref to old dict
+    # print(f'{new_menu_item=}')
+    sub_menu_list.insert(navigator.current_index, new_menu_item)        # only go back 1 slot
+    navigator.current_index += 1        # is this needed ???
+    # print(f'{sub_menu_list=}')
+
+#   finally.... update this, or view code breaks.  Yet another symptom of having data in two places... grrr...
+    navigator.set_program_list(program_list)
+
 
 def remove_cycle()-> None:
     last_cycle_pos = find_last_cycle()
@@ -542,39 +627,105 @@ def remove_cycle()-> None:
         del program_list[last_cycle_pos]
         lcd.setCursor(0,1)
         lcd.printout(f'{cycle_name} deleted')
-        print("Now... try to update the menu itself!!")
+        # print("Now... try to update the menu itself!!")
         sub_menu_list: list = navigator.current_level[-1]["items"]         # this is a stack... get last entry
-        print(f'{navigator.current_index=}')
-        print(f'{sub_menu_list}')
-        print(f'sub_menu_list is type {type(sub_menu_list)}')
+        # print(f'{navigator.current_index=}')
+        # print(f'{sub_menu_list}')
+        # print(f'sub_menu_list is type {type(sub_menu_list)}')
         # new_menu_item = sub_menu_list[navigator.current_index - 2]
         # new_menu_item["title"] = new_cycle_name
         # print(f'{new_menu_item=}')
-        if "Cycle" in sub_menu_list[navigator.current_index - 3]["title"]:
-            del sub_menu_list[navigator.current_index - 3]      # check the 3...
-            # navigator.current_index -= 1        # is this needed ???
-        print(f'{sub_menu_list=}')
+        if "Cycle" in sub_menu_list[navigator.current_index - 2]["title"]:
+            del sub_menu_list[navigator.current_index - 2]      # check the 2...
+            navigator.current_index -= 1        # is this needed ???
+        # print(f'{sub_menu_list=}')
     else:
         lcd.setCursor(0,1)
         lcd.printout('Cant delete more')
         # print(f'remove_cycle: bad value {last_cycle_pos}')
     # print(f'{program_list=}')
-    
+    #   finally.... update this, or view code breaks
+    navigator.set_program_list(program_list)
+
+def show_uptime():
+    uptimesecs = time.time() - sys_start_time
+    days  = int(uptimesecs / (60*60*24))
+    hours = int(uptimesecs % (60*60*24) / (60*60))
+    mins  = int(uptimesecs % (60*60) / 60)
+    secs  = int(uptimesecs % 60)
+    ut = f'{days} d {hours:02}:{mins:02}:{secs:02}'
+    lcd.clear()
+    lcd.setCursor(0, 0)
+    lcd.printout("Uptime:")
+    lcd.setCursor(0, 1)
+    lcd.printout(ut)
+
+def make_more_space()->None:
+
+    hitList: list[tuple] = []
+    device_files = uos.listdir()
+    tank_files = [x for x in device_files if ("tank " in x or "pressure " in x) and ".txt" in x]
+    for f in tank_files:
+        ftuple = uos.stat(f)
+        kb = int(ftuple[6] / 1024)
+        ts = ftuple[7]
+        tstr = display_time(secs_to_localtime(ts))
+        file_entry = tuple((f, kb, ts, tstr))
+        hitList.append(file_entry)
+
+    sorted_by_date = sorted(hitList, key=lambda x: x[2])
+    print(f"Files sorted by date (oldest first):\n{sorted_by_date}")
+    if free_space() < FREE_SPACE_LOWATER:
+        ev_log.write(f"{event_time} Deleting files\n")
+        while free_space() < FREE_SPACE_HIWATER:
+            df = sorted_by_date[0][0]
+            print(f"removing file {df}")
+            uos.remove(df)
+            ev_log.write(f"{event_time}: Removed file {df} size{sorted_by_date[0][1]} Kb")
+            sorted_by_date.pop(0)
+
+        fs = free_space()
+        print(f"After cleanup: {fs} Kb")
+        ev_log.write(f"{event_time}: free space now {fs}")
+
+def roll_logs()-> None:
+# close & reopen new log files, so nothing becomes real large... helps with managing space on the drive
+# simple method avoids the need to mess with filenames...
+# All that remains is to ensure logs are saved/archived offline before DELETINGin make-more-space... and to schedule roll_logs
+
+    if tank_log is not None:
+        tank_log.flush()
+        tank_log.close()
+    if pp_log is not None:
+        pp_log.flush()
+        pp_log.close()
+    if ev_log is not None:
+        ev_log.flush()
+        ev_log.close()
+
+    init_logging()          # start a new series
+
+def send_log()->int:
+    rv = send_file(TO_EMAIL, "EV LOG", eventlogname)
+    print(f"Log sent: code {rv}")
+    return rv
+
 new_menu = {
     "title": "L0 Main Menu",
-    "items": [
+    "items": [              # items[0]
       {
-        "title": "1 Display->",
+        "title": "1 Display->",         # items[0]
         "items": [
           { "title": "1.1 Depth",    "action": display_depth},
           { "title": "1.2 Pressure", "action": display_pressure},
           { "title": "1.3 Space",    "action": show_space},
-          { "title": "1.4 Go Back",  "action": my_go_back
+          { "title": "1.4 Uptime",   "action": show_uptime},
+          { "title": "1.5 Go Back",  "action": my_go_back
           }
         ]
       },
       {
-        "title": "2 History->",
+        "title": "2 History->",         # items[1]
         "items": [
           { "title": "2.1 Events",   "action": show_events},
           { "title": "2.2 Switch",   "action": show_switch},
@@ -586,40 +737,42 @@ new_menu = {
         ]
       },
       {
-        "title": "3 Actions->",
+        "title": "3 Actions->",         # items[2]
         "items": [
           { "title": "3.1 Timed Water", "action": start_irrigation_schedule},
           { "title": "3.2 Cancel Prog", "action": cancel_program},
           { "title": "3.3 Flush",       "action": flush_data},
           { "title": "3.4 Reset",       "action": my_reset},
           { "title": "3.5 Files",       "action": showdir},
-          { "title": "3.6 Go back",     "action": my_go_back}
+          { "title": "3.6 Make Space",  "action": make_more_space},
+          { "title": "3.7 Email evlog", "action": send_log},
+          { "title": "3.8 Go back",     "action": my_go_back}
         ]
       },
       {
-        "title": "4 Config->",
+        "title": "4 Config->",         # items[3]
         "items": [
           { "title": "4.1 Set Config->",
-            "items": [
+            "items": [                  # items[3][0]
                 { "title": "Delay",        "value": {"Default_val": 15,   "Working_val" : mydelay,                  "Step" : 5}},
                 { "title": "LCD",          "value": {"Default_val": 5,    "Working_val" : LCD_ON_TIME,              "Step" : 2}},
                 { "title": "MinDist",      "value": {"Default_val": 500,  "Working_val" : Min_Dist,                 "Step" : 100}},
                 { "title": "MaxDist",      "value": {"Default_val": 1400, "Working_val" : Max_Dist,                 "Step" : 100}},
                 { "title": "Max Pressure", "value": {"Default_val": 700,  "Working_val" : MAX_LINE_PRESSURE,        "Step" : 25}},                
                 { "title": "Min Pressure", "value": {"Default_val": 300,  "Working_val" : MIN_LINE_PRESSURE,        "Step" : 25}},
-                { "title": "No Pressure",  "value": {"Default_val": 15,   "Working_val" : NO_LINE_PRESSURE,         "Step" : 1}},
+                { "title": "No Pressure",  "value": {"Default_val": 15,   "Working_val" : NO_LINE_PRESSURE,         "Step" : 5}},
                 { "title": "Max RunMins",  "value": {"Default_val": 180,  "Working_val" : MAX_CONTIN_RUNMINS,       "Step" : 10}},
                 { "title": "Save config",  "action": update_config},
                 { "title": "Go back",      "action": my_go_back}
             ]
           },
            { "title": "4.2 Set Timers->",
-            "items": [
-                { "title": "Start Delay",  "value": {"Default_val": 5,   "Working_val" : 1,         "Step" : 15}},
+            "items": [                  # items[3][1]
+                { "title": "Start Delay",  "value": {"Default_val": 5,   "Working_val" : 0,                     "Step" : 15}},
+                { "title": "Duty Cycle",   "value": {"Default_val": 50,  "Working_val" : DEFAULT_DUTY_CYCLE,    "Step" : 5}},
                 { "title": "Cycle1",       "value": {"Default_val": 1,   "Working_val" : DEFAULT_CYCLE,         "Step" : 5}},
                 { "title": "Cycle2",       "value": {"Default_val": 2,   "Working_val" : DEFAULT_CYCLE,         "Step" : 5}},
                 { "title": "Cycle3",       "value": {"Default_val": 3,   "Working_val" : DEFAULT_CYCLE,         "Step" : 5}},
-                { "title": "Duty Cycle",   "value": {"Default_val": 50,  "Working_val" : DEFAULT_DUTY_CYCLE,    "Step" : 5}},
                 { "title": "Add cycle",      "action": add_cycle},
                 { "title": "Delete cycle",   "action": remove_cycle},
                 { "title": "Update program", "action": update_program_data},
@@ -691,7 +844,10 @@ def lcd_off(x):
         lcd.setRGB(0,0,0)
 
 def lcd_on():
-    lcd.setRGB(170,170,138)
+    if ui_mode == UI_MODE_MENU:
+        lcd.setRGB(240, 30, 240)
+    else:
+        lcd.setRGB(170,170,138)
 
 async def check_lcd_btn():
     global lcdbtnflag
@@ -715,7 +871,7 @@ async def check_lcd_btn():
 # region MAIN METHODS
 def init_logging():
     global year, month, day, shortyear
-    global f, ev_log, pp_log
+    global tank_log, ev_log, pp_log, eventlogname
 
     now             = secs_to_localtime(time.time())      # getcurrent time, convert to local SA time
     year            = now[0]
@@ -723,10 +879,10 @@ def init_logging():
     day             = now[2]
     shortyear       = str(year)[2:]
     datestr         = f"{shortyear}{month:02}{day:02}"
-    daylogname      = f'tank {datestr}.txt'
+    tanklogname     = f'tank {datestr}.txt'
     pplogname       = f'pressure {datestr}.txt'
     eventlogname    = 'borepump_events.txt'
-    f               = open(daylogname, "a")
+    tank_log        = open(tanklogname, "a")
     ev_log          = open(eventlogname, "a")
     pp_log          = open(pplogname, "a")
 
@@ -785,7 +941,7 @@ def updateData():
     if DEBUGLVL > 0: print(f"depth_ROC: {depth_ROC:.3f}")
     last_depth = sma_depth				# track change since last reading
     depth_str = f"{depth:.2f}m " + tank_is
-    bp_kpa = 300 + ringbufferindex * 100            # hack for testing... replace with ADC read when calibrated
+    bp_kpa = 300 + ringbufferindex * 2            # hack for testing... replace with ADC read when calibrated
     pressure_str = f'{bp_kpa:3} kPa'    # might change this to be updated more frequently in a dedicated asyncio loop...
     temp = 27 - (temp_sensor.read_u16() * TEMP_CONV_FACTOR - 0.706)/0.001721
 
@@ -857,7 +1013,7 @@ def radio_time(local_time):
 
 def borepump_ON():
     if SIMULATE_PUMP:
-        print("SIM Pump ON")
+        print(f"{display_time(secs_to_localtime(time.time()))} SIM Pump ON")
     else:
         tup = ("ON", radio_time(time.time()))   # was previosuly counter... now, time
     #            print(tup)
@@ -882,7 +1038,7 @@ def borepump_ON():
 
 def borepump_OFF():
     if SIMULATE_PUMP:
-        print("SIM Pump OFF")
+        print(f"{display_time(secs_to_localtime(time.time()))} SIM Pump OFF")
     else:
         tup = ("OFF", radio_time(time.time()))
     #            print(tup)
@@ -1051,28 +1207,30 @@ def DisplayData()->None:
                 start_hrs = int(delay_minutes/60)
                 start_mins = delay_minutes % 60
                 display_str = f"Prog strt {start_hrs:>2}:{start_mins:02}m"
-            elif cycle_end_time > 0:
-                secs_remaining = cycle_end_time - now
-                # print(f"In Display, {secs_remaining=}")
-                if sl_index == num_cycles:
-                    display_str = f"End TWM soon"
-                else:
-                    cycle_number     = int(sl_index / 3) + 1
-                    total_cycles = int(num_cycles / 3)
-                    if secs_remaining < 0:                              # explain... it works, but is cryptic!
-                        secs_to_next_ON = nextcycle_ON_time - now       # what if this is negative ???  
+            elif ON_cycle_end_time > 0:
+                cycle_number    = int(sl_index / 3) + 1
+                total_cycles    = int(num_cycles / 3)
+
+                secs_remaining  = ON_cycle_end_time - now
+                if secs_remaining > 0:                      # we are mid-ON cycle... how much longer for?
+                    if secs_remaining > 60:
+                        disp_time = f"{int(secs_remaining / 60)}m"
+                    else:
+                        disp_time = f"{secs_remaining}s"
+                    display_str = f"C{cycle_number}/{total_cycles} {disp_time} {pressure_str}"
+                else:                                       # we are in OFF time... 
+                    secs_to_next_ON = next_ON_cycle_time - now 
+                    if secs_to_next_ON < 0:                 # there is no next ON...
+                        display_str = "End TWM soon"
+                        # print(f"{display_time(secs_to_localtime(now))}: {secs_to_next_ON=}")
+                    else:
                         if secs_to_next_ON < 60:
                             display_str = f"Wait {cycle_number}/{total_cycles} {secs_to_next_ON}s"
                         else:
                             display_str = f"Wait {cycle_number}/{total_cycles} {int(secs_to_next_ON / 60)}m"
-                    else:
-                        if secs_remaining > 60:
-                            disp_time = f"{int(secs_remaining / 60)}m"
-                        else:
-                            disp_time = f"{secs_remaining}s"
-                        display_str = f"C{cycle_number}/{total_cycles} {disp_time} {pressure_str}"
             else:
                 display_str = "IRRIG MODE...??"
+
         lcd.setCursor(0, 1)
         lcd.printout(f"{display_str:<16}")
 
@@ -1101,10 +1259,10 @@ def LogData()->None:
         if level_change > min_log_change_m:
             last_logged_depth = depth
             enter_log = True
-        if pressure_change > max_kpa_change:
+        if pressure_change > MAX_KPA_CHANGE:
             last_logged_kpa = bp_kpa
             enter_log = True
-        if enter_log: f.write(logstr)
+        if enter_log: tank_log.write(logstr)
     print(dbgstr)
 
 def listen_to_radio():
@@ -1296,7 +1454,7 @@ def init_ringbuffers():
 
 def init_everything_else():
     global borepump, steady_state, free_space_KB, presspump, vbus_on_time, display_mode, navigator, encoder_count, encoder_btn_state, enc_a_last_time, enc_btn_last_time
-    global slist, cycle_end_time, program_pending
+    global slist, program_pending, sys_start_time
 
     encoder_count       = 0       # to track rotary next/prevs
     enc_a_last_time     = utime.ticks_ms()
@@ -1305,6 +1463,7 @@ def init_everything_else():
 
     slist=[]
 
+    Change_Mode(UI_MODE_NORM)
     lcd_on()  
 # Get the current pump state and init my object    
     borepump = Pump("BorePump", get_initial_pump_state())
@@ -1320,20 +1479,24 @@ def init_everything_else():
         solenoid.value(1)           # be very careful... inverse logic!
 
     presspump = Pump("PressurePump", False)
-    free_space_KB = free_space()
-    if free_space_KB < MIN_FREE_SPACE:
-        raiseAlarm("Free space", free_space_KB)
 
-    init_ringbuffers()
+    init_ringbuffers()                      # this is required BEFORE we raise any alarms...
+
     navigator.set_event_list(eventring)
     navigator.set_switch_list(switchring)
     navigator.set_program_list(program_list)
+
+    free_space_KB = free_space()
+    if free_space_KB < FREE_SPACE_LOWATER:
+        raiseAlarm("Free space", free_space_KB)
+        make_more_space()
 
 # ensure we start out right...
     steady_state = False
     vbus_on_time = time.time()      # init this... so we can test external
     display_mode = "depth"
     program_pending = False         # no program
+    sys_start_time = time.time()    # must be AFTER we set clock ...
 
     enable_controls()              # enable rotary encoder, LCD B/L button etc
 
@@ -1377,7 +1540,7 @@ def confirm_and_switch_solenoid(state):
 
 def free_space()->int:
     # Get the filesystem stats
-    stats = os.statvfs('/')
+    stats = uos.statvfs('/')
     
     # Calculate free space
     block_size = stats[0]
@@ -1387,6 +1550,7 @@ def free_space()->int:
     # Free space in bytes
     free_space_kb = free_blocks * block_size / 1024
     return free_space_kb
+
 
 def sim_pressure_pump_detect(x)->bool:            # to be hacked when I connect the CT circuit
     p = random.random()
@@ -1414,7 +1578,8 @@ def monitor_vbus():
 # region ASYNCIO defs
 async def regular_flush(m)->None:
     while True:
-        f.flush()
+        tank_log.flush()
+        pp_log.flush()
         ev_log.flush()
         await uasyncio.sleep(m)
 
@@ -1423,20 +1588,23 @@ async def check_rotary_state(menu_sleep:int)->None:
     while True:
         if encoder_btn_state:               # button pressed
             lcd_on()                        # but set no OFF timer...stay on until I exit menu
-            mode = navigator.mode
+            navmode = navigator.mode
 
             if ui_mode == UI_MODE_MENU:
-                mode = navigator.mode
-                if mode == "menu":
+                navmode = navigator.mode
+                if navmode == "menu":
                     navigator.enter()
-                elif mode == "value_change":
+                elif navmode == "value_change":
                     navigator.set()
-                elif "view" in mode:        # careful... if more modes are added, ensure they contain "view"
+                elif "view" in navmode:        # careful... if more modes are added, ensure they contain "view"
                     navigator.go_back()
-            else:
-                ui_mode = UI_MODE_MENU
+            elif ui_mode == UI_MODE_NORM:
+                Change_Mode(UI_MODE_MENU)
+                # ui_mode = UI_MODE_MENU
                 navigator.go_to_first()
                 navigator.display_current_item()
+            else:
+                print(f'Huh? {ui_mode=}')
 
             encoder_btn_state = False
 
@@ -1566,7 +1734,7 @@ def main() -> None:
         print("I see a cancelled uasyncio thing")
 
     except KeyboardInterrupt:
-        ui_mode = UI_MODE_NORM
+        ui_mode = UI_MODE_NORM      # no point calling CHaneg... as I turn B/L off straight after anyway...
         lcd_off('')	                # turn off backlight
         print('\n### Program Interrupted by the user')
         if op_mode == OP_MODE_IRRIGATE:

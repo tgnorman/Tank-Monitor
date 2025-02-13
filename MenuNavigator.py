@@ -108,7 +108,7 @@ class MenuNavigator:
             #     print("Setting new_value to default...")
             #     self.new_value = item['value']['Default_val']
             step = item['value']['Step']
-            if self.new_value > step:
+            if self.new_value >= step:
                 self.new_value -= step
                 # print(f'In PREV self.new_value is {self.new_value}')
                 self.device.setCursor(0, 1)
@@ -210,6 +210,8 @@ class MenuNavigator:
         self.switchlist = myswitchlist
 
     def set_program_list(self, mylist):
+        if self.program_list is not None:
+            del self.program_list           # clean up old stuff...
         self.program_list = mylist
 
     def go_to_first(self):
