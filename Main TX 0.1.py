@@ -1728,8 +1728,16 @@ async def do_main_loop():
 def main() -> None:
     global ui_mode
     try:
+
+        print('Sending test email ... no files')
+        send_email(TO_EMAIL, "Test email", "This is a test email from the pump monitor")    
+        print('...sent')
+
         uasyncio.run(do_main_loop())
 
+    except OSError:
+        print("OSError... ")
+        
     except uasyncio.CancelledError:
         print("I see a cancelled uasyncio thing")
 
