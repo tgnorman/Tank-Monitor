@@ -3,6 +3,8 @@
 
 from RGB1602 import RGB1602
 
+DEBUG = False
+
 class MenuNavigator:
     def __init__(self, menu, dev:RGB1602):
         self.menu = menu
@@ -15,8 +17,10 @@ class MenuNavigator:
         self.event_index = 0          # for log scrolling
         self.switchlist = None
         self.switch_index = 0
-        self.program_list = None
+        self.programlist = None
         self.program_index = 0
+        self.filelist = None
+        self.file_index = 0
         self.display_current_item()
 
     def get_current_item(self):
@@ -30,7 +34,7 @@ class MenuNavigator:
         # print(item['title'])
         if "value" in item:
             self.device.setCursor(0, 1)
-            self.device.printout(item['value']['Working_val'])
+            self.device.printout(item['value']['W_V'])
 #        print("Current Item: ", item)
 #        print(f"Current Item: {item['title']}")
 
@@ -43,10 +47,10 @@ class MenuNavigator:
         elif self.mode == "value_change":
             item = self.get_current_item()
             # print(f'In NEXT, item is {item}')
-            # if item['value']['Working_val'] == 0:
+            # if item['value']['W_V'] == 0:
             # if self.new_value == 0:
             #     print("Setting new_value to default...")
-            #     self.new_value = item['value']['Default_val']
+            #     self.new_value = item['value']['D_V']
             step = item['value']['Step']
 # no if neeed for inc...            
             self.new_value += step
@@ -68,16 +72,22 @@ class MenuNavigator:
                 else:
                     hist_str = "Switchlist: None"
             elif self.mode == "view_program":
-                if self.program_list is not None:
-                    prog_name = self.program_list[self.program_index][0]
-                    prog_duration = self.program_list[self.program_index][1]["run"]
-                    prog_wait = self.program_list[self.program_index][1]["off"]
+                if self.programlist is not None:
+                    self.program_index = (self.program_index + 1) % len(self.programlist)
+                    prog_name = self.programlist[self.program_index][0]
+                    prog_duration = self.programlist[self.program_index][1]["run"]
+                    prog_wait = self.programlist[self.program_index][1]["off"]
                     prog_str = f'Run {prog_duration} Off {prog_wait}'
                     hist_str = tuple((prog_name, prog_str))
                     # print(f'In NEXT {hist_str=}')
-                    self.program_index = (self.program_index + 1) % len(self.program_list)
                 else:
                     hist_str = "Prog list: None"
+            elif self.mode == "view_files":
+                if self.filelist is not None:
+                    self.file_index = (self.file_index + 1) % len(self.filelist)
+                    hist_str = self.filelist[self.file_index]
+                else:
+                    hist_str = "File list: None"
             if type(hist_str) == tuple:
                 if(len(hist_str) > 0):
                     datestamp = hist_str[0]
@@ -103,10 +113,10 @@ class MenuNavigator:
         elif self.mode == "value_change":
             item = self.get_current_item()
             # print(f'In PREV, item is {item}')
-            # if item['value']['Working_val'] == 0:
+            # if item['value']['W_V'] == 0:
             # if self.new_value == 0:
             #     print("Setting new_value to default...")
-            #     self.new_value = item['value']['Default_val']
+            #     self.new_value = item['value']['D_V']
             step = item['value']['Step']
             if self.new_value >= step:
                 self.new_value -= step
@@ -128,16 +138,22 @@ class MenuNavigator:
                 else:
                     hist_str = "Switchlist: None"
             elif self.mode == "view_program":
-                if self.program_list is not None:
-                    prog_name = self.program_list[self.program_index][0]
-                    prog_duration = self.program_list[self.program_index][1]["run"]
-                    prog_wait = self.program_list[self.program_index][1]["off"]
+                if self.programlist is not None:
+                    self.program_index = (self.program_index - 1) % len(self.programlist)
+                    prog_name = self.programlist[self.program_index][0]
+                    prog_duration = self.programlist[self.program_index][1]["run"]
+                    prog_wait = self.programlist[self.program_index][1]["off"]
                     prog_str = f'Run {prog_duration} Off {prog_wait}'
                     hist_str = tuple((prog_name, prog_str))
                     # print(f'In PREV {hist_str=}')
-                    self.program_index = (self.program_index - 1) % len(self.program_list)
                 else:
                     hist_str = "Prog list: None"
+            elif self.mode == "view_files":
+                if self.filelist is not None:
+                    self.file_index = (self.file_index - 1) % len(self.filelist)
+                    hist_str = self.filelist[self.file_index]
+                else:
+                    hist_str = "File list: None"
             if type(hist_str) == tuple:
                 if(len(hist_str) > 0):
                     datestamp = hist_str[0]
@@ -182,7 +198,7 @@ class MenuNavigator:
             self.mode = "value_change"
             param = item['title']
             val = item['value']
-            self.new_value = item['value']['Working_val']
+            self.new_value = item['value']['W_V']
             # print(f'In ENTER {param} = {val}')
         else:
             print(f"Unknown type in item... check menu def.  {item}")
@@ -195,8 +211,8 @@ class MenuNavigator:
 #        val = self.new_value
 #        print(f'New {param} = {val}')
         # print(f'In SET before change, item is: {item}')
-        if item['value']['Working_val'] !=  self.new_value and self.new_value > 0:
-            item['value']['Working_val'] =  self.new_value
+        if item['value']['W_V'] !=  self.new_value and self.new_value > 0:
+            item['value']['W_V'] =  self.new_value
             # print(f"In SET, updated Working Value to {self.new_value}")
         # print(f'In SET after  change, item is: {item}')
 
@@ -210,9 +226,14 @@ class MenuNavigator:
         self.switchlist = myswitchlist
 
     def set_program_list(self, mylist):
-        if self.program_list is not None:
-            del self.program_list           # clean up old stuff...
-        self.program_list = mylist
+        if self.programlist is not None:
+            del self.programlist           # clean up old stuff...
+        self.programlist = mylist
+
+    def set_file_list(self, mylist):
+        if self.filelist is not None:
+            del self.filelist           # clean up old stuff...
+        self.filelist = mylist
 
     def go_to_first(self):
         self.current_index = 0

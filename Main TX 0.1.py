@@ -3,15 +3,19 @@
 
 # from PiicoDev_RV3028 import PiicoDev_RV3028
 import RGB1602
-import time
-import utime
 import network
-import ntptime
+import umail # type: ignore
+import time
 import uos
-import random               # just for PP detect sim...
-import uasyncio
+import utime
+import uasyncio as asyncio
+import ntptime
 import gc
-import umail
+import micropython
+# print(f"Before import random: {gc.mem_free()}")
+# import random               # just for PP detect sim...
+# print(f"After import random: {gc.mem_free()}")
+# micropython.mem_info(1)
 from utime import sleep, ticks_us, ticks_diff
 from PiicoDev_Unified import sleep_ms
 from PiicoDev_VL53L1X import PiicoDev_VL53L1X
@@ -21,11 +25,13 @@ from Pump import Pump               # get our Pump class
 from Tank import Tank
 from secrets import MyWiFi
 from MenuNavigator import MenuNavigator
+from encoder import Encoder
+from ubinascii import b2a_base64 as b64
 
 # OK... major leap... intro to FSM...
 from SM_SimpleFSM import SimpleDevice
 # endregion
-# region initial declarations etc
+# region INITIALISE
 
 # constant/enums
 OP_MODE_AUTO        = 0
@@ -46,15 +52,19 @@ FREE_SPACE_HIWATER  = 400
 FLUSH_PERIOD        = 2
 DEBOUNCE_ROTARY     = 100
 ROTARY_PERIOD_MS    = 200           # needs to be short... check rotary ISR variables
+PRESSURE_PERIOD_MS  = 1000
 
 EVENTRINGSIZE       = 20            # max log ringbuffer length
 SWITCHRINGSIZE      = 20
+PRESSURERINGSIZE    = 120
 
 MAX_OUTAGE          = 20            # seconds of no power
 
+BP_SENSOR_MIN       = 1000          # this will trigger sensor detect logic
+
 #All menu-CONFIGURABLE parameters
 mydelay             = 15            # seconds, main loop period
-LCD_ON_TIME         = 60            # seconds
+LCD_ON_TIME         = 45            # seconds
 Min_Dist            = 500           # full
 Max_Dist            = 1400          # empty
 MAX_LINE_PRESSURE   = 700           # TBC... but this seems about right
@@ -93,6 +103,7 @@ level_init          = False 		# to get started
 ringbufferindex     = 0             # for SMA calculation... keep last n measures in a ring buffer
 eventindex          = 0             # for scrolling through error logs on screen
 switchindex         = 0
+kpaindex            = 0            # for scrolling through pressure logs on screen
 
 lcdbtnflag          = True          # this should immediately trigger my asyncio timer on startup...
 
@@ -100,7 +111,10 @@ lcdbtnflag          = True          # this should immediately trigger my asyncio
 steady_state        = False         # if not, then don't check for anomalies
 clock_adjust_ms     = 0             # will be set later... this just to ensure it is ALWAYS something
 report_outage       = True          # do I report next power outage?
-sys_start_time      = 0   # for uptime report
+sys_start_time      = 0             # for uptime report
+kpa_sensor_armed    = True         # set to True if pressure sensor is detected  
+
+SW_VERSION          = "2/3/25"       # for display
 
 # Gather all tank-related stuff with a view to making a class...
 housetank           = Tank("Empty")                     # make my tank object
@@ -109,7 +123,7 @@ housetank           = Tank("Empty")                     # make my tank object
 fill_states         = ["Overflow", "Full", "Near full", "Part full", "Near Empty", "Empty"]
 
 # Pins
-vsys                = ADC(3)                            # one day I'll monitor this for over/under...
+#vsys                = ADC(3)                            # one day I'll monitor this for over/under...
 temp_sensor         = ADC(4)			                # Internal temperature sensor is connected to ADC channel 4
 lcdbtn 	            = Pin(6, Pin.IN, Pin.PULL_UP)		# check if IN is correct!
 buzzer 		        = Pin(16, Pin.OUT)
@@ -118,13 +132,15 @@ prsspmp_led         = Pin(14, Pin.OUT)
 solenoid            = Pin(2, Pin.OUT, value=0)          # MUST ensure we don't close solenoid on startup... pump may already be running !!!  Note: Low == Open
 vbus_sense          = Pin('WL_GPIO2', Pin.IN)           # external power monitoring of VBUS
 led                 = Pin('LED', Pin.OUT)
-bp_pressure         = ADC(0)                            # Is this right?  or should it be Pin 26
+bp_pressure         = ADC(0)                            # read line pressure
 
 # Create pins for encoder lines and the onboard button
 
 enc_btn             = Pin(18, Pin.IN, Pin.PULL_UP)
-enc_a               = Pin(19, Pin.IN)
-enc_b               = Pin(20, Pin.IN)
+# enc_a               = Pin(19, Pin.IN)
+# enc_b               = Pin(20, Pin.IN)
+px                  = Pin(20, Pin.IN, Pin.PULL_UP)
+py                  = Pin(19, Pin.IN, Pin.PULL_UP)
 last_time           = 0
 count               = 0
 
@@ -137,7 +153,7 @@ lcd 		        = RGB1602.RGB1602(16,2)
 radio               = PiicoDev_Transceiver()
 #rtc 		        = PiicoDev_RV3028()                 # Initialise the RTC module, enable charging
 
-# Configure your WiFi SSID and password
+# Configure WiFi SSID and password
 ssid                = wf.ssid
 password            = wf.password
 
@@ -148,9 +164,23 @@ SMTP_PORT           = 465
 FROM_EMAIL          = "gmtgn55@gmail.com"
 FROM_PASSWORD       = wf.gmailAppPassword
 TO_EMAIL            = "trevor.norman4@icloud.com"
+
+# things for async SMTP file processing
+sleepms = 100
+linegrp = 100
+
+EMAIL_QUEUE_SIZE    = 6  # Adjust size as needed
+email_queue         = ["" for _ in range(EMAIL_QUEUE_SIZE)]
+email_queue_head    = 0
+email_queue_tail    = 0
+email_queue_full    = False
+email_task_running  = False
+
+files_to_send = ["borepump_events.txt"]
+
 # endregion
-# region email
-def send_email(to:str, subj:str, body:str):
+# region EMAIL
+def send_email_msg(to:str, subj:str, body:str):
     smtp = umail.SMTP(SMTP_SERVER, SMTP_PORT, ssl=True)
     smtp.login(FROM_EMAIL, FROM_PASSWORD)
 
@@ -165,9 +195,9 @@ def send_email(to:str, subj:str, body:str):
     # Close the SMTP connection
     code = smtp.send()
     smtp.quit()
-    print(f"Email sent!... return code {code}")
+    print(f"Email sent!... RC {code}")
 
-def send_file(to:str, subj:str, filename:str)->int:
+def send_file_blocking(to:str, subj:str, filename:str)->int:
 
     try:
         f = open(filename, "r")
@@ -187,7 +217,7 @@ def send_file(to:str, subj:str, filename:str)->int:
 
         f.close()
         code = smtp.send()
-        print(f"File sent!... return code {code[0]}")
+        print(f"File sent!... RC {code[0]}")
         smtp.quit()
         return int(code[0])
 
@@ -222,7 +252,7 @@ def update_config():
     
     for param_index in range(len(config_dict)):
         param: str             = new_menu['items'][3]['items'][0]['items'][param_index]['title']
-        new_working_value: int = new_menu['items'][3]['items'][0]['items'][param_index]['value']['Working_val']
+        new_working_value: int = new_menu['items'][3]['items'][0]['items'][param_index]['value']['W_V']
         if param in config_dict.keys():
             # print(f"in update_config {param}: dict is {config_dict[param]} nwv is {new_working_value}")
             if new_working_value > 0 and config_dict[param] != new_working_value:
@@ -234,7 +264,7 @@ def update_config():
                 lcd.setCursor(0,1)
                 lcd.printout(f'to {new_working_value}')
         else:
-            print(f"GAK! Config parameter {param} not found in config dictionary!")
+            print(f"GAK! Config param {param} not found in config dict!")
             lcd.clear()
             lcd.setCursor(0,0)
             lcd.printout("No dict entry:  ")
@@ -245,7 +275,7 @@ def update_timer_params():
     
     for param_index in range(len(timer_dict)):
         param: str             = new_menu['items'][3]['items'][1]['items'][param_index]['title']    # GAK... more bad dependencies
-        new_working_value: int = new_menu['items'][3]['items'][1]['items'][param_index]['value']['Working_val']
+        new_working_value: int = new_menu['items'][3]['items'][1]['items'][param_index]['value']['W_V']
         # print(f">> {param=}, {new_working_value}")
         if param in timer_dict.keys():
             # print(f"in update_timers {param}: dict is {timer_dict[param]} nwv is {new_working_value}")
@@ -284,7 +314,7 @@ def update_program_data()->None:
         #     on_time = s[1]["run"]
         menu_title = new_menu['items'][3]['items'][1]['items'][i]['title']
         if cyclename == menu_title:         # found correct menu item
-            on_time = new_menu['items'][3]['items'][1]['items'][i]['value']['Working_val']
+            on_time = new_menu['items'][3]['items'][1]['items'][i]['value']['W_V']
             off_time = int(on_time * (100/adjusted_dc - 1) )
             # print(f"{cyclename=} {on_time=}  {off_time=}")
             s[1]["run"] = on_time
@@ -294,7 +324,7 @@ def update_program_data()->None:
 
 # now... fix start delay directly from menu
     program_list[0][1]["init"] = timer_dict["Start Delay"]      # another indirect data val...
-    program_list[-1][1]["off"] = 0              # reset last cycle OFF time to 1
+    program_list[-1][1]["off"] = 1              # reset last cycle OFF time to 1
 
     lcd.setCursor(0,1)
     lcd.printout("program updated")
@@ -357,13 +387,13 @@ def toggle_borepump(x:Timer):
             add_to_event_ring("End PROG")
             ev_log.write(prog_str + "\n")
 
+            op_mode = OP_MODE_AUTO
             DisplayData()       # show status immediately, don't wait for next loop ??
 
-            op_mode = OP_MODE_AUTO
             # print(f"{current_time()}: in TOGGLE... END IRRIGATION mode !  Now in {op_mode}")
             if borepump.state:
                 borepump_OFF()       # to be sure, to be sure...
-                print(f"{current_time()}:in toggle, at END turning pump OFF.  Should already be OFF...")
+                print(f"{current_time()}:in toggle, at END turning bp OFF.  Should already be OFF...")
         if mem < 60000:
             print("Collecting garbage...")              # moved to AFTER timer created... might avoid the couple seconds discrepancy.  TBC
             gc.collect()
@@ -387,7 +417,7 @@ def start_irrigation_schedule():
 
     try:
         if op_mode == OP_MODE_IRRIGATE:
-            print(f"Can't start irrigation program... already in {op_mode}")
+            print(f"Can't start program... already in mode {op_mode}")
             lcd.setCursor(0,1)
             lcd.printout("Already running!")
         else:
@@ -438,13 +468,13 @@ def start_irrigation_schedule():
         
     except MemoryError:
         print("MemoryError caught")
-        print(f"before gc free mem: {gc.mem_free()}")
+        # print(f"before gc free mem: {gc.mem_free()}")
         gc.collect()
-        print(f" after gc free mem: {gc.mem_free()}")
+        # print(f" after gc free mem: {gc.mem_free()}")
 
     except Exception as e:
         print(f"Exception caught in start_irrigation_schedule: {e}")
-        print(f"before gc free mem: {gc.mem_free()}")
+        # print(f"before gc free mem: {gc.mem_free()}")
         gc.collect()
         print(f" after gc free mem: {gc.mem_free()}")
 # endregion
@@ -544,8 +574,8 @@ def housekeeping(close_files: bool):
     tank_log.flush()
     ev_log.write(f"{event_time} STOP")
     ev_log.write(f"\nMonitor shutdown at {display_time(secs_to_localtime(time.time()))}\n")
-    dump_pump_arg(borepump)
-    dump_pump_arg(presspump)
+    if borepump is not None: dump_pump_arg(borepump)
+    if presspump is not None: dump_pump_arg(presspump)
     dump_event_ring()
     ev_log.flush()
     end_time = time.ticks_us()
@@ -555,7 +585,33 @@ def housekeeping(close_files: bool):
 
     print(f"Cleanup completed in {int(time.ticks_diff(end_time, start_time) / 1000)} milliseconds")
 
-def showdir():
+def send_tank_logs():
+    # filelist: list[tuple] = []  
+    filenames = [x for x in uos.listdir() if x.startswith("tank") and x.endswith(".txt") ]
+
+    for f in filenames:
+        # fstat = uos.stat(f)
+        # fsize = fstat[6]
+        # fdate = fstat[7]
+        add_to_email_queue(f)
+        # print(f'{f}: {fsize:>7} bytes, time {display_time(secs_to_localtime(fdate))}')
+    print(f'Email queue has {email_queue_head - email_queue_tail} items')
+
+def show_dir():
+    filelist: list[tuple] = []  
+    filenames = [x for x in uos.listdir() if x.endswith(".txt") and (x.startswith("tank") or x.startswith("pres"))]
+
+    for f in filenames:
+        fstat = uos.stat(f)
+        fsize = fstat[6]
+        fdate = fstat[7]
+        print(f'{f}: {fsize:>7} bytes, time {display_time(secs_to_localtime(fdate))}')
+
+        filelist.append((f, f'Size: {fsize}'))
+
+    navigator.set_file_list(filelist)
+    navigator.mode = "view_files"
+
     for f in uos.ilistdir():
         fn = f[0]
         if "tank" in fn:
@@ -660,6 +716,10 @@ def show_uptime():
     lcd.setCursor(0, 1)
     lcd.printout(ut)
 
+def show_version()-> None:
+    lcd.setCursor(0,1)
+    lcd.printout(f'Version: {SW_VERSION:<7}')
+
 def make_more_space()->None:
 
     hitList: list[tuple] = []
@@ -674,7 +734,7 @@ def make_more_space()->None:
         hitList.append(file_entry)
 
     sorted_by_date = sorted(hitList, key=lambda x: x[2])
-    print(f"Files sorted by date (oldest first):\n{sorted_by_date}")
+    print(f"Files sorted by date:\n{sorted_by_date}")
     if free_space() < FREE_SPACE_LOWATER:
         ev_log.write(f"{event_time} Deleting files\n")
         while free_space() < FREE_SPACE_HIWATER:
@@ -705,10 +765,23 @@ def roll_logs()-> None:
 
     init_logging()          # start a new series
 
-def send_log()->int:
-    rv = send_file(TO_EMAIL, "EV LOG", eventlogname)
-    print(f"Log sent: code {rv}")
-    return rv
+def add_to_email_queue(file:str)->None:
+    global email_queue, email_queue_head, email_queue_full
+
+    if not email_queue_full:
+        email_queue[email_queue_head] = file
+        email_queue_head = (email_queue_head + 1) % EMAIL_QUEUE_SIZE
+        email_queue_full = email_queue_head == email_queue_tail
+        print(f'Queued file to send: {file}')
+    else:
+        print("Email queue full, cannot add more files")
+
+def send_log()->None:
+
+    add_to_email_queue(eventlogname)
+    lcd.setCursor(0, 1)
+    lcd.printout(f'{"Email queued":<16}')
+    # print(f"Log added to email queue")
 
 new_menu = {
     "title": "L0 Main Menu",
@@ -718,9 +791,11 @@ new_menu = {
         "items": [
           { "title": "1.1 Depth",    "action": display_depth},
           { "title": "1.2 Pressure", "action": display_pressure},
-          { "title": "1.3 Space",    "action": show_space},
-          { "title": "1.4 Uptime",   "action": show_uptime},
-          { "title": "1.5 Go Back",  "action": my_go_back
+          { "title": "1.3 Files",    "action": show_dir},
+          { "title": "1.4 Space",    "action": show_space},
+          { "title": "1.5 Uptime",   "action": show_uptime},
+          { "title": "1.6 Version",  "action": show_version},
+          { "title": "1.7 Go Back",  "action": my_go_back
           }
         ]
       },
@@ -742,10 +817,10 @@ new_menu = {
           { "title": "3.1 Timed Water", "action": start_irrigation_schedule},
           { "title": "3.2 Cancel Prog", "action": cancel_program},
           { "title": "3.3 Flush",       "action": flush_data},
-          { "title": "3.4 Reset",       "action": my_reset},
-          { "title": "3.5 Files",       "action": showdir},
-          { "title": "3.6 Make Space",  "action": make_more_space},
-          { "title": "3.7 Email evlog", "action": send_log},
+          { "title": "3.4 Make Space",  "action": make_more_space},
+          { "title": "3.5 Email evlog", "action": send_log},
+          { "title": "3.6 Email tank",  "action": send_tank_logs},
+          { "title": "3.7 Reset",       "action": my_reset},
           { "title": "3.8 Go back",     "action": my_go_back}
         ]
       },
@@ -754,25 +829,25 @@ new_menu = {
         "items": [
           { "title": "4.1 Set Config->",
             "items": [                  # items[3][0]
-                { "title": "Delay",        "value": {"Default_val": 15,   "Working_val" : mydelay,                  "Step" : 5}},
-                { "title": "LCD",          "value": {"Default_val": 5,    "Working_val" : LCD_ON_TIME,              "Step" : 2}},
-                { "title": "MinDist",      "value": {"Default_val": 500,  "Working_val" : Min_Dist,                 "Step" : 100}},
-                { "title": "MaxDist",      "value": {"Default_val": 1400, "Working_val" : Max_Dist,                 "Step" : 100}},
-                { "title": "Max Pressure", "value": {"Default_val": 700,  "Working_val" : MAX_LINE_PRESSURE,        "Step" : 25}},                
-                { "title": "Min Pressure", "value": {"Default_val": 300,  "Working_val" : MIN_LINE_PRESSURE,        "Step" : 25}},
-                { "title": "No Pressure",  "value": {"Default_val": 15,   "Working_val" : NO_LINE_PRESSURE,         "Step" : 5}},
-                { "title": "Max RunMins",  "value": {"Default_val": 180,  "Working_val" : MAX_CONTIN_RUNMINS,       "Step" : 10}},
+                { "title": "Delay",        "value": {"D_V": 15,   "W_V" : mydelay,                  "Step" : 5}},
+                { "title": "LCD",          "value": {"D_V": 5,    "W_V" : LCD_ON_TIME,              "Step" : 2}},
+                { "title": "MinDist",      "value": {"D_V": 500,  "W_V" : Min_Dist,                 "Step" : 100}},
+                { "title": "MaxDist",      "value": {"D_V": 1400, "W_V" : Max_Dist,                 "Step" : 100}},
+                { "title": "Max Pressure", "value": {"D_V": 700,  "W_V" : MAX_LINE_PRESSURE,        "Step" : 25}},                
+                { "title": "Min Pressure", "value": {"D_V": 300,  "W_V" : MIN_LINE_PRESSURE,        "Step" : 25}},
+                { "title": "No Pressure",  "value": {"D_V": 15,   "W_V" : NO_LINE_PRESSURE,         "Step" : 5}},
+                { "title": "Max RunMins",  "value": {"D_V": 180,  "W_V" : MAX_CONTIN_RUNMINS,       "Step" : 10}},
                 { "title": "Save config",  "action": update_config},
                 { "title": "Go back",      "action": my_go_back}
             ]
           },
            { "title": "4.2 Set Timers->",
             "items": [                  # items[3][1]
-                { "title": "Start Delay",  "value": {"Default_val": 5,   "Working_val" : 0,                     "Step" : 15}},
-                { "title": "Duty Cycle",   "value": {"Default_val": 50,  "Working_val" : DEFAULT_DUTY_CYCLE,    "Step" : 5}},
-                { "title": "Cycle1",       "value": {"Default_val": 1,   "Working_val" : DEFAULT_CYCLE,         "Step" : 5}},
-                { "title": "Cycle2",       "value": {"Default_val": 2,   "Working_val" : DEFAULT_CYCLE,         "Step" : 5}},
-                { "title": "Cycle3",       "value": {"Default_val": 3,   "Working_val" : DEFAULT_CYCLE,         "Step" : 5}},
+                { "title": "Start Delay",  "value": {"D_V": 5,   "W_V" : 0,                     "Step" : 15}},
+                { "title": "Duty Cycle",   "value": {"D_V": 50,  "W_V" : DEFAULT_DUTY_CYCLE,    "Step" : 5}},
+                { "title": "Cycle1",       "value": {"D_V": 1,   "W_V" : DEFAULT_CYCLE,         "Step" : 5}},
+                { "title": "Cycle2",       "value": {"D_V": 2,   "W_V" : DEFAULT_CYCLE,         "Step" : 5}},
+                { "title": "Cycle3",       "value": {"D_V": 3,   "W_V" : DEFAULT_CYCLE,         "Step" : 5}},
                 { "title": "Add cycle",      "action": add_cycle},
                 { "title": "Delete cycle",   "action": remove_cycle},
                 { "title": "Update program", "action": update_program_data},
@@ -792,20 +867,20 @@ new_menu = {
 
 navigator   = MenuNavigator(new_menu, lcd)
 
-def encoder_a_IRQ(pin):
-    global enc_a_last_time, encoder_count
+# def encoder_a_IRQ(pin):
+#     global enc_a_last_time, encoder_count
 
-    new_time = utime.ticks_ms()
-    if (new_time - enc_a_last_time) > DEBOUNCE_ROTARY:
-        if enc_a.value() == enc_b.value():
-            encoder_count += 1
-            # navigator.next()
-        else:
-            encoder_count -= 1
-            # navigator.previous()
-    else:
-        print(".", end="")
-    enc_a_last_time = new_time
+#     new_time = utime.ticks_ms()
+#     if (new_time - enc_a_last_time) > DEBOUNCE_ROTARY:
+#         if enc_a.value() == enc_b.value():
+#             encoder_count += 1
+#             # navigator.next()
+#         else:
+#             encoder_count -= 1
+#             # navigator.previous()
+#     else:
+#         print(".", end="")
+#     enc_a_last_time = new_time
 
 def encoder_btn_IRQ(pin):
     global enc_btn_last_time, encoder_btn_state
@@ -823,17 +898,30 @@ def pp_callback(pin):
     sleep_ms(100)
     presspmp.irq(trigger=Pin.IRQ_RISING|Pin.IRQ_FALLING, handler=pp_callback)
 
+def cb(pos, delta):
+        # print(pos, delta)
+    if delta > 0:
+        navigator.next()
+    elif delta < 0:
+        navigator.previous()
+
 def enable_controls():
     
    # Enable the interupt handlers
-    enc_a.irq(trigger=Pin.IRQ_RISING, handler=encoder_a_IRQ)
+    enc = Encoder(px, py, v=0, div=4, vmin=None, vmax=None, callback=cb)
+    # enc_a.irq(trigger=Pin.IRQ_RISING, handler=encoder_a_IRQ)
     enc_btn.irq(trigger=Pin.IRQ_FALLING, handler=encoder_btn_IRQ)
 
-    lcdbtn.irq(trigger=Pin.IRQ_RISING, handler=lcdbtn_pressed)
+    lcdbtn.irq(trigger=Pin.IRQ_RISING, handler=lcdbtn_new)
     presspmp.irq(trigger=Pin.IRQ_RISING|Pin.IRQ_FALLING, handler=pp_callback)
 
 # endregion
 # region LCD
+def lcdbtn_new(pin):
+# so far, with no debounce logic...
+    lcd_on()
+    tim=Timer(period=config_dict["LCD"] * 1000, mode=Timer.ONE_SHOT, callback=lcd_off)
+
 def lcdbtn_pressed(x):          # my lcd button ISR
     global lcdbtnflag
     lcdbtnflag = True
@@ -858,7 +946,7 @@ async def check_lcd_btn():
                 # print(f'Setting LCD timer for {config_dict["LCD"]} seconds')
                 tim=Timer(period=config_dict["LCD"] * 1000, mode=Timer.ONE_SHOT, callback=lcd_off)
             lcdbtnflag = False
-        await uasyncio.sleep(0.5)
+        await asyncio.sleep(0.5)
 # endregion
 # region UNUSED methods
 # def Pico_RTC():
@@ -880,7 +968,7 @@ def init_logging():
     shortyear       = str(year)[2:]
     datestr         = f"{shortyear}{month:02}{day:02}"
     tanklogname     = f'tank {datestr}.txt'
-    pplogname       = f'pressure {datestr}.txt'
+    pplogname       = f'pres {datestr}.txt'
     eventlogname    = 'borepump_events.txt'
     tank_log        = open(tanklogname, "a")
     ev_log          = open(eventlogname, "a")
@@ -941,10 +1029,19 @@ def updateData():
     if DEBUGLVL > 0: print(f"depth_ROC: {depth_ROC:.3f}")
     last_depth = sma_depth				# track change since last reading
     depth_str = f"{depth:.2f}m " + tank_is
-    bp_kpa = 300 + ringbufferindex * 2            # hack for testing... replace with ADC read when calibrated
+    # print(f"In updateData: ADC value: {pv}")
+    bp_kpa = kparing[kpaindex]        # get last kPa reading
+    # bp_kpa = 350 + ringbufferindex * 2
     pressure_str = f'{bp_kpa:3} kPa'    # might change this to be updated more frequently in a dedicated asyncio loop...
     temp = 27 - (temp_sensor.read_u16() * TEMP_CONV_FACTOR - 0.706)/0.001721
 
+def get_pressure()-> int:
+    adc_val = bp_pressure.read_u16()
+    sensor_volts = 4.5 * adc_val / 65535
+    kpa = int(sensor_volts * 200 - 100)        # 200 is 800 / delta v, ie 4.5 - 0.5
+    # print(f"ADC value: {adc_val=}")
+    return kpa
+     
 def current_time()-> str:
     now   = secs_to_localtime(time.time())      # getcurrent time, convert to local SA time
     # year  = now[0]
@@ -1142,7 +1239,7 @@ def checkForAnomalies():
     global borepump, max_ROC, depth_ROC, tank_is, bp_kpa
 
     if borepump.state:                  # pump is ON
-        if op_mode == OP_MODE_IRRIGATE and  bp_kpa < config_dict["Min Pressure"]:
+        if op_mode == OP_MODE_IRRIGATE and  kpa_sensor_armed and bp_kpa < config_dict["Min Pressure"]:
             raiseAlarm("Min Pressure", bp_kpa)
         if op_mode == OP_MODE_AUTO:
             if abs(depth_ROC) > max_ROC:
@@ -1177,15 +1274,18 @@ def check_for_critical_states() -> None:
 
     if borepump.state:              # pump is ON
         run_minutes = (time.time() - borepump.last_time_switched) / 60
-        if bp_kpa > config_dict["Max Pressure"]:
-            raiseAlarm("Excess kPa", bp_kpa)
-            abort_pumping()
+
+        if kpa_sensor_armed:        # if we have a pressure sensor, check for critical values
+            if bp_kpa > config_dict["Max Pressure"]:
+                raiseAlarm("Excess kPa", bp_kpa)
+                abort_pumping()
+
+            if bp_kpa < config_dict["No Pressure"]:
+                raiseAlarm("NO Pressure", bp_kpa)
+                abort_pumping()
         if run_minutes > config_dict["Max RunMins"]:            # if pump is on, and has been on for more than max... do stuff!
             raiseAlarm("RUNTIME EXCEEDED", run_minutes)
             borepump_OFF()
-        if bp_kpa < config_dict["No Pressure"]:
-            raiseAlarm("NO Pressure", bp_kpa)
-            abort_pumping()
 
 def DisplayData()->None:
     if ui_mode != UI_MODE_MENU:             # suspend overwriting LCD whist in MENU
@@ -1290,7 +1390,7 @@ def init_radio():
         sleep(1)
 
 # if we get here, my RX is responding.
-    print("RX responded to ping... comms ready")
+    # print("RX responded to ping... comms ready")
     system.on_event("ACK COMMS")
 
 def ping_RX() -> bool:           # at startup, test if RX is listening
@@ -1402,43 +1502,43 @@ def calibrate_clock():
     t=(s, p)
     transmit_and_pause(t, delay)
 
-def sync_clock():                   # initiate exchange of time info with RX, purpose is to determine clock adjustment
-    global radio, clock_adjust_ms, system
+# def sync_clock():                   # initiate exchange of time info with RX, purpose is to determine clock adjustment
+#     global radio, clock_adjust_ms, system
 
-    if str(system.state) == "COMMS_READY":
-        print("Starting clock sync process")
-        calibrate_clock()
-        count = 2
-        delay = 500                     # millisecs
-        for n in range(count):
-            local_time = time.time()
-            tup = ("CLK", local_time)
-            radio.send(tup)
-            sleep_ms(delay)
-        max_loops = 100
-        loop_count = 0
-        while not radio.receive() and loop_count < max_loops:
-            sleep_ms(50)
-            loop_count += 1
-        if loop_count < max_loops:      # then we got a reply          
-            rcv_msg = radio.message
-            if type(rcv_msg) is tuple:
-                if rcv_msg[0] == "CLK":
-                    if DEBUGLVL > 0: print(f"Got CLK SYNC reply after {loop_count} loops")
-                    clock_adjust_ms = int(rcv_msg[1])
-                    if abs(clock_adjust_ms) > 100000:       # this looks dodgy...
-                        print(f"*****Bad clock adjust: {clock_adjust_ms}... setting to 800")
-                        clock_adjust_ms = 800
-        else:                           # we did NOT get a reply... don't block... set adj to default 500
-            clock_adjust_ms = 0
-        system.on_event("CLK SYNC")
-    else:
-        print(f"What am I doing here in state {str(system.state)}")
+#     if str(system.state) == "COMMS_READY":
+#         print("Starting clock sync process")
+#         calibrate_clock()
+#         count = 2
+#         delay = 500                     # millisecs
+#         for n in range(count):
+#             local_time = time.time()
+#             tup = ("CLK", local_time)
+#             radio.send(tup)
+#             sleep_ms(delay)
+#         max_loops = 100
+#         loop_count = 0
+#         while not radio.receive() and loop_count < max_loops:
+#             sleep_ms(50)
+#             loop_count += 1
+#         if loop_count < max_loops:      # then we got a reply          
+#             rcv_msg = radio.message
+#             if type(rcv_msg) is tuple:
+#                 if rcv_msg[0] == "CLK":
+#                     if DEBUGLVL > 0: print(f"Got CLK SYNC reply after {loop_count} loops")
+#                     clock_adjust_ms = int(rcv_msg[1])
+#                     if abs(clock_adjust_ms) > 100000:       # this looks dodgy...
+#                         print(f"*****Bad clock adjust: {clock_adjust_ms}... setting to 800")
+#                         clock_adjust_ms = 800
+#         else:                           # we did NOT get a reply... don't block... set adj to default 500
+#             clock_adjust_ms = 0
+#         system.on_event("CLK SYNC")
+#     else:
+#         print(f"What am I doing here in state {str(system.state)}")
 
-    if DEBUGLVL > 0: print(f"Setting clock_adjust to {clock_adjust_ms}") 
+#     if DEBUGLVL > 0: print(f"Setting clock_adjust to {clock_adjust_ms}") 
 
 def init_ringbuffers():
-    global  ringbuf, ringbufferindex, eventring, eventindex, switchring, switchindex
+    global  ringbuf, ringbufferindex, eventring, eventindex, switchring, switchindex, kparing, kpaindex
 
     ringbuf = [0.0]                 # start with a list containing zero...
     if ROC_AVERAGE > 1:             # expand it as needed...
@@ -1451,15 +1551,18 @@ def init_ringbuffers():
     eventindex  = 0
     switchring  = [tuple()]
     switchindex = 0
+    kparing = [0 for _ in range(PRESSURERINGSIZE)]
+    kpaindex    = 0
 
 def init_everything_else():
     global borepump, steady_state, free_space_KB, presspump, vbus_on_time, display_mode, navigator, encoder_count, encoder_btn_state, enc_a_last_time, enc_btn_last_time
-    global slist, program_pending, sys_start_time
+    global slist, program_pending, sys_start_time, rotary_btn_pressed, kpa_sensor_armed
 
     encoder_count       = 0       # to track rotary next/prevs
     enc_a_last_time     = utime.ticks_ms()
     encoder_btn_state   = False
     enc_btn_last_time   = enc_a_last_time
+    rotary_btn_pressed  = False
 
     slist=[]
 
@@ -1497,6 +1600,11 @@ def init_everything_else():
     display_mode = "depth"
     program_pending = False         # no program
     sys_start_time = time.time()    # must be AFTER we set clock ...
+
+    kpa_sensor_armed = bp_pressure.read_u16() > BP_SENSOR_MIN    # are we seeing a valid pressure sensor reading?
+    if not kpa_sensor_armed:
+        print("Pressure sensor not detected")
+        ev_log.write(f"{display_time(secs_to_localtime(time.time()))}  Pressure sensor not detected\n")
 
     enable_controls()              # enable rotary encoder, LCD B/L button etc
 
@@ -1552,10 +1660,10 @@ def free_space()->int:
     return free_space_kb
 
 
-def sim_pressure_pump_detect(x)->bool:            # to be hacked when I connect the CT circuit
-    p = random.random()
+# def sim_pressure_pump_detect(x)->bool:            # to be hacked when I connect the CT circuit
+#     p = random.random()
 
-    return True if p > x else False
+#     return True if p > x else False
 
 def sim_solenoid_detect()->bool:
     return True
@@ -1576,12 +1684,164 @@ def monitor_vbus():
 
 # endregion
 # region ASYNCIO defs
+
+async def read_pressure()->None:
+    global kparing, kpaindex
+
+    try:
+        while True:
+            bpp = get_pressure()
+            # print(f"Press: {bpp:>3} kPa, {kpaindex=}")
+            kpaindex = (kpaindex + 1) % PRESSURERINGSIZE
+            kparing[kpaindex] = bpp
+            await asyncio.sleep_ms(PRESSURE_PERIOD_MS)
+    except Exception as e:
+        print(f"read_pressure exception: {e}, {kpaindex=}")
+
 async def regular_flush(m)->None:
     while True:
         tank_log.flush()
         pp_log.flush()
         ev_log.flush()
-        await uasyncio.sleep(m)
+        await asyncio.sleep(m)
+
+async def send_file_list(to: str, subj: str, filenames: list):
+    # print(f"Sending files {filenames}...")
+    chunk_size = 3 * 341  # Read file in 1K byte chunks... but MUST be a multiple of 3 for base64 encoding
+
+    t0 = time.ticks_ms()
+
+        # Create MIME message
+    hdrmsg = (
+        f"From: {FROM_EMAIL}\r\n" +
+        f"To: {to}\r\n" +
+        f"Subject: {subj}\r\n" +
+        "MIME-Version: 1.0\r\n" +
+        "Content-Type: multipart/mixed; boundary=BOUNDARY\r\n" +
+        "\r\n" +
+        "--BOUNDARY\r\n" +
+        "Content-Type: text/plain\r\n" +
+        "\r\n" +
+        "Please find attached files.\r\n" +
+        "\r\n"
+    )
+    #hdrmsg = ('Some text to be sent as the body of the email\n')
+
+    t1 = time.ticks_ms()
+    smtp=umail.SMTP(SMTP_SERVER, SMTP_PORT, ssl=True)
+    t2 = time.ticks_ms()
+    # print("SMTP connection created")
+    c, r = smtp.login(FROM_EMAIL, FROM_PASSWORD)
+    t3 = time.ticks_ms()
+    # print(f"After SMTP Login {c=} {r=}")
+    smtp.to(TO_EMAIL)
+    smtp.write(hdrmsg)  # Write headers and message part
+    # smtp.write(f"From: {FROM_EMAIL}\r\n")
+    # smtp.write(f"To: {to}\r\n")
+    # smtp.write(f"Subject: {subj}\r\n")
+    # smtp.write("MIME-Version: 1.0\r\n")
+    # smtp.write("Content-Type: multipart/mixed; boundary=BOUNDARY\r\n")
+    # smtp.write("\r\n")
+    # smtp.write("--BOUNDARY\r\n")
+    # smtp.write("Content-Type: text/plain\r\n")
+    # smtp.write("\r\n")
+    # smtp.write("Please find attached files.\r\n")
+    # smtp.write("\r\n")
+    t4 = time.ticks_ms()
+    # print("SMTP Headers written")
+    await asyncio.sleep_ms(sleepms)
+
+    total_chunks = 0
+
+    # Process each file
+    for filename in filenames:
+        # Add attachment headers for this file
+        attachment_header = (
+            "--BOUNDARY\r\n" +
+            f"Content-Type: text/plain; name=\"{filename}\"\r\n" +
+            "Content-Transfer-Encoding: base64\r\n" +
+            f"Content-Disposition: attachment; filename=\"{filename}\"\r\n" +
+            "\r\n"
+        )
+        smtp.write(attachment_header)
+
+        # freemem = gc.mem_free()
+        # size = uos.stat(filename)[6]
+        # print(f"Processing {filename}, free mem = {freemem}, size = {size}")
+
+# Process file in chunks
+        # chunks = 0
+        with open(filename, "rb") as f:
+            while True:
+                chunk = f.read(chunk_size)
+                if not chunk:
+                    break
+                
+                # Encode chunk
+                encoded = b64(chunk)
+                
+                # Split encoded data into 76-char lines
+                for i in range(0, len(encoded), 76):
+                    line = encoded[i:i+76]
+                    smtp.write(line.decode() + '\r\n')
+                    total_chunks += 1
+                    if total_chunks % linegrp == 0:
+                        print(".", end="")
+                        await asyncio.sleep_ms(sleepms)
+                
+                # Free up memory
+                del chunk
+                del encoded
+                # f.close()    do NOT do this... not needed in with context, and actually breaks things
+                gc.collect()
+
+        smtp.write('\r\n')  # Add separation between attachments
+
+    # print(f"\r\nAfter reading files, free mem = {gc.mem_free()}")
+    # End the MIME message
+    smtp.write("\r\n--BOUNDARY--\r\n")
+
+    t5 = time.ticks_ms()
+    # f.close()
+    # print(f"\r\nSMTP Files written in {total_chunks} chunks ")
+    await asyncio.sleep_ms(sleepms)
+
+    smtp.send()
+    t6 = time.ticks_ms()
+    # print(f"Files sent!")
+    # print(f"Times: {t1-t0}, {t2-t1}, {t3-t2}, {t4-t3}, {t5-t4}, {t6-t5}")
+    smtp.quit()
+
+async def process_email_queue():
+    global email_queue_tail, email_queue_full, email_task_running
+    while True:
+        if email_task_running:
+            await asyncio.sleep_ms(1000)
+            continue
+            
+        # Check if queue has items
+        if email_queue_tail != email_queue_head or email_queue_full:
+            files = email_queue[email_queue_tail]
+            file_list = [files] #files.split(",")
+            # print(f"Processing email queue: {email_queue_tail=} {email_queue_head=} {email_queue_full=} {file_list=} {files=}")
+            if files is not None:
+                # print(f'Processing email queue files: {files}')
+                email_task_running = True
+                try:
+                    # gc.collect()
+                    await send_file_list(TO_EMAIL, f"Sending {files}...", file_list)
+                    # print(f"Email sent with result code {rc}")
+                except Exception as e:
+                    print(f"Error sending email: {e}")
+                finally:
+                    email_task_running = False
+                    
+                # Clear slot and advance tail
+                email_queue[email_queue_tail] = ""
+                email_queue_tail = (email_queue_tail + 1) % EMAIL_QUEUE_SIZE
+                email_queue_full = False
+                
+        await asyncio.sleep_ms(1000)
 
 async def check_rotary_state(menu_sleep:int)->None:
     global ui_mode, encoder_count, encoder_btn_state
@@ -1622,7 +1882,7 @@ async def check_rotary_state(menu_sleep:int)->None:
                     navigator.previous()
                     encoder_count += 1
 
-        await uasyncio.sleep_ms(menu_sleep)
+        await asyncio.sleep_ms(menu_sleep)
 
 async def blinkx2():
     while True:
@@ -1633,7 +1893,7 @@ async def blinkx2():
         led.value(1)
         sleep_ms(50)
         led.value(0)
-        await uasyncio.sleep_ms(1000)
+        await asyncio.sleep_ms(1000)
 
 async def do_main_loop():
     global event_time, ev_log, steady_state, housetank, system, op_mode
@@ -1647,7 +1907,7 @@ async def do_main_loop():
 
     if not system:              # yikes... don't have a SM ??
         if DEBUGLVL > 0:
-            print("GAK... no state machine exists at start-up")
+            print("GAK... no SM exists at start-up")
     else:
  #       print(f"Before while...{type(system.state)} ")
         while  str(system.state) != "READY":
@@ -1680,6 +1940,8 @@ async def do_main_loop():
     get_tank_depth()
     init_everything_else()
 
+    tim=Timer(period=config_dict["LCD"] * 1000, mode=Timer.ONE_SHOT, callback=lcd_off)
+
     housetank.state = tank_is
     print(f"Initial Housetank state is {housetank.state}")
     if (housetank.state == "Empty" and not borepump.state):           # then we need to start doing somethin... else, we do NOTHING
@@ -1692,12 +1954,12 @@ async def do_main_loop():
     ev_log.write(f"\nPump Monitor starting: {event_time}\n")
 
 # start coroutines..
-    uasyncio.create_task(blinkx2())                             # visual indicator we are running
-    uasyncio.create_task(check_lcd_btn())                       # start up lcd_button widget
-    uasyncio.create_task(regular_flush(FLUSH_PERIOD))           # flush data every FLUSH_PERIOD minutes
-    uasyncio.create_task(check_rotary_state(ROTARY_PERIOD_MS))  # check rotary every ROTARY_PERIOD_MS milliseconds
-
-    # start_irrigation_schedule()     # so I don't have to mess with rotary to test timer stuff
+    asyncio.create_task(blinkx2())                             # visual indicator we are running
+    asyncio.create_task(check_lcd_btn())                       # start up lcd_button widget
+    asyncio.create_task(regular_flush(FLUSH_PERIOD))           # flush data every FLUSH_PERIOD minutes
+    asyncio.create_task(check_rotary_state(ROTARY_PERIOD_MS))  # check rotary every ROTARY_PERIOD_MS milliseconds
+    asyncio.create_task(process_email_queue())                 # check email queue
+    asyncio.create_task(read_pressure())                       # read pressure every PRESSURE_PERIOD_MS milliseconds    
 
     rec_num=0
     while True:
@@ -1721,26 +1983,23 @@ async def do_main_loop():
                 delay_ms -= RADIO_PAUSE
             monitor_vbus()                          # escape clause... to trigger dump...
         # print(f"{event_time} main loop: {rec_num=}, {op_mode=}, {steady_state=}")
-        await uasyncio.sleep_ms(delay_ms)
+        await asyncio.sleep_ms(delay_ms)
 
 # endregion
 
 def main() -> None:
     global ui_mode
     try:
+        # micropython.qstr_info()
+        # print('Sending test email ... no files')
+        # send_email(TO_EMAIL, "Test email 15", "Almost done...")    
+        # print('...sent')
 
-        print('Sending test email ... no files')
-        send_email(TO_EMAIL, "Test email", "This is a test email from the pump monitor")    
-        print('...sent')
-
-        uasyncio.run(do_main_loop())
+        asyncio.run(do_main_loop())
 
     except OSError:
         print("OSError... ")
         
-    except uasyncio.CancelledError:
-        print("I see a cancelled uasyncio thing")
-
     except KeyboardInterrupt:
         ui_mode = UI_MODE_NORM      # no point calling CHaneg... as I turn B/L off straight after anyway...
         lcd_off('')	                # turn off backlight
