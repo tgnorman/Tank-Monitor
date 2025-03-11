@@ -30,8 +30,14 @@ from ubinascii import b2a_base64 as b64
 
 # OK... major leap... intro to FSM...
 from SM_SimpleFSM import SimpleDevice
+
+# micropython.qstr_info()
 # endregion
 # region INITIALISE
+
+# micropython.mem_info()
+gc.collect()
+gc.threshold(gc.mem_free() // 4 + gc.mem_alloc())
 
 # constant/enums
 OP_MODE_AUTO        = 0
@@ -49,18 +55,21 @@ RADIO_PAUSE         = 1000
 FREE_SPACE_LOWATER  = 150           # in KB...
 FREE_SPACE_HIWATER  = 400
 
-FLUSH_PERIOD        = 2
+FLUSH_PERIOD        = 5
 DEBOUNCE_ROTARY     = 100
 ROTARY_PERIOD_MS    = 200           # needs to be short... check rotary ISR variables
 PRESSURE_PERIOD_MS  = 1000
 
 EVENTRINGSIZE       = 20            # max log ringbuffer length
 SWITCHRINGSIZE      = 20
-PRESSURERINGSIZE    = 120
+PRESSURERINGSIZE    = 20
 
-MAX_OUTAGE          = 20            # seconds of no power
+MAX_OUTAGE          = 30            # seconds of no power
 
-BP_SENSOR_MIN       = 1000          # this will trigger sensor detect logic
+BP_SENSOR_MIN       = 5000          # raw ADC read... this will trigger sensor detect logic
+VDIV_R1             = 2000          # ohms
+VDIV_R2             = 5000
+VDIV_Ratio          = VDIV_R2/(VDIV_R1 + VDIV_R2)
 
 #All menu-CONFIGURABLE parameters
 mydelay             = 15            # seconds, main loop period
@@ -112,9 +121,9 @@ steady_state        = False         # if not, then don't check for anomalies
 clock_adjust_ms     = 0             # will be set later... this just to ensure it is ALWAYS something
 report_outage       = True          # do I report next power outage?
 sys_start_time      = 0             # for uptime report
-kpa_sensor_armed    = True         # set to True if pressure sensor is detected  
+kpa_sensor_armed    = True          # set to True if pressure sensor is detected  
 
-SW_VERSION          = "2/3/25"       # for display
+SW_VERSION          = "11/3/25"       # for display
 
 # Gather all tank-related stuff with a view to making a class...
 housetank           = Tank("Empty")                     # make my tank object
@@ -169,14 +178,52 @@ TO_EMAIL            = "trevor.norman4@icloud.com"
 sleepms = 100
 linegrp = 100
 
-EMAIL_QUEUE_SIZE    = 6  # Adjust size as needed
+EMAIL_QUEUE_SIZE    = 20  # Adjust size as needed
 email_queue         = ["" for _ in range(EMAIL_QUEUE_SIZE)]
 email_queue_head    = 0
 email_queue_tail    = 0
 email_queue_full    = False
 email_task_running  = False
 
-files_to_send = ["borepump_events.txt"]
+# Pressure to Zone mapping...
+P0 = "Zero"
+P1 = "Air1"
+P2 = "HT"
+P3 = "Z45"
+P4 = "Z3"
+P5 = "Z2"
+P6 = "Z4"
+P7 = "Z1"
+P8 = "XP"
+PRESSURE_THRESHOLDS = [0, 15, 25, 290, 390, 480, 500, 600]  # Ascending order
+PRESSURE_CATEGORIES = [P0, P1, P2, P3, P4, P5, P6, P7, P8]
+KPA_AVERAGE_COUNT   = 3
+average_kpa         = 0
+
+def get_pressure_category(pressure: int) -> str:
+    """Map pressure value to category using linear search"""
+    for i, threshold in enumerate(PRESSURE_THRESHOLDS):
+        if pressure <= threshold:
+            return PRESSURE_CATEGORIES[i]
+    return PRESSURE_CATEGORIES[-1]  # Return last category if pressure exceeds all thresholds
+
+# def dummyfunc()->int:
+#     a = 0
+#     sum = 0
+#     # for a in range(10):
+#     #     sum += a * a
+#     return sum
+    
+# def get_pressure_category_binary(pressure: int) -> str:
+#     """Map pressure value to category using binary search"""
+#     left, right = 0, len(PRESSURE_THRESHOLDS)
+#     while left < right:
+#         mid = (left + right) // 2
+#         if pressure <= PRESSURE_THRESHOLDS[mid]:
+#             right = mid
+#         else:
+#             left = mid + 1
+#     return PRESSURE_CATEGORIES[left]
 
 # endregion
 # region EMAIL
@@ -195,35 +242,35 @@ def send_email_msg(to:str, subj:str, body:str):
     # Close the SMTP connection
     code = smtp.send()
     smtp.quit()
-    print(f"Email sent!... RC {code}")
+    print(f"Msg sent!... RC {code}")
 
-def send_file_blocking(to:str, subj:str, filename:str)->int:
+# def send_file_blocking(to:str, subj:str, filename:str)->int:
 
-    try:
-        f = open(filename, "r")
+#     try:
+#         f = open(filename, "r")
 
-        smtp = umail.SMTP(SMTP_SERVER, SMTP_PORT, ssl=True)
-        smtp.login(FROM_EMAIL, FROM_PASSWORD)
+#         smtp = umail.SMTP(SMTP_SERVER, SMTP_PORT, ssl=True)
+#         smtp.login(FROM_EMAIL, FROM_PASSWORD)
 
-        # Send the email
-        smtp.to(TO_EMAIL)
-        smtp.write(f"From: {FROM_EMAIL}\n")
-        smtp.write(f"To: {to}\n")
-        smtp.write(f"Subject: {subj}: {filename}\n")
-        smtp.write("\n")  # Separate headers from the body with a newline
+#         # Send the email
+#         smtp.to(TO_EMAIL)
+#         smtp.write(f"From: {FROM_EMAIL}\n")
+#         smtp.write(f"To: {to}\n")
+#         smtp.write(f"Subject: {subj}: {filename}\n")
+#         smtp.write("\n")  # Separate headers from the body with a newline
 
-        for l in f:
-            smtp.write(f"{l}")
+#         for l in f:
+#             smtp.write(f"{l}")
 
-        f.close()
-        code = smtp.send()
-        print(f"File sent!... RC {code[0]}")
-        smtp.quit()
-        return int(code[0])
+#         f.close()
+#         code = smtp.send()
+#         print(f"File sent!... RC {code[0]}")
+#         smtp.quit()
+#         return int(code[0])
 
-    except:
-        print(f"GAK! Can't open file {filename}")
-        return -1
+#     except:
+#         print(f"GAK! Can't open file {filename}")
+#         return -1
 
 # endregion
 # region DICTIONARIES
@@ -264,7 +311,7 @@ def update_config():
                 lcd.setCursor(0,1)
                 lcd.printout(f'to {new_working_value}')
         else:
-            print(f"GAK! Config param {param} not found in config dict!")
+            print(f"GAK! Config param {param} not found in dict!")
             lcd.clear()
             lcd.setCursor(0,0)
             lcd.printout("No dict entry:  ")
@@ -473,10 +520,10 @@ def start_irrigation_schedule():
         # print(f" after gc free mem: {gc.mem_free()}")
 
     except Exception as e:
-        print(f"Exception caught in start_irrigation_schedule: {e}")
+        print(f"Exception caught in S_I_S: {e}")
         # print(f"before gc free mem: {gc.mem_free()}")
         gc.collect()
-        print(f" after gc free mem: {gc.mem_free()}")
+        # print(f" after gc free mem: {gc.mem_free()}")
 # endregion
 # region MENU METHODS
 # methods invoked from menu
@@ -510,7 +557,7 @@ def cancel_program()->None:
 
     if my_timer is not None:
         my_timer.deinit()
-        print("Program timer CANCELLED")
+        print("Timer CANCELLED")
 
     if borepump.state:
         borepump_OFF()
@@ -526,12 +573,16 @@ def display_depth():
 
     display_mode = "depth"
     print(f'{display_mode=}')
+    lcd.setCursor(0,1)
+    lcd.printout(f'{"Display depth":<16}')
 
 def display_pressure():
     global display_mode
 
     display_mode = "pressure"
     print(f'{display_mode=}')
+    lcd.setCursor(0,1)
+    lcd.printout(f'{"Display kPa":<16}')
 
 def my_go_back():
     navigator.go_back()
@@ -546,10 +597,10 @@ def show_switch():
     navigator.mode = "view_switch"
 
 def show_depth():
-    print("Show Depth Not implemented")
+    print("Not implemented")
 
 def show_pressure():
-    print("Show Pressure Not implemented")
+    print("Not implemented")
 
 def show_space():
     lcd.setCursor(0,1)
@@ -558,6 +609,7 @@ def show_space():
 def my_reset():
     ev_log.write(f"{event_time} SOFT RESET")
     housekeeping(True)
+    shutdown()
     soft_reset()
 
 def hardreset():
@@ -566,24 +618,34 @@ def hardreset():
     pass
 
 def flush_data():
-    housekeeping(False)
+    tank_log.flush()
+    ev_log.flush()
+    pp_log.flush()
+    lcd.setCursor(0,1)
+    lcd.printout(f'{"Logs flushed":<16}')
 
-def housekeeping(close_files: bool):
-    print("Flushing data to flash...")
+def housekeeping(close_files: bool)->None:
+    print("Flushing data...")
     start_time = time.ticks_us()
     tank_log.flush()
+    ev_log.flush()
+    pp_log.flush()
+    end_time = time.ticks_us()
+    if close_files:
+        tank_log.close()
+        ev_log.close()
+        pp_log.close()
+    print(f"Cleanup completed in {int(time.ticks_diff(end_time, start_time) / 1000)} ms")
+
+def shutdown()->None:
     ev_log.write(f"{event_time} STOP")
     ev_log.write(f"\nMonitor shutdown at {display_time(secs_to_localtime(time.time()))}\n")
     if borepump is not None: dump_pump_arg(borepump)
     if presspump is not None: dump_pump_arg(presspump)
     dump_event_ring()
-    ev_log.flush()
-    end_time = time.ticks_us()
-    if close_files:
-        tank_log.close()
-        ev_log.close()
-
-    print(f"Cleanup completed in {int(time.ticks_diff(end_time, start_time) / 1000)} milliseconds")
+    tank_log.close()
+    ev_log.close()
+    pp_log.close()
 
 def send_tank_logs():
     # filelist: list[tuple] = []  
@@ -596,8 +658,14 @@ def send_tank_logs():
         add_to_email_queue(f)
         # print(f'{f}: {fsize:>7} bytes, time {display_time(secs_to_localtime(fdate))}')
     print(f'Email queue has {email_queue_head - email_queue_tail} items')
+    lcd.setCursor(0,1)
+    lcd.printout(f'{"Data emailed":<16}')
 
 def show_dir():
+
+# This code works fine... but breaks ISR no-mem allocation rules.
+# Needs to be rewritten using a static buffer
+
     filelist: list[tuple] = []  
     filenames = [x for x in uos.listdir() if x.endswith(".txt") and (x.startswith("tank") or x.startswith("pres"))]
 
@@ -607,17 +675,17 @@ def show_dir():
         fdate = fstat[7]
         print(f'{f}: {fsize:>7} bytes, time {display_time(secs_to_localtime(fdate))}')
 
-        filelist.append((f, f'Size: {fsize}'))
+        # filelist.append((f, f'Size: {fsize}'))        # this is NOT kosher... allocating me in ISR context
 
     navigator.set_file_list(filelist)
     navigator.mode = "view_files"
 
-    for f in uos.ilistdir():
-        fn = f[0]
-        if "tank" in fn:
-            fstat = uos.stat(fn)
-            fdate = fstat[7]
-            print(f'{fn}: time {display_time(secs_to_localtime(fdate))}')
+    # for f in uos.ilistdir():
+    #     fn = f[0]
+    #     if "tank" in fn:
+    #         fstat = uos.stat(fn)
+    #         fdate = fstat[7]
+    #         print(f'{fn}: time {display_time(secs_to_localtime(fdate))}')
 
 def show_duty_cycle():
     boredc: float = borepump.calc_duty_cycle()
@@ -734,7 +802,7 @@ def make_more_space()->None:
         hitList.append(file_entry)
 
     sorted_by_date = sorted(hitList, key=lambda x: x[2])
-    print(f"Files sorted by date:\n{sorted_by_date}")
+    print(f"Files by date:\n{sorted_by_date}")
     if free_space() < FREE_SPACE_LOWATER:
         ev_log.write(f"{event_time} Deleting files\n")
         while free_space() < FREE_SPACE_HIWATER:
@@ -746,12 +814,12 @@ def make_more_space()->None:
 
         fs = free_space()
         print(f"After cleanup: {fs} Kb")
-        ev_log.write(f"{event_time}: free space now {fs}")
+        ev_log.write(f"{event_time}: free space {fs}")
 
 def roll_logs()-> None:
 # close & reopen new log files, so nothing becomes real large... helps with managing space on the drive
 # simple method avoids the need to mess with filenames...
-# All that remains is to ensure logs are saved/archived offline before DELETINGin make-more-space... and to schedule roll_logs
+# All that remains is to ensure logs are saved/archived offline before DELETING in make-more-space... and to schedule roll_logs
 
     if tank_log is not None:
         tank_log.flush()
@@ -774,11 +842,12 @@ def add_to_email_queue(file:str)->None:
         email_queue_full = email_queue_head == email_queue_tail
         print(f'Queued file to send: {file}')
     else:
-        print("Email queue full, cannot add more files")
+        print("Email queue full!")
 
 def send_log()->None:
 
-    add_to_email_queue(eventlogname)
+    # add_to_email_queue(eventlogname)
+    add_to_email_queue("pres 250310.txt")
     lcd.setCursor(0, 1)
     lcd.printout(f'{"Email queued":<16}')
     # print(f"Log added to email queue")
@@ -1000,6 +1069,13 @@ def calc_ROC_SMA()-> float:
         return sum / n
     else:
         return 0.0
+    
+def calc_average_pressure(n:int)->int:
+    p = 0
+    for i in range(n):
+        mod_index = (kpaindex - i) % PRESSURERINGSIZE
+        p += kparing[mod_index]
+    return round(p/n)
 
 def get_tank_depth():
     global depth, tank_is
@@ -1025,25 +1101,27 @@ def updateData():
     if DEBUGLVL > 0:
 #        print("Ringbuf: ", ringbuf)
         print("sma_depth: ", sma_depth)
-    depth_ROC = (sma_depth - last_depth) / (config_dict["Delay"] / 60)	# ROC in m/minute.  Save neagtives also... for anomaly testing
+    depth_ROC = (sma_depth - last_depth) / (config_dict["Delay"] / 60)	# ROC in m/minute.  Save negatives also... for anomaly testing
     if DEBUGLVL > 0: print(f"depth_ROC: {depth_ROC:.3f}")
     last_depth = sma_depth				# track change since last reading
     depth_str = f"{depth:.2f}m " + tank_is
     # print(f"In updateData: ADC value: {pv}")
     bp_kpa = kparing[kpaindex]        # get last kPa reading
     # bp_kpa = 350 + ringbufferindex * 2
-    pressure_str = f'{bp_kpa:3} kPa'    # might change this to be updated more frequently in a dedicated asyncio loop...
+    zone = get_pressure_category(average_kpa)
+    pressure_str = f'{bp_kpa:3} kPa ({zone})'    # might change this to be updated more frequently in a dedicated asyncio loop...
     temp = 27 - (temp_sensor.read_u16() * TEMP_CONV_FACTOR - 0.706)/0.001721
 
 def get_pressure()-> int:
     adc_val = bp_pressure.read_u16()
-    sensor_volts = 4.5 * adc_val / 65535
-    kpa = int(sensor_volts * 200 - 100)        # 200 is 800 / delta v, ie 4.5 - 0.5
+    measured_volts = 3.3 * float(adc_val) / 65535
+    sensor_volts = measured_volts / VDIV_Ratio
+    kpa = max(0, int(sensor_volts * 200 - 100))     # 200 is 800 / delta v, ie 4.5 - 0.5
     # print(f"ADC value: {adc_val=}")
     return kpa
      
 def current_time()-> str:
-    now   = secs_to_localtime(time.time())      # getcurrent time, convert to local SA time
+    now   = secs_to_localtime(time.time())          # getcurrent time, convert to local SA time
     # year  = now[0]
     month = now[1]
     day   = now[2]
@@ -1083,10 +1161,10 @@ def parse_reply(rply):
         if key.upper() == "STATUS":
             return True, val
         else:
-            print(f"Unknown tuple from receiver: key {key}, val {val}")
+            print(f"Unknown tuple: key {key}, val {val}")
             return False, -1
     else:
-        print(f"Parse expected tuple... didn't get one.  Got {rply}")
+        print(f"Expected tuple... didn't get one.  Got {rply}")
         return False, False
 
 def transmit_and_pause(msg, delay):
@@ -1097,7 +1175,7 @@ def transmit_and_pause(msg, delay):
     sleep_ms(delay)
 
 def confirm_solenoid():
-    solenoid_state = sim_solenoid_detect()
+    solenoid_state = sim_detect()
 
     if op_mode == OP_MODE_AUTO:
         return solenoid_state
@@ -1225,7 +1303,7 @@ def dump_event_ring():                          # both rings are now tuples... (
                 if len(s) > 0: print(f"Event log {i}: {s[0]} {s[1]}")
                 i = (i - 1) % EVENTRINGSIZE
     else:
-        print("Eventring is empty")
+        print("Eventring empty")
     
 def raiseAlarm(param, val):
 
@@ -1262,6 +1340,7 @@ def abort_pumping()-> None:
     borepump_OFF()
     logstr = f"{current_time()} ABORT invoked!"
     print(logstr)
+    add_to_event_ring("ABORT!!")
     ev_log.write(logstr + "\n")
     lcd.clear()
     lcd.setCursor(0,0)
@@ -1271,7 +1350,7 @@ def abort_pumping()-> None:
     op_mode = OP_MODE_MAINT
 
 def check_for_critical_states() -> None:
-
+    str_NP = "No pressure"
     if borepump.state:              # pump is ON
         run_minutes = (time.time() - borepump.last_time_switched) / 60
 
@@ -1280,8 +1359,8 @@ def check_for_critical_states() -> None:
                 raiseAlarm("Excess kPa", bp_kpa)
                 abort_pumping()
 
-            if bp_kpa < config_dict["No Pressure"]:
-                raiseAlarm("NO Pressure", bp_kpa)
+            if bp_kpa < config_dict[str_NP]:
+                raiseAlarm(str_NP, bp_kpa)
                 abort_pumping()
         if run_minutes > config_dict["Max RunMins"]:            # if pump is on, and has been on for more than max... do stuff!
             raiseAlarm("RUNTIME EXCEEDED", run_minutes)
@@ -1298,7 +1377,7 @@ def DisplayData()->None:
             elif display_mode == "pressure":
                 display_str = pressure_str
             else:
-                display_str = "?? no display mode"
+                display_str = "no display mode"
         elif op_mode == OP_MODE_IRRIGATE:
             now = time.time()
             if program_pending:                                         # programmed cycle waiting to start
@@ -1363,6 +1442,7 @@ def LogData()->None:
             last_logged_kpa = bp_kpa
             enter_log = True
         if enter_log: tank_log.write(logstr)
+    # tank_log.write(logstr)          # *** REMOVE AFTER kPa TESTING ***
     print(dbgstr)
 
 def listen_to_radio():
@@ -1373,20 +1453,20 @@ def listen_to_radio():
         if isinstance(msg, str):
             print(msg)
             if "FAIL" in msg:
-                print(f"Dang... something went wrong...{msg}")
+                print(f"Dang... something wrong...{msg}")
         elif isinstance(msg, tuple):
             print("Received tuple: ", msg[0], msg[1])
 
 def init_radio():
     global radio, system
     
-    print("Initialising radio...")
+    print("Init radio...")
     if radio.receive():
         msg = radio.message
         print(f"Read {msg}")
 
     while not ping_RX():
-        print("Waiting for RX to respond...")
+        print("Waiting for RX...")
         sleep(1)
 
 # if we get here, my RX is responding.
@@ -1554,10 +1634,13 @@ def init_ringbuffers():
     kparing = [0 for _ in range(PRESSURERINGSIZE)]
     kpaindex    = 0
 
-def init_everything_else():
-    global borepump, steady_state, free_space_KB, presspump, vbus_on_time, display_mode, navigator, encoder_count, encoder_btn_state, enc_a_last_time, enc_btn_last_time
+def init_all():
+    global borepump, steady_state, free_space_KB, presspump, vbus_status, vbus_on_time, report_outage
+    global display_mode, navigator, encoder_count, encoder_btn_state, enc_a_last_time, enc_btn_last_time
     global slist, program_pending, sys_start_time, rotary_btn_pressed, kpa_sensor_armed
 
+    PS_ND = "Pressure sensor not detected"
+    str_msg = "At startup, BorePump is "
     encoder_count       = 0       # to track rotary next/prevs
     enc_a_last_time     = utime.ticks_ms()
     encoder_btn_state   = False
@@ -1574,11 +1657,11 @@ def init_everything_else():
 # On start, valve should now be open... but just to be sure... and to verify during testing...
     if borepump.state:
         if DEBUGLVL > 0:
-            print("At startup, BorePump is ON  ... opening valve")
+            print(str_msg + "ON  ... opening valve")
         solenoid.value(0)           # be very careful... inverse logic!
     else:
         if DEBUGLVL > 0:
-            print("At startup, BorePump is OFF ... closing valve")
+            print(str_msg +  "OFF ... closing valve")
         solenoid.value(1)           # be very careful... inverse logic!
 
     presspump = Pump("PressurePump", False)
@@ -1596,15 +1679,24 @@ def init_everything_else():
 
 # ensure we start out right...
     steady_state = False
-    vbus_on_time = time.time()      # init this... so we can test external
+    now = time.time()
+    if vbus_sense.value():
+        vbus_status = True
+        vbus_on_time = now 
+        report_outage = True
+    else:
+        vbus_status = False         # just in case we start up without main power, ie, running on battery
+        vbus_on_time = now - 60 * 60        # looks like an hour ago
+        report_outage = False
+
     display_mode = "depth"
     program_pending = False         # no program
-    sys_start_time = time.time()    # must be AFTER we set clock ...
+    sys_start_time = now            # must be AFTER we set clock ...
 
     kpa_sensor_armed = bp_pressure.read_u16() > BP_SENSOR_MIN    # are we seeing a valid pressure sensor reading?
     if not kpa_sensor_armed:
-        print("Pressure sensor not detected")
-        ev_log.write(f"{display_time(secs_to_localtime(time.time()))}  Pressure sensor not detected\n")
+        print(PS_ND)
+        ev_log.write(f"{display_time(secs_to_localtime(time.time()))}  {PS_ND}\n")
 
     enable_controls()              # enable rotary encoder, LCD B/L button etc
 
@@ -1635,15 +1727,15 @@ def switch_valve(state):
 def confirm_and_switch_solenoid(state):
 #  NOTE: solenoid relay is reverse logic... LOW is ON
     global borepump
-
+    str_valve = "Turning valve "
     if state:
-        if DEBUGLVL > 0: print("Turning valve ON")
+        if DEBUGLVL > 0: print(str_valve + "ON")
         switch_valve(borepump.state)
     else:
         if borepump.state:          # not good to turn valve off while pump is ON !!!
             raiseAlarm("Solenoid OFF Invalid - Pump is ", borepump.state )
         else:
-            if DEBUGLVL > 0: print("Turning valve OFF")
+            if DEBUGLVL > 0: print(str_valve + "OFF")
             switch_valve(False)
 
 def free_space()->int:
@@ -1665,28 +1757,53 @@ def free_space()->int:
 
 #     return True if p > x else False
 
-def sim_solenoid_detect()->bool:
+def sim_detect()->bool:
     return True
 
-def monitor_vbus():
-    global vbus_on_time, report_outage
-
-    now = time.time()
-    if vbus_sense.value():
-        vbus_on_time = now
-        report_outage = True
-    else:
-        if (now - vbus_on_time >= MAX_OUTAGE) and report_outage:
-            s = f"{display_time(secs_to_localtime(time.time()))}  Power off for more than {MAX_OUTAGE} seconds\n"
-            ev_log.write(s)  # seconds since last saw power 
-            report_outage = False
-            housekeeping(False)
 
 # endregion
 # region ASYNCIO defs
+async def monitor_vbus()->None:
+    global vbus_on_time, report_outage, vbus_status
+    str_lost = "VBUS LOST"
+    str_restored = "VBUS RESTORED"
+
+    while True:
+        if vbus_sense.value():
+            if not vbus_status:     # power has turned on since last test
+                now = time.time()
+                vbus_on_time = now
+                report_outage = True
+                s = f"{display_time(secs_to_localtime(time.time()))}  {str_restored}\n"
+                print(s)
+                add_to_event_ring(str_restored)
+                ev_log.write(s)
+                lcd.setCursor(0,1)
+                lcd.printout(str_restored)
+                vbus_status = True
+        else:
+            if report_outage:
+                s = f"{display_time(secs_to_localtime(time.time()))}  {str_lost}\n"
+                print(s)
+                add_to_event_ring(str_lost)
+                ev_log.write(s)
+                lcd.setCursor(0,1)
+                lcd.printout(str_lost)
+                vbus_status = False
+                report_outage = False
+
+            now = time.time()
+            if (now - vbus_on_time >= MAX_OUTAGE) and report_outage:
+                s = f"{display_time(secs_to_localtime(time.time()))}  Power off more than {MAX_OUTAGE} seconds\n"
+                print(s)
+                ev_log.write(s)  # seconds since last saw power 
+                add_to_event_ring("MAX_OUTAGE")
+                report_outage = True
+                # housekeeping(False)
+        await asyncio.sleep(1)
 
 async def read_pressure()->None:
-    global kparing, kpaindex
+    global kparing, kpaindex, average_kpa
 
     try:
         while True:
@@ -1694,20 +1811,21 @@ async def read_pressure()->None:
             # print(f"Press: {bpp:>3} kPa, {kpaindex=}")
             kpaindex = (kpaindex + 1) % PRESSURERINGSIZE
             kparing[kpaindex] = bpp
+            average_kpa = calc_average_pressure(KPA_AVERAGE_COUNT)
             await asyncio.sleep_ms(PRESSURE_PERIOD_MS)
     except Exception as e:
         print(f"read_pressure exception: {e}, {kpaindex=}")
 
-async def regular_flush(m)->None:
+async def regular_flush(flush_seconds)->None:
     while True:
         tank_log.flush()
         pp_log.flush()
         ev_log.flush()
-        await asyncio.sleep(m)
+        await asyncio.sleep(flush_seconds)
 
 async def send_file_list(to: str, subj: str, filenames: list):
     # print(f"Sending files {filenames}...")
-    chunk_size = 3 * 341  # Read file in 1K byte chunks... but MUST be a multiple of 3 for base64 encoding
+    chunk_size = 3 * 170  # Read file in 1K byte chunks... but MUST be a multiple of 3 for base64 encoding
 
     t0 = time.ticks_ms()
 
@@ -1756,6 +1874,7 @@ async def send_file_list(to: str, subj: str, filenames: list):
     # Process each file
     for filename in filenames:
         # Add attachment headers for this file
+        print(f'Sending {filename}')
         attachment_header = (
             "--BOUNDARY\r\n" +
             f"Content-Type: text/plain; name=\"{filename}\"\r\n" +
@@ -1812,7 +1931,7 @@ async def send_file_list(to: str, subj: str, filenames: list):
     # print(f"Times: {t1-t0}, {t2-t1}, {t3-t2}, {t4-t3}, {t5-t4}, {t6-t5}")
     smtp.quit()
 
-async def process_email_queue():
+async def processemail_queue():
     global email_queue_tail, email_queue_full, email_task_running
     while True:
         if email_task_running:
@@ -1825,14 +1944,19 @@ async def process_email_queue():
             file_list = [files] #files.split(",")
             # print(f"Processing email queue: {email_queue_tail=} {email_queue_head=} {email_queue_full=} {file_list=} {files=}")
             if files is not None:
-                # print(f'Processing email queue files: {files}')
+                print(f'Email queue: {file_list}')
                 email_task_running = True
                 try:
-                    # gc.collect()
+                    gc.collect()
                     await send_file_list(TO_EMAIL, f"Sending {files}...", file_list)
                     # print(f"Email sent with result code {rc}")
+                    lcd.setCursor(0,1)
+                    lcd.printout(f"{'Email sent':<16}")
+
                 except Exception as e:
-                    print(f"Error sending email: {e}")
+                    print(f"Error email: {e}")
+                    lcd.setCursor(0,1)
+                    lcd.printout("EMAIL Error   ")
                 finally:
                     email_task_running = False
                     
@@ -1898,7 +2022,7 @@ async def blinkx2():
 async def do_main_loop():
     global event_time, ev_log, steady_state, housetank, system, op_mode
 
-    print("RUNNING do_main_loop()")
+    print("RUNNING DML")
     # start doing stuff
     buzzer.value(0)			    # turn buzzer off
     lcd.clear()
@@ -1907,7 +2031,7 @@ async def do_main_loop():
 
     if not system:              # yikes... don't have a SM ??
         if DEBUGLVL > 0:
-            print("GAK... no SM exists at start-up")
+            print("GAK... no SM")
     else:
  #       print(f"Before while...{type(system.state)} ")
         while  str(system.state) != "READY":
@@ -1934,22 +2058,23 @@ async def do_main_loop():
 
     start_time = time.time()
     init_logging()          # needs corect time first!
-    print(f"Main TX starting at {display_time(secs_to_localtime(start_time))}")
+    print(f"Main TX starting {display_time(secs_to_localtime(start_time))}")
     updateClock()				    # get DST-adjusted local time
     
     get_tank_depth()
-    init_everything_else()
+    init_all()
 
     tim=Timer(period=config_dict["LCD"] * 1000, mode=Timer.ONE_SHOT, callback=lcd_off)
 
+    str_msg = "Immediate switch pump "
     housetank.state = tank_is
-    print(f"Initial Housetank state is {housetank.state}")
+    print(f"Initial tank state is {housetank.state}")
     if (housetank.state == "Empty" and not borepump.state):           # then we need to start doing somethin... else, we do NOTHING
-        print("Immediate switch pump ON required")
+        print(str_msg + "ON required")
     elif (borepump.state and (housetank.state == "Full" or housetank.state == "Overflow")):     # pump is ON... but...
-        print("Immediate switch pump OFF required")
+        print(str_msg + "OFF required")
     else:
-        print("No immediate action required")
+        print("No action required")
 
     ev_log.write(f"\nPump Monitor starting: {event_time}\n")
 
@@ -1958,8 +2083,15 @@ async def do_main_loop():
     asyncio.create_task(check_lcd_btn())                       # start up lcd_button widget
     asyncio.create_task(regular_flush(FLUSH_PERIOD))           # flush data every FLUSH_PERIOD minutes
     asyncio.create_task(check_rotary_state(ROTARY_PERIOD_MS))  # check rotary every ROTARY_PERIOD_MS milliseconds
-    asyncio.create_task(process_email_queue())                 # check email queue
+    asyncio.create_task(processemail_queue())                 # check email queue
     asyncio.create_task(read_pressure())                       # read pressure every PRESSURE_PERIOD_MS milliseconds    
+    asyncio.create_task(monitor_vbus())                        # watch for power every second
+    
+    # micropython.mem_info()
+    gc.collect()
+    micropython.mem_info()
+
+    # send_email_msg(TO_EMAIL, "Test", "Nothin here")           # this is here for easier debugging of SSL memory issue
 
     rec_num=0
     while True:
@@ -1968,12 +2100,13 @@ async def do_main_loop():
         check_for_critical_states()
         if op_mode != OP_MODE_MAINT:
             if op_mode != OP_MODE_IRRIGATE: 
-                if DEBUGLVL > 0: print(f"in do_main_loop, op_mode is {op_mode} and controlBorePump() starting now")
+                # if DEBUGLVL > 0: print(f"in DML, op_mode is {op_mode} controlBP() starting")
                 controlBorePump()		            # do nothing if in IRRIGATE mode
     #        listen_to_radio()		                # check for badness
             DisplayData()
 # experimental...
-            if op_mode != OP_MODE_IRRIGATE and rec_num % LOG_FREQ == 0:           
+            # if op_mode != OP_MODE_IRRIGATE and rec_num % LOG_FREQ == 0:
+            if rec_num % LOG_FREQ == 0:           
                 LogData()			                # record it
             if steady_state: checkForAnomalies()	# test for weirdness
             rec_num += 1
@@ -1981,7 +2114,6 @@ async def do_main_loop():
             delay_ms = config_dict["Delay"] * 1000
             if heartbeat():                         # send heartbeat if ON... not if OFF.  For now, anyway
                 delay_ms -= RADIO_PAUSE
-            monitor_vbus()                          # escape clause... to trigger dump...
         # print(f"{event_time} main loop: {rec_num=}, {op_mode=}, {steady_state=}")
         await asyncio.sleep_ms(delay_ms)
 
@@ -1992,7 +2124,7 @@ def main() -> None:
     try:
         # micropython.qstr_info()
         # print('Sending test email ... no files')
-        # send_email(TO_EMAIL, "Test email 15", "Almost done...")    
+        # send_email_msg(TO_EMAIL, "Test email 15", "Almost done...")    
         # print('...sent')
 
         asyncio.run(do_main_loop())
@@ -2003,7 +2135,7 @@ def main() -> None:
     except KeyboardInterrupt:
         ui_mode = UI_MODE_NORM      # no point calling CHaneg... as I turn B/L off straight after anyway...
         lcd_off('')	                # turn off backlight
-        print('\n### Program Interrupted by the user')
+        print('\n### Program Interrupted by user')
         if op_mode == OP_MODE_IRRIGATE:
             cancel_program()
             
@@ -2016,7 +2148,8 @@ def main() -> None:
     #           to be real sure, don't even test if pump is off... just leave it... for now.
 
     # tidy up...
-        housekeeping(True)
+        housekeeping(False)
+        shutdown()
 
 if __name__ == '__main__':
      main()
