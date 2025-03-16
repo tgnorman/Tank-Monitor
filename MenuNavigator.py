@@ -61,31 +61,35 @@ class MenuNavigator:
             # print(f'In NEXT {self.mode=}')
             if self.mode == "view_events":
                 if self.eventlist is not None:
-                    hist_str = self.eventlist[self.event_index]
-                    self.event_index = (self.event_index + 1) % len(self.eventlist)
+                    if len(self.eventlist) > 0:
+                        hist_str = self.eventlist[self.event_index]
+                        self.event_index = (self.event_index + 1) % len(self.eventlist)
                 else:
                     hist_str = "Eventlist: None"
             elif self.mode == "view_switch":
                 if self.switchlist is not None:
-                    hist_str = self.switchlist[self.switch_index]
-                    self.switch_index = (self.switch_index + 1) % len(self.switchlist)
+                    if len(self.switchlist) > 0:
+                        hist_str = self.switchlist[self.switch_index]
+                        self.switch_index = (self.switch_index + 1) % len(self.switchlist)
                 else:
                     hist_str = "Switchlist: None"
             elif self.mode == "view_program":
                 if self.programlist is not None:
-                    self.program_index = (self.program_index + 1) % len(self.programlist)
-                    prog_name = self.programlist[self.program_index][0]
-                    prog_duration = self.programlist[self.program_index][1]["run"]
-                    prog_wait = self.programlist[self.program_index][1]["off"]
-                    prog_str = f'Run {prog_duration} Off {prog_wait}'
-                    hist_str = tuple((prog_name, prog_str))
-                    # print(f'In NEXT {hist_str=}')
+                    if len(self.programlist) > 0:
+                        self.program_index = (self.program_index + 1) % len(self.programlist)
+                        prog_name = self.programlist[self.program_index][0]
+                        prog_duration = self.programlist[self.program_index][1]["run"]
+                        prog_wait = self.programlist[self.program_index][1]["off"]
+                        prog_str = f'Run {prog_duration} Off {prog_wait}'
+                        hist_str = tuple((prog_name, prog_str))
+                        # print(f'In NEXT {hist_str=}')
                 else:
                     hist_str = "Prog list: None"
             elif self.mode == "view_files":
                 if self.filelist is not None:
-                    self.file_index = (self.file_index + 1) % len(self.filelist)
-                    hist_str = self.filelist[self.file_index]
+                    if len(self.filelist) > 0:
+                        self.file_index = (self.file_index + 1) % len(self.filelist)
+                        hist_str = self.filelist[self.file_index]
                 else:
                     hist_str = "File list: None"
             if type(hist_str) == tuple:
@@ -127,31 +131,35 @@ class MenuNavigator:
             # print(f'In PREV {self.mode=}')
             if self.mode == "view_events":
                 if self.eventlist is not None:
-                    hist_str = self.eventlist[self.event_index]
-                    self.event_index = (self.event_index - 1) % len(self.eventlist)     # check if this is right
+                    if len(self.eventlist) > 0:
+                        hist_str = self.eventlist[self.event_index]
+                        self.event_index = (self.event_index - 1) % len(self.eventlist)     # check if this is right
                 else:
                     hist_str = "Eventlist: None"
             elif self.mode == "view_switch":
                 if self.switchlist is not None:
-                    hist_str = self.switchlist[self.switch_index]
-                    self.switch_index = (self.switch_index - 1) % len(self.switchlist)     # check if this is right
+                    if len(self.switchlist) > 0:
+                        hist_str = self.switchlist[self.switch_index]
+                        self.switch_index = (self.switch_index - 1) % len(self.switchlist)     # check if this is right
                 else:
                     hist_str = "Switchlist: None"
             elif self.mode == "view_program":
                 if self.programlist is not None:
-                    self.program_index = (self.program_index - 1) % len(self.programlist)
-                    prog_name = self.programlist[self.program_index][0]
-                    prog_duration = self.programlist[self.program_index][1]["run"]
-                    prog_wait = self.programlist[self.program_index][1]["off"]
-                    prog_str = f'Run {prog_duration} Off {prog_wait}'
-                    hist_str = tuple((prog_name, prog_str))
+                    if len(self.programlist) > 0:
+                        self.program_index = (self.program_index - 1) % len(self.programlist)
+                        prog_name = self.programlist[self.program_index][0]
+                        prog_duration = self.programlist[self.program_index][1]["run"]
+                        prog_wait = self.programlist[self.program_index][1]["off"]
+                        prog_str = f'Run {prog_duration} Off {prog_wait}'
+                        hist_str = tuple((prog_name, prog_str))
                     # print(f'In PREV {hist_str=}')
                 else:
                     hist_str = "Prog list: None"
             elif self.mode == "view_files":
                 if self.filelist is not None:
-                    self.file_index = (self.file_index - 1) % len(self.filelist)
-                    hist_str = self.filelist[self.file_index]
+                    if len(self.filelist) > 0:
+                        self.file_index = (self.file_index - 1) % len(self.filelist)
+                        hist_str = self.filelist[self.file_index]
                 else:
                     hist_str = "File list: None"
             if type(hist_str) == tuple:

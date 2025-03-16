@@ -1,9 +1,7 @@
 # Trev's super dooper Tank/Pump monitoring system
 # region IMPORTS
 
-# from PiicoDev_RV3028 import PiicoDev_RV3028
 import RGB1602
-import network
 import umail # type: ignore
 import time
 import uos
@@ -12,10 +10,7 @@ import uasyncio as asyncio
 import ntptime
 import gc
 import micropython
-# print(f"Before import random: {gc.mem_free()}")
-# import random               # just for PP detect sim...
-# print(f"After import random: {gc.mem_free()}")
-# micropython.mem_info(1)
+import network
 from utime import sleep, ticks_us, ticks_diff
 from PiicoDev_Unified import sleep_ms
 from PiicoDev_VL53L1X import PiicoDev_VL53L1X
@@ -25,19 +20,16 @@ from Pump import Pump               # get our Pump class
 from Tank import Tank
 from secrets import MyWiFi
 from MenuNavigator import MenuNavigator
-from encoder import Encoder
+# from encoder import Encoder
 from ubinascii import b2a_base64 as b64
 
-# OK... major leap... intro to FSM...
 from SM_SimpleFSM import SimpleDevice
 
-# micropython.qstr_info()
 # endregion
 # region INITIALISE
 
 # micropython.mem_info()
-gc.collect()
-gc.threshold(gc.mem_free() // 4 + gc.mem_alloc())
+# gc.collect()
 
 # constant/enums
 OP_MODE_AUTO        = 0
@@ -56,7 +48,8 @@ FREE_SPACE_LOWATER  = 150           # in KB...
 FREE_SPACE_HIWATER  = 400
 
 FLUSH_PERIOD        = 5
-DEBOUNCE_ROTARY     = 100
+DEBOUNCE_ROTARY     = 10            # determined from trial... see test_rotary_irq.py
+DEBOUNCE_BUTTON     = 100
 ROTARY_PERIOD_MS    = 200           # needs to be short... check rotary ISR variables
 PRESSURE_PERIOD_MS  = 1000
 
@@ -73,13 +66,13 @@ VDIV_Ratio          = VDIV_R2/(VDIV_R1 + VDIV_R2)
 
 #All menu-CONFIGURABLE parameters
 mydelay             = 15            # seconds, main loop period
-LCD_ON_TIME         = 45            # seconds
+LCD_ON_TIME         = 15            # seconds
 Min_Dist            = 500           # full
 Max_Dist            = 1400          # empty
 MAX_LINE_PRESSURE   = 700           # TBC... but this seems about right
 MIN_LINE_PRESSURE   = 300           # tweak after running... and this ONLY applies in OP_MODE_IRRIG
 NO_LINE_PRESSURE    = 15            # tweak this too... applies in ANY pump-on mode
-MAX_CONTIN_RUNMINS  = 60            # 3 hours max runtime.  More than this looks like trouble
+MAX_CONTIN_RUNMINS  = 360            # 3 hours max runtime.  More than this looks like trouble
 
 SIMULATE_PUMP       = False         # debugging aid...replace pump switches with a PRINT
 DEBUGLVL            = 0
@@ -123,7 +116,7 @@ report_outage       = True          # do I report next power outage?
 sys_start_time      = 0             # for uptime report
 kpa_sensor_armed    = True          # set to True if pressure sensor is detected  
 
-SW_VERSION          = "11/3/25"       # for display
+SW_VERSION          = "16/3/25"       # for display
 
 # Gather all tank-related stuff with a view to making a class...
 housetank           = Tank("Empty")                     # make my tank object
@@ -146,10 +139,10 @@ bp_pressure         = ADC(0)                            # read line pressure
 # Create pins for encoder lines and the onboard button
 
 enc_btn             = Pin(18, Pin.IN, Pin.PULL_UP)
-# enc_a               = Pin(19, Pin.IN)
-# enc_b               = Pin(20, Pin.IN)
-px                  = Pin(20, Pin.IN, Pin.PULL_UP)
-py                  = Pin(19, Pin.IN, Pin.PULL_UP)
+enc_a               = Pin(19, Pin.IN)
+enc_b               = Pin(20, Pin.IN)
+# px                  = Pin(20, Pin.IN, Pin.PULL_UP)
+# py                  = Pin(19, Pin.IN, Pin.PULL_UP)
 last_time           = 0
 count               = 0
 
@@ -207,23 +200,16 @@ def get_pressure_category(pressure: int) -> str:
             return PRESSURE_CATEGORIES[i]
     return PRESSURE_CATEGORIES[-1]  # Return last category if pressure exceeds all thresholds
 
-# def dummyfunc()->int:
-#     a = 0
-#     sum = 0
-#     # for a in range(10):
-#     #     sum += a * a
-#     return sum
-    
-# def get_pressure_category_binary(pressure: int) -> str:
-#     """Map pressure value to category using binary search"""
-#     left, right = 0, len(PRESSURE_THRESHOLDS)
-#     while left < right:
-#         mid = (left + right) // 2
-#         if pressure <= PRESSURE_THRESHOLDS[mid]:
-#             right = mid
-#         else:
-#             left = mid + 1
-#     return PRESSURE_CATEGORIES[left]
+def get_pressure_category_binary(pressure: int) -> str:
+    """Map pressure value to category using binary search"""
+    left, right = 0, len(PRESSURE_THRESHOLDS)
+    while left < right:
+        mid = (left + right) // 2
+        if pressure <= PRESSURE_THRESHOLDS[mid]:
+            right = mid
+        else:
+            left = mid + 1
+    return PRESSURE_CATEGORIES[left]
 
 # endregion
 # region EMAIL
@@ -608,8 +594,8 @@ def show_space():
 
 def my_reset():
     ev_log.write(f"{event_time} SOFT RESET")
-    housekeeping(True)
     shutdown()
+    lcd.setRGB(0,0,0)
     soft_reset()
 
 def hardreset():
@@ -648,7 +634,8 @@ def shutdown()->None:
     pp_log.close()
 
 def send_tank_logs():
-    # filelist: list[tuple] = []  
+    # filelist: list[tuple] = []
+# this also allocs memory... needs to change to static buffer
     filenames = [x for x in uos.listdir() if x.startswith("tank") and x.endswith(".txt") ]
 
     for f in filenames:
@@ -671,11 +658,12 @@ def show_dir():
 
     for f in filenames:
         fstat = uos.stat(f)
+        # print(f'file {f}:  stat returns: {fstat}')
         fsize = fstat[6]
         fdate = fstat[7]
         print(f'{f}: {fsize:>7} bytes, time {display_time(secs_to_localtime(fdate))}')
 
-        # filelist.append((f, f'Size: {fsize}'))        # this is NOT kosher... allocating me in ISR context
+        filelist.append((f, f'Size: {fsize}'))        # this is NOT kosher... allocating mem in ISR context
 
     navigator.set_file_list(filelist)
     navigator.mode = "view_files"
@@ -741,7 +729,6 @@ def add_cycle()-> None:
 
 #   finally.... update this, or view code breaks.  Yet another symptom of having data in two places... grrr...
     navigator.set_program_list(program_list)
-
 
 def remove_cycle()-> None:
     last_cycle_pos = find_last_cycle()
@@ -847,7 +834,7 @@ def add_to_email_queue(file:str)->None:
 def send_log()->None:
 
     # add_to_email_queue(eventlogname)
-    add_to_email_queue("pres 250310.txt")
+    add_to_email_queue("borepump_events.txt")
     lcd.setCursor(0, 1)
     lcd.printout(f'{"Email queued":<16}')
     # print(f"Log added to email queue")
@@ -934,30 +921,32 @@ new_menu = {
     ]
 }
 
-navigator   = MenuNavigator(new_menu, lcd)
+def encoder_a_IRQ(pin):
+    global enc_a_last_time, encoder_count
 
-# def encoder_a_IRQ(pin):
-#     global enc_a_last_time, encoder_count
-
-#     new_time = utime.ticks_ms()
-#     if (new_time - enc_a_last_time) > DEBOUNCE_ROTARY:
-#         if enc_a.value() == enc_b.value():
-#             encoder_count += 1
-#             # navigator.next()
-#         else:
-#             encoder_count -= 1
-#             # navigator.previous()
-#     else:
-#         print(".", end="")
-#     enc_a_last_time = new_time
+    new_time = utime.ticks_ms()
+    if (new_time - enc_a_last_time) > DEBOUNCE_ROTARY:
+        if enc_a.value() == enc_b.value():
+            encoder_count += 1
+            # print("+", end="")
+            # navigator.next()
+        else:
+            encoder_count -= 1
+            # navigator.previous()
+    else:
+        print(".", end="")
+    # print(encoder_count)
+    enc_a_last_time = new_time
 
 def encoder_btn_IRQ(pin):
     global enc_btn_last_time, encoder_btn_state
 
     new_time = utime.ticks_ms()
-    if (new_time - enc_btn_last_time) > 200:
+    if (new_time - enc_btn_last_time) > DEBOUNCE_BUTTON:
         encoder_btn_state = True
     enc_btn_last_time = new_time
+
+navigator   = MenuNavigator(new_menu, lcd)
 
 def pp_callback(pin):
     presspmp.irq(handler=None)
@@ -977,12 +966,12 @@ def cb(pos, delta):
 def enable_controls():
     
    # Enable the interupt handlers
-    enc = Encoder(px, py, v=0, div=4, vmin=None, vmax=None, callback=cb)
-    # enc_a.irq(trigger=Pin.IRQ_RISING, handler=encoder_a_IRQ)
+    presspmp.irq(trigger=Pin.IRQ_RISING|Pin.IRQ_FALLING, handler=pp_callback)
+    # enc = Encoder(px, py, v=0, div=4, vmin=None, vmax=None, callback=cb)
+    enc_a.irq(trigger=Pin.IRQ_RISING, handler=encoder_a_IRQ)
     enc_btn.irq(trigger=Pin.IRQ_FALLING, handler=encoder_btn_IRQ)
 
     lcdbtn.irq(trigger=Pin.IRQ_RISING, handler=lcdbtn_new)
-    presspmp.irq(trigger=Pin.IRQ_RISING|Pin.IRQ_FALLING, handler=pp_callback)
 
 # endregion
 # region LCD
@@ -1024,7 +1013,7 @@ async def check_lcd_btn():
 #     month = tod.split()[0].split("-")[1]
 #     day   = tod.split()[0].split("-")[2]
 #     shortyear = year[2:]
-#endregion
+# endregion
 # region MAIN METHODS
 def init_logging():
     global year, month, day, shortyear
@@ -1582,41 +1571,6 @@ def calibrate_clock():
     t=(s, p)
     transmit_and_pause(t, delay)
 
-# def sync_clock():                   # initiate exchange of time info with RX, purpose is to determine clock adjustment
-#     global radio, clock_adjust_ms, system
-
-#     if str(system.state) == "COMMS_READY":
-#         print("Starting clock sync process")
-#         calibrate_clock()
-#         count = 2
-#         delay = 500                     # millisecs
-#         for n in range(count):
-#             local_time = time.time()
-#             tup = ("CLK", local_time)
-#             radio.send(tup)
-#             sleep_ms(delay)
-#         max_loops = 100
-#         loop_count = 0
-#         while not radio.receive() and loop_count < max_loops:
-#             sleep_ms(50)
-#             loop_count += 1
-#         if loop_count < max_loops:      # then we got a reply          
-#             rcv_msg = radio.message
-#             if type(rcv_msg) is tuple:
-#                 if rcv_msg[0] == "CLK":
-#                     if DEBUGLVL > 0: print(f"Got CLK SYNC reply after {loop_count} loops")
-#                     clock_adjust_ms = int(rcv_msg[1])
-#                     if abs(clock_adjust_ms) > 100000:       # this looks dodgy...
-#                         print(f"*****Bad clock adjust: {clock_adjust_ms}... setting to 800")
-#                         clock_adjust_ms = 800
-#         else:                           # we did NOT get a reply... don't block... set adj to default 500
-#             clock_adjust_ms = 0
-#         system.on_event("CLK SYNC")
-#     else:
-#         print(f"What am I doing here in state {str(system.state)}")
-
-#     if DEBUGLVL > 0: print(f"Setting clock_adjust to {clock_adjust_ms}") 
-
 def init_ringbuffers():
     global  ringbuf, ringbufferindex, eventring, eventindex, switchring, switchindex, kparing, kpaindex
 
@@ -1750,8 +1704,6 @@ def free_space()->int:
     # Free space in bytes
     free_space_kb = free_blocks * block_size / 1024
     return free_space_kb
-
-
 # def sim_pressure_pump_detect(x)->bool:            # to be hacked when I connect the CT circuit
 #     p = random.random()
 
@@ -1759,8 +1711,6 @@ def free_space()->int:
 
 def sim_detect()->bool:
     return True
-
-
 # endregion
 # region ASYNCIO defs
 async def monitor_vbus()->None:
@@ -1942,13 +1892,14 @@ async def processemail_queue():
         if email_queue_tail != email_queue_head or email_queue_full:
             files = email_queue[email_queue_tail]
             file_list = [files] #files.split(",")
+            non_zero_files = [f for f in file_list if uos.stat(f)[6] > 0]   
             # print(f"Processing email queue: {email_queue_tail=} {email_queue_head=} {email_queue_full=} {file_list=} {files=}")
-            if files is not None:
-                print(f'Email queue: {file_list}')
+            if len(non_zero_files) > 0:
+                print(f'Email queue: {non_zero_files}')
                 email_task_running = True
                 try:
                     gc.collect()
-                    await send_file_list(TO_EMAIL, f"Sending {files}...", file_list)
+                    await send_file_list(TO_EMAIL, f"Sending {files}...", non_zero_files)
                     # print(f"Email sent with result code {rc}")
                     lcd.setCursor(0,1)
                     lcd.printout(f"{'Email sent':<16}")
@@ -1960,10 +1911,10 @@ async def processemail_queue():
                 finally:
                     email_task_running = False
                     
-                # Clear slot and advance tail
-                email_queue[email_queue_tail] = ""
-                email_queue_tail = (email_queue_tail + 1) % EMAIL_QUEUE_SIZE
-                email_queue_full = False
+        # Clear slot and advance tail ... do this even if the file was zero-length
+            email_queue[email_queue_tail] = ""
+            email_queue_tail = (email_queue_tail + 1) % EMAIL_QUEUE_SIZE
+            email_queue_full = False
                 
         await asyncio.sleep_ms(1000)
 
@@ -2022,7 +1973,6 @@ async def blinkx2():
 async def do_main_loop():
     global event_time, ev_log, steady_state, housetank, system, op_mode
 
-    print("RUNNING DML")
     # start doing stuff
     buzzer.value(0)			    # turn buzzer off
     lcd.clear()
@@ -2031,7 +1981,7 @@ async def do_main_loop():
 
     if not system:              # yikes... don't have a SM ??
         if DEBUGLVL > 0:
-            print("GAK... no SM")
+            print("GAK... no State Machine")
     else:
  #       print(f"Before while...{type(system.state)} ")
         while  str(system.state) != "READY":
@@ -2078,7 +2028,7 @@ async def do_main_loop():
 
     ev_log.write(f"\nPump Monitor starting: {event_time}\n")
 
-# start coroutines..
+    # start coroutines..
     asyncio.create_task(blinkx2())                             # visual indicator we are running
     asyncio.create_task(check_lcd_btn())                       # start up lcd_button widget
     asyncio.create_task(regular_flush(FLUSH_PERIOD))           # flush data every FLUSH_PERIOD minutes
@@ -2087,11 +2037,9 @@ async def do_main_loop():
     asyncio.create_task(read_pressure())                       # read pressure every PRESSURE_PERIOD_MS milliseconds    
     asyncio.create_task(monitor_vbus())                        # watch for power every second
     
-    # micropython.mem_info()
     gc.collect()
-    micropython.mem_info()
-
-    # send_email_msg(TO_EMAIL, "Test", "Nothin here")           # this is here for easier debugging of SSL memory issue
+    gc.threshold(gc.mem_free() // 4 + gc.mem_alloc())
+    # micropython.mem_info()
 
     rec_num=0
     while True:
@@ -2138,7 +2086,6 @@ def main() -> None:
         print('\n### Program Interrupted by user')
         if op_mode == OP_MODE_IRRIGATE:
             cancel_program()
-            
     # turn everything OFF
         if borepump is not None:                # in case i bail before this is defined...
             if borepump.state:
