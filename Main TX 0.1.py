@@ -163,9 +163,9 @@ SMTP_SERVER         = "smtp.gmail.com"
 SMTP_PORT           = 465
 
 # Email account credentials
-FROM_EMAIL          = "gmtgn55@gmail.com"
+FROM_EMAIL          = wf.fromaddr
 FROM_PASSWORD       = wf.gmailAppPassword
-TO_EMAIL            = "trevor.norman4@icloud.com"
+TO_EMAIL            = wf.toaddr
 
 # things for async SMTP file processing
 sleepms = 100
