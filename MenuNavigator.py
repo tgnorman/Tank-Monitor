@@ -3,13 +3,14 @@
 
 from RGB1602 import RGB1602
 
-DEBUG = False
+DEBUG = True
 
 class MenuNavigator:
     def __init__(self, menu, dev:RGB1602):
         self.menu = menu
         self.current_level = [menu]  # Stack to keep track of menu levels
         self.current_index = 0
+        self.prev_index = 0
         self.device = dev
         self.mode = "menu"
         self.new_value = 0
@@ -181,18 +182,21 @@ class MenuNavigator:
     def go_back(self):
         if len(self.current_level) > 1:
             self.current_level.pop()  # Go up one level in the menu
-            self.current_index = 0
+            self.current_index = self.prev_index
             self.mode = "menu"
             self.new_value = 0
 #            print(f"Going back to previous menu level {len(self.current_level)}")
             self.display_current_item()
         else:
             print("Already at the top-level menu.  This should not happen...")
+            self.device.setCursor(0, 1)
+            self.device.printout("Cant go back")
 
     def enter(self):
         item = self.get_current_item()
         if "items" in item:
             self.current_level.append(item)  # Go deeper into the submenu
+            self.prev_index = self.current_index
             self.current_index = 0
 #            print(f"Entering {item['title']} submenu - level {len(self.current_level)}")
             self.display_current_item()

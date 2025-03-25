@@ -22,7 +22,6 @@ from secrets import MyWiFi
 from MenuNavigator import MenuNavigator
 # from encoder import Encoder
 from ubinascii import b2a_base64 as b64
-
 from SM_SimpleFSM import SimpleDevice
 
 # endregion
@@ -49,7 +48,7 @@ FREE_SPACE_HIWATER  = 400
 
 FLUSH_PERIOD        = 5
 DEBOUNCE_ROTARY     = 10            # determined from trial... see test_rotary_irq.py
-DEBOUNCE_BUTTON     = 100
+DEBOUNCE_BUTTON     = 50
 ROTARY_PERIOD_MS    = 200           # needs to be short... check rotary ISR variables
 PRESSURE_PERIOD_MS  = 1000
 
@@ -66,7 +65,7 @@ VDIV_Ratio          = VDIV_R2/(VDIV_R1 + VDIV_R2)
 
 #All menu-CONFIGURABLE parameters
 mydelay             = 15            # seconds, main loop period
-LCD_ON_TIME         = 15            # seconds
+LCD_ON_TIME         = 45            # seconds
 Min_Dist            = 500           # full
 Max_Dist            = 1400          # empty
 MAX_LINE_PRESSURE   = 700           # TBC... but this seems about right
@@ -116,7 +115,7 @@ report_outage       = True          # do I report next power outage?
 sys_start_time      = 0             # for uptime report
 kpa_sensor_armed    = True          # set to True if pressure sensor is detected  
 
-SW_VERSION          = "16/3/25"       # for display
+SW_VERSION          = "24/3/25"       # for display
 
 # Gather all tank-related stuff with a view to making a class...
 housetank           = Tank("Empty")                     # make my tank object
@@ -135,6 +134,13 @@ solenoid            = Pin(2, Pin.OUT, value=0)          # MUST ensure we don't c
 vbus_sense          = Pin('WL_GPIO2', Pin.IN)           # external power monitoring of VBUS
 led                 = Pin('LED', Pin.OUT)
 bp_pressure         = ADC(0)                            # read line pressure
+
+# add buttons for 5-way nav control
+nav_up 	            = Pin(10, Pin.IN, Pin.PULL_UP)		# UP button
+nav_dn 	            = Pin(11, Pin.IN, Pin.PULL_UP)		# DOWN button  
+nav_sel             = Pin(7,  Pin.IN, Pin.PULL_UP)		# SELECT button
+nav_L               = Pin(12, Pin.IN, Pin.PULL_UP)		# LEFT button
+nav_R               = Pin(13, Pin.IN, Pin.PULL_UP)		# RIGHT button  
 
 # Create pins for encoder lines and the onboard button
 
@@ -541,18 +547,24 @@ def cancel_program()->None:
     program_pending = False
     op_mode = OP_MODE_AUTO
 
-    if my_timer is not None:
-        my_timer.deinit()
-        print("Timer CANCELLED")
+    try:
+        if my_timer is not None:        # this is not enough... need to catch the case where my_timer is not defined, so need try/except
+            my_timer.deinit()
+            print("Timer CANCELLED")
 
-    if borepump.state:
-        borepump_OFF()
+        if borepump.state:
+            borepump_OFF()
 
-    lcd.setCursor(0,1)
-    lcd.printout("Prog CANCELLED")
+        lcd.setCursor(0,1)
+        lcd.printout("Prog CANCELLED")
 
-    add_to_event_ring("Prog cancelled")
-    ev_log.write(f"{current_time()}: Prog cancelled\n")
+        add_to_event_ring("Prog cancelled")
+        ev_log.write(f"{current_time()}: Prog cancelled\n")
+
+    except:
+        print("No prog to cancel")
+        lcd.setCursor(0,1)
+        lcd.printout("No prog to cancel")
     
 def display_depth():
     global display_mode
@@ -571,6 +583,7 @@ def display_pressure():
     lcd.printout(f'{"Display kPa":<16}')
 
 def my_go_back():
+    # print(f'Length:{len(navigator.current_level)}\n{navigator.current_level=}')
     navigator.go_back()
                
 def show_events():
@@ -593,7 +606,7 @@ def show_space():
     lcd.printout(f'Free KB: {free_space():<6}')
 
 def my_reset():
-    ev_log.write(f"{event_time} SOFT RESET")
+    ev_log.write(f"{event_time} SOFT RESET\n")
     shutdown()
     lcd.setRGB(0,0,0)
     soft_reset()
@@ -624,8 +637,8 @@ def housekeeping(close_files: bool)->None:
     print(f"Cleanup completed in {int(time.ticks_diff(end_time, start_time) / 1000)} ms")
 
 def shutdown()->None:
-    ev_log.write(f"{event_time} STOP")
-    ev_log.write(f"\nMonitor shutdown at {display_time(secs_to_localtime(time.time()))}\n")
+    ev_log.write(f"{event_time} STOP\n")
+    ev_log.write(f"Monitor shutdown at {display_time(secs_to_localtime(time.time()))}\n")
     if borepump is not None: dump_pump_arg(borepump)
     if presspump is not None: dump_pump_arg(presspump)
     dump_event_ring()
@@ -957,11 +970,63 @@ def pp_callback(pin):
     presspmp.irq(trigger=Pin.IRQ_RISING|Pin.IRQ_FALLING, handler=pp_callback)
 
 def cb(pos, delta):
-        # print(pos, delta)
+    print(pos, delta)
     if delta > 0:
         navigator.next()
     elif delta < 0:
         navigator.previous()
+
+def nav_up_cb(pin):
+    global nav_btn_state, nav_btn_last_time
+
+    new_time = utime.ticks_ms()
+    if (new_time - nav_btn_last_time) > DEBOUNCE_BUTTON:
+        nav_btn_state = True
+        print("U", end="")
+        if len(navigator.current_level) > 1:
+            navigator.go_back()       # this is the up button
+    nav_btn_last_time = new_time
+
+def nav_dn_cb(pin):
+    global nav_btn_state, nav_btn_last_time
+
+    new_time = utime.ticks_ms()
+    if (new_time - nav_btn_last_time) > DEBOUNCE_BUTTON:
+        nav_btn_state = True
+        print("D", end="")
+        navigator.enter()   # this is the down button   
+    nav_btn_last_time = new_time
+
+def nav_sel_cb(pin):
+    global nav_btn_state, nav_btn_last_time
+
+    new_time = utime.ticks_ms()
+    if (new_time - nav_btn_last_time) > DEBOUNCE_BUTTON:
+        nav_btn_state = True
+        print("S", end="")
+        navigator.set()     # this is the select button
+    nav_btn_last_time = new_time
+
+def nav_L_cb(pin):
+    global nav_btn_state, nav_btn_last_time
+
+    new_time = utime.ticks_ms()
+    if (new_time - nav_btn_last_time) > DEBOUNCE_BUTTON:
+        nav_btn_state = True
+        print("L", end="")
+        navigator.previous()    # this is the back button
+    nav_btn_last_time = new_time
+
+def nav_R_cb(pin):
+    global nav_btn_state, nav_btn_last_time
+
+    new_time = utime.ticks_ms()
+    if (new_time - nav_btn_last_time) > DEBOUNCE_BUTTON:
+        print("R", end="")  
+        nav_btn_state = True
+        navigator.next()      # this is the enter button
+    nav_btn_last_time = new_time
+        
 
 def enable_controls():
     
@@ -972,6 +1037,12 @@ def enable_controls():
     enc_btn.irq(trigger=Pin.IRQ_FALLING, handler=encoder_btn_IRQ)
 
     lcdbtn.irq(trigger=Pin.IRQ_RISING, handler=lcdbtn_new)
+
+    nav_up.irq(trigger=Pin.IRQ_FALLING, handler=nav_up_cb)
+    nav_dn.irq(trigger=Pin.IRQ_FALLING, handler=nav_dn_cb)
+    nav_sel.irq(trigger=Pin.IRQ_FALLING, handler=nav_sel_cb)
+    nav_L.irq(trigger=Pin.IRQ_FALLING, handler=nav_L_cb)
+    nav_R.irq(trigger=Pin.IRQ_FALLING, handler=nav_R_cb)
 
 # endregion
 # region LCD
@@ -1220,7 +1291,7 @@ def borepump_OFF():
                 add_to_switch_ring("PUMP OFF")
                 ev_log.write(f"{event_time} OFF\n")
                 system.on_event("OFF ACK")
-                if DEBUGLVL > 1: print("cBP: Closing valve")
+                if DEBUGLVL > 1: print("borepump_OFF: Closing valve")
                 solenoid.value(1)               # wait until pump OFF confirmed before closing valve !!!
             else:
                 log_switch_error(new_state)
@@ -1463,7 +1534,7 @@ def init_radio():
     system.on_event("ACK COMMS")
 
 def ping_RX() -> bool:           # at startup, test if RX is listening
-    global radio
+#    global radio
 
     ping_acknowleged = False
     transmit_and_pause("PING", RADIO_PAUSE)
@@ -1592,6 +1663,7 @@ def init_all():
     global borepump, steady_state, free_space_KB, presspump, vbus_status, vbus_on_time, report_outage
     global display_mode, navigator, encoder_count, encoder_btn_state, enc_a_last_time, enc_btn_last_time
     global slist, program_pending, sys_start_time, rotary_btn_pressed, kpa_sensor_armed
+    global nav_btn_state, nav_btn_last_time
 
     PS_ND = "Pressure sensor not detected"
     str_msg = "At startup, BorePump is "
@@ -1600,6 +1672,8 @@ def init_all():
     encoder_btn_state   = False
     enc_btn_last_time   = enc_a_last_time
     rotary_btn_pressed  = False
+    nav_btn_last_time   = 0
+    nav_btn_state       = False
 
     slist=[]
 
@@ -1804,17 +1878,7 @@ async def send_file_list(to: str, subj: str, filenames: list):
     # print(f"After SMTP Login {c=} {r=}")
     smtp.to(TO_EMAIL)
     smtp.write(hdrmsg)  # Write headers and message part
-    # smtp.write(f"From: {FROM_EMAIL}\r\n")
-    # smtp.write(f"To: {to}\r\n")
-    # smtp.write(f"Subject: {subj}\r\n")
-    # smtp.write("MIME-Version: 1.0\r\n")
-    # smtp.write("Content-Type: multipart/mixed; boundary=BOUNDARY\r\n")
-    # smtp.write("\r\n")
-    # smtp.write("--BOUNDARY\r\n")
-    # smtp.write("Content-Type: text/plain\r\n")
-    # smtp.write("\r\n")
-    # smtp.write("Please find attached files.\r\n")
-    # smtp.write("\r\n")
+    
     t4 = time.ticks_ms()
     # print("SMTP Headers written")
     await asyncio.sleep_ms(sleepms)
@@ -1919,7 +1983,7 @@ async def processemail_queue():
         await asyncio.sleep_ms(1000)
 
 async def check_rotary_state(menu_sleep:int)->None:
-    global ui_mode, encoder_count, encoder_btn_state
+    global ui_mode, encoder_count, encoder_btn_state, nav_btn_state
     while True:
         if encoder_btn_state:               # button pressed
             lcd_on()                        # but set no OFF timer...stay on until I exit menu
@@ -1942,6 +2006,31 @@ async def check_rotary_state(menu_sleep:int)->None:
                 print(f'Huh? {ui_mode=}')
 
             encoder_btn_state = False
+
+        if nav_btn_state:               # button pressed
+            lcd_on()                        # but set no OFF timer...stay on until I exit menu 
+            # navmode = navigator.mode
+
+            # if ui_mode == UI_MODE_MENU:
+            #     navmode = navigator.mode
+            #     if navmode == "menu":
+            #         navigator.enter()
+            #     elif navmode == "value_change":
+            #         navigator.set()
+            #     elif "view" in navmode:        # careful... if more modes are added, ensure they contain "view"
+            #         navigator.go_back()
+            # elif ui_mode == UI_MODE_NORM:
+            #     Change_Mode(UI_MODE_MENU)
+            #     # ui_mode = UI_MODE_MENU
+            #     navigator.go_to_first()
+            #     navigator.display_current_item()
+            # else:
+            #     print(f'Huh? {ui_mode=}')
+
+            if ui_mode == UI_MODE_NORM:
+                Change_Mode(UI_MODE_MENU)
+
+            nav_btn_state = False
 
         if encoder_count != 0:
             if encoder_count > 0:
@@ -1968,7 +2057,7 @@ async def blinkx2():
         led.value(1)
         sleep_ms(50)
         led.value(0)
-        await asyncio.sleep_ms(1000)
+        await asyncio.sleep_ms(850)     # adjust so I get a 1 second blink
 
 async def do_main_loop():
     global event_time, ev_log, steady_state, housetank, system, op_mode
