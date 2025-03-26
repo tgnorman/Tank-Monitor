@@ -115,7 +115,7 @@ report_outage       = True          # do I report next power outage?
 sys_start_time      = 0             # for uptime report
 kpa_sensor_armed    = True          # set to True if pressure sensor is detected  
 
-SW_VERSION          = "24/3/25"       # for display
+SW_VERSION          = "26/3/25"       # for display
 
 # Gather all tank-related stuff with a view to making a class...
 housetank           = Tank("Empty")                     # make my tank object
@@ -584,7 +584,11 @@ def display_pressure():
 
 def my_go_back():
     # print(f'Length:{len(navigator.current_level)}\n{navigator.current_level=}')
-    navigator.go_back()
+    navmode = navigator.mode
+    if navmode == "menu":
+        exit_menu()
+    else:
+        navigator.go_back()
                
 def show_events():
     navigator.mode = "view_events"
@@ -983,6 +987,14 @@ def nav_up_cb(pin):
     if (new_time - nav_btn_last_time) > DEBOUNCE_BUTTON:
         nav_btn_state = True
         print("U", end="")
+        navmode = navigator.mode
+        if navmode == "menu":
+            exit_menu()
+        elif navmode == "value_change":
+            if len(navigator.current_level) > 1:
+                navigator.go_back()       # this is the up button
+        elif navmode == "view_files":
+            navigator.goto_first()
         if len(navigator.current_level) > 1:
             navigator.go_back()       # this is the up button
     nav_btn_last_time = new_time
@@ -994,7 +1006,13 @@ def nav_dn_cb(pin):
     if (new_time - nav_btn_last_time) > DEBOUNCE_BUTTON:
         nav_btn_state = True
         print("D", end="")
-        navigator.enter()   # this is the down button   
+        navmode = navigator.mode
+        if navmode == "menu":
+            navigator.enter()   # this is the down button   
+        elif navmode == "value_change":
+            navigator.set_default()
+        elif navmode == "view_files":
+            navigator.goto_last()
     nav_btn_last_time = new_time
 
 def nav_sel_cb(pin):
@@ -1004,7 +1022,16 @@ def nav_sel_cb(pin):
     if (new_time - nav_btn_last_time) > DEBOUNCE_BUTTON:
         nav_btn_state = True
         print("S", end="")
-        navigator.set()     # this is the select button
+        navmode = navigator.mode
+        if navmode == "menu":
+            navigator.enter()
+        elif navmode == "value_change":
+            navigator.set()     # this is the select button
+        else:
+            navigator.go_back()
+            # print("Ignoring OK press")
+            # lcd.setCursor(0,1)
+            # lcd.printout("Not in edit mode")
     nav_btn_last_time = new_time
 
 def nav_L_cb(pin):
@@ -1778,6 +1805,30 @@ def free_space()->int:
     # Free space in bytes
     free_space_kb = free_blocks * block_size / 1024
     return free_space_kb
+
+def do_enter_process():
+    lcd_on()                        # but set no OFF timer...stay on until I exit menu 
+    # navmode = navigator.mode
+
+    if ui_mode == UI_MODE_MENU:
+        navmode = navigator.mode
+        if navmode == "menu":
+            navigator.enter()
+        elif navmode == "value_change":
+            navigator.set()
+        elif "view" in navmode:        # careful... if more modes are added, ensure they contain "view"
+            navigator.go_back()
+    elif ui_mode == UI_MODE_NORM:
+        Change_Mode(UI_MODE_MENU)
+        # ui_mode = UI_MODE_MENU
+        navigator.go_to_first()
+        navigator.display_current_item()
+    else:
+        print(f'Huh? {ui_mode=}')
+
+    if ui_mode == UI_MODE_NORM:
+        Change_Mode(UI_MODE_MENU)
+
 # def sim_pressure_pump_detect(x)->bool:            # to be hacked when I connect the CT circuit
 #     p = random.random()
 
@@ -1986,51 +2037,8 @@ async def check_rotary_state(menu_sleep:int)->None:
     global ui_mode, encoder_count, encoder_btn_state, nav_btn_state
     while True:
         if encoder_btn_state:               # button pressed
-            lcd_on()                        # but set no OFF timer...stay on until I exit menu
-            navmode = navigator.mode
-
-            if ui_mode == UI_MODE_MENU:
-                navmode = navigator.mode
-                if navmode == "menu":
-                    navigator.enter()
-                elif navmode == "value_change":
-                    navigator.set()
-                elif "view" in navmode:        # careful... if more modes are added, ensure they contain "view"
-                    navigator.go_back()
-            elif ui_mode == UI_MODE_NORM:
-                Change_Mode(UI_MODE_MENU)
-                # ui_mode = UI_MODE_MENU
-                navigator.go_to_first()
-                navigator.display_current_item()
-            else:
-                print(f'Huh? {ui_mode=}')
-
+            do_enter_process()
             encoder_btn_state = False
-
-        if nav_btn_state:               # button pressed
-            lcd_on()                        # but set no OFF timer...stay on until I exit menu 
-            # navmode = navigator.mode
-
-            # if ui_mode == UI_MODE_MENU:
-            #     navmode = navigator.mode
-            #     if navmode == "menu":
-            #         navigator.enter()
-            #     elif navmode == "value_change":
-            #         navigator.set()
-            #     elif "view" in navmode:        # careful... if more modes are added, ensure they contain "view"
-            #         navigator.go_back()
-            # elif ui_mode == UI_MODE_NORM:
-            #     Change_Mode(UI_MODE_MENU)
-            #     # ui_mode = UI_MODE_MENU
-            #     navigator.go_to_first()
-            #     navigator.display_current_item()
-            # else:
-            #     print(f'Huh? {ui_mode=}')
-
-            if ui_mode == UI_MODE_NORM:
-                Change_Mode(UI_MODE_MENU)
-
-            nav_btn_state = False
 
         if encoder_count != 0:
             if encoder_count > 0:
