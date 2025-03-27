@@ -23,6 +23,8 @@ class MenuNavigator:
         self.program_index = 0
         self.filelist = None
         self.file_index = 0
+        self.kpalist = None
+        self.kpa_index = 0
         self.display_current_item()
 
     # def get_current_item(self):
@@ -44,6 +46,7 @@ class MenuNavigator:
 #        print(f"Current Item: {item['title']}")
 
     def next(self):
+        print(f"In NEXT, {self.mode=}")
         if self.mode == "menu":
             # menu_len = len(self.current_level[-1]["items"])
             # if self.current_index < len(self.current_level[-1]["items"]) - 1:
@@ -115,8 +118,13 @@ class MenuNavigator:
             self.device.printout(f'{datestamp:<16}')
             self.device.setCursor(0, 1)
             self.device.printout(f'{log_txt:<16}')
+        else:
+            print(f"In NEXT, {self.mode=}")
+            self.device.setCursor(0, 1)
+            self.device.printout(f'{self.mode=}')
 
     def previous(self):
+        print(f'In PREV, {self.mode=}')
         if self.mode == "menu":
             # menu_len = len(self.current_level[-1]["items"])
             # if self.current_index < len(self.current_level[-1]["items"]) - 1:
@@ -188,6 +196,10 @@ class MenuNavigator:
             self.device.printout(f'{datestamp:<16}')
             self.device.setCursor(0, 1)
             self.device.printout(f'{log_txt:<16}')
+        else:
+            print(f"In PREV, {self.mode=}")
+            self.device.setCursor(0, 1)
+            self.device.printout(f'{self.mode=}')
     
     def go_back(self):
         if len(self.current_level) > 1:
@@ -260,7 +272,7 @@ class MenuNavigator:
 
     def goto_position(self, first=True):
         if "view_" in self.mode:  #self.mode == "view_events" or self.mode == "view_switch":
-            # print(f'In PREV {self.mode=}')
+            print(f'In goto_position {self.mode=}, {first=}')
             if self.mode == "view_events":
                 if self.eventlist is not None:
                     if len(self.eventlist) > 0:
@@ -319,7 +331,7 @@ class MenuNavigator:
 
     def goto_first(self):
         self.goto_position(True)
-        
+
     def goto_last(self):
         self.goto_position(False)
 
@@ -339,5 +351,10 @@ class MenuNavigator:
             del self.filelist           # clean up old stuff...
         self.filelist = mylist
 
+    def set_kpa_list(self, mylist):
+        if self.kpalist is not None:
+            del self.kpalist           # clean up old stuff...  
+        self.kpalist = mylist
+        
     def go_to_first(self):
         self.current_index = 0

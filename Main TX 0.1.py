@@ -994,6 +994,7 @@ def nav_up_cb(pin):
             if len(navigator.current_level) > 1:
                 navigator.go_back()       # this is the up button
         elif navmode == "view_files":
+            print("--> goto first")
             navigator.goto_first()
         if len(navigator.current_level) > 1:
             navigator.go_back()       # this is the up button
@@ -1010,8 +1011,10 @@ def nav_dn_cb(pin):
         if navmode == "menu":
             navigator.enter()   # this is the down button   
         elif navmode == "value_change":
+            print("--> set_default")
             navigator.set_default()
         elif navmode == "view_files":
+            print("--> goto last")
             navigator.goto_last()
     nav_btn_last_time = new_time
 
@@ -1022,16 +1025,23 @@ def nav_sel_cb(pin):
     if (new_time - nav_btn_last_time) > DEBOUNCE_BUTTON:
         nav_btn_state = True
         print("S", end="")
-        navmode = navigator.mode
-        if navmode == "menu":
-            navigator.enter()
-        elif navmode == "value_change":
-            navigator.set()     # this is the select button
-        else:
-            navigator.go_back()
+        if ui_mode == UI_MODE_MENU:
+            navmode = navigator.mode
+            if navmode == "menu":
+                navigator.enter()
+            elif navmode == "value_change":
+                navigator.set()     # this is the select button
+            else:
+                navigator.go_back()
             # print("Ignoring OK press")
             # lcd.setCursor(0,1)
             # lcd.printout("Not in edit mode")
+        elif ui_mode == UI_MODE_NORM:
+            Change_Mode(UI_MODE_MENU)
+            navigator.go_to_first()
+            navigator.display_current_item()
+        else:
+            print(f'Huh? {ui_mode=}')         
     nav_btn_last_time = new_time
 
 def nav_L_cb(pin):
@@ -1726,6 +1736,7 @@ def init_all():
     navigator.set_event_list(eventring)
     navigator.set_switch_list(switchring)
     navigator.set_program_list(program_list)
+    navigator.set_kpa_list(kparing)
 
     free_space_KB = free_space()
     if free_space_KB < FREE_SPACE_LOWATER:
