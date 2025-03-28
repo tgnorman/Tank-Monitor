@@ -11,6 +11,7 @@ import ntptime
 import gc
 import micropython
 import network
+import sys
 from utime import sleep, ticks_us, ticks_diff
 from PiicoDev_Unified import sleep_ms
 from PiicoDev_VL53L1X import PiicoDev_VL53L1X
@@ -65,7 +66,7 @@ VDIV_Ratio          = VDIV_R2/(VDIV_R1 + VDIV_R2)
 
 #All menu-CONFIGURABLE parameters
 mydelay             = 15            # seconds, main loop period
-LCD_ON_TIME         = 45            # seconds
+LCD_ON_TIME         = 15            # seconds
 Min_Dist            = 500           # full
 Max_Dist            = 1400          # empty
 MAX_LINE_PRESSURE   = 700           # TBC... but this seems about right
@@ -138,7 +139,7 @@ bp_pressure         = ADC(0)                            # read line pressure
 # add buttons for 5-way nav control
 nav_up 	            = Pin(10, Pin.IN, Pin.PULL_UP)		# UP button
 nav_dn 	            = Pin(11, Pin.IN, Pin.PULL_UP)		# DOWN button  
-nav_sel             = Pin(7,  Pin.IN, Pin.PULL_UP)		# SELECT button
+nav_OK              = Pin(7,  Pin.IN, Pin.PULL_UP)		# SELECT button
 nav_L               = Pin(12, Pin.IN, Pin.PULL_UP)		# LEFT button
 nav_R               = Pin(13, Pin.IN, Pin.PULL_UP)		# RIGHT button  
 
@@ -198,6 +199,13 @@ PRESSURE_THRESHOLDS = [0, 15, 25, 290, 390, 480, 500, 600]  # Ascending order
 PRESSURE_CATEGORIES = [P0, P1, P2, P3, P4, P5, P6, P7, P8]
 KPA_AVERAGE_COUNT   = 3
 average_kpa         = 0
+
+# Code Review suggestions to avoid race conditions
+depth_lock          = asyncio.Lock()
+lcd_flag_lock       = asyncio.Lock()
+pressure_lock       = asyncio.Lock()
+email_queue_lock    = asyncio.Lock()
+enc_btn_lock        = asyncio.Lock()
 
 def get_pressure_category(pressure: int) -> str:
     """Map pressure value to category using linear search"""
@@ -521,11 +529,20 @@ def start_irrigation_schedule():
 # methods invoked from menu
 def Change_Mode(newmode)-> None:
     global ui_mode
+
+    # print("Change_Mode Stack trace:")
+    # try:
+    #     raise Exception("StackTrace")
+    # except Exception as e:
+    #     sys.print_exception(e)      # type: ignore
+    
     if newmode == UI_MODE_MENU:
         ui_mode = UI_MODE_MENU
+        # print(f"Change_Mode: going to MENU mode {ui_mode=}")
         lcd.setRGB(240, 30, 240)
     elif newmode == UI_MODE_NORM:
         ui_mode = UI_MODE_NORM
+        # print(f"Change_Mode: Exiting MENU mode {ui_mode=}")
         lcd.setRGB(170,170,138)
     else:
         print(f"Change_Mode: Unknown mode {newmode}")
@@ -539,6 +556,7 @@ def exit_menu():                      # exit from MENU mode
     update_timer_params()
     Change_Mode(UI_MODE_NORM)
     # ui_mode = UI_MODE_NORM
+    # print(f"Exiting menu...lcd_off in {config_dict['LCD']} seconds")
     tim=Timer(period=config_dict["LCD"] * 1000, mode=Timer.ONE_SHOT, callback=lcd_off)
 
 def cancel_program()->None:
@@ -684,6 +702,10 @@ def show_dir():
 
     navigator.set_file_list(filelist)
     navigator.mode = "view_files"
+    navigator.next()
+    navigator.previous()                # kludge to show first entry
+
+    # print(f'File list: {filelist}')   
 
     # for f in uos.ilistdir():
     #     fn = f[0]
@@ -961,6 +983,9 @@ def encoder_btn_IRQ(pin):
     new_time = utime.ticks_ms()
     if (new_time - enc_btn_last_time) > DEBOUNCE_BUTTON:
         encoder_btn_state = True
+        # print("*", end="")
+    # else:
+    #     print("0", end="")
     enc_btn_last_time = new_time
 
 navigator   = MenuNavigator(new_menu, lcd)
@@ -986,7 +1011,7 @@ def nav_up_cb(pin):
     new_time = utime.ticks_ms()
     if (new_time - nav_btn_last_time) > DEBOUNCE_BUTTON:
         nav_btn_state = True
-        print("U", end="")
+        # print("U", end="")
         navmode = navigator.mode
         if navmode == "menu":
             exit_menu()
@@ -994,10 +1019,9 @@ def nav_up_cb(pin):
             if len(navigator.current_level) > 1:
                 navigator.go_back()       # this is the up button
         elif navmode == "view_files":
-            print("--> goto first")
+            # print("--> goto first")
             navigator.goto_first()
-        if len(navigator.current_level) > 1:
-            navigator.go_back()       # this is the up button
+
     nav_btn_last_time = new_time
 
 def nav_dn_cb(pin):
@@ -1006,25 +1030,25 @@ def nav_dn_cb(pin):
     new_time = utime.ticks_ms()
     if (new_time - nav_btn_last_time) > DEBOUNCE_BUTTON:
         nav_btn_state = True
-        print("D", end="")
+        # print("D", end="")
         navmode = navigator.mode
         if navmode == "menu":
             navigator.enter()   # this is the down button   
         elif navmode == "value_change":
-            print("--> set_default")
+            # print("--> set_default")
             navigator.set_default()
         elif navmode == "view_files":
-            print("--> goto last")
+            # print("--> goto last")
             navigator.goto_last()
     nav_btn_last_time = new_time
 
-def nav_sel_cb(pin):
+def nav_OK_cb(pin):
     global nav_btn_state, nav_btn_last_time
 
     new_time = utime.ticks_ms()
     if (new_time - nav_btn_last_time) > DEBOUNCE_BUTTON:
         nav_btn_state = True
-        print("S", end="")
+        # print("S", end="")
         if ui_mode == UI_MODE_MENU:
             navmode = navigator.mode
             if navmode == "menu":
@@ -1050,7 +1074,7 @@ def nav_L_cb(pin):
     new_time = utime.ticks_ms()
     if (new_time - nav_btn_last_time) > DEBOUNCE_BUTTON:
         nav_btn_state = True
-        print("L", end="")
+        # print("L", end="")
         navigator.previous()    # this is the back button
     nav_btn_last_time = new_time
 
@@ -1059,11 +1083,10 @@ def nav_R_cb(pin):
 
     new_time = utime.ticks_ms()
     if (new_time - nav_btn_last_time) > DEBOUNCE_BUTTON:
-        print("R", end="")  
+        # print("R", end="")
         nav_btn_state = True
         navigator.next()      # this is the enter button
     nav_btn_last_time = new_time
-        
 
 def enable_controls():
     
@@ -1073,11 +1096,11 @@ def enable_controls():
     enc_a.irq(trigger=Pin.IRQ_RISING, handler=encoder_a_IRQ)
     enc_btn.irq(trigger=Pin.IRQ_FALLING, handler=encoder_btn_IRQ)
 
-    lcdbtn.irq(trigger=Pin.IRQ_RISING, handler=lcdbtn_new)
+    lcdbtn.irq(trigger=Pin.IRQ_FALLING, handler=lcdbtn_new)
 
     nav_up.irq(trigger=Pin.IRQ_FALLING, handler=nav_up_cb)
     nav_dn.irq(trigger=Pin.IRQ_FALLING, handler=nav_dn_cb)
-    nav_sel.irq(trigger=Pin.IRQ_FALLING, handler=nav_sel_cb)
+    nav_OK.irq(trigger=Pin.IRQ_FALLING, handler=nav_OK_cb)
     nav_L.irq(trigger=Pin.IRQ_FALLING, handler=nav_L_cb)
     nav_R.irq(trigger=Pin.IRQ_FALLING, handler=nav_R_cb)
 
@@ -1094,6 +1117,12 @@ def lcdbtn_pressed(x):          # my lcd button ISR
     sleep_ms(300)
 
 def lcd_off(x):
+    # print(f'in lcd_off {ui_mode=}, called from timer={x}')
+    # print("Stack trace:")
+    # try:
+    #     raise Exception("Trace")
+    # except Exception as e:
+    #     sys.print_exception(e)      # type: ignore
     if ui_mode != UI_MODE_MENU:
         lcd.setRGB(0,0,0)
 
@@ -1106,12 +1135,21 @@ def lcd_on():
 async def check_lcd_btn():
     global lcdbtnflag
     while True:
-        if lcdbtnflag:
-            lcd_on()    # turn on, and...
-            if ui_mode != UI_MODE_MENU:                 # don't set timer for OFF in MENU
-                # print(f'Setting LCD timer for {config_dict["LCD"]} seconds')
-                tim=Timer(period=config_dict["LCD"] * 1000, mode=Timer.ONE_SHOT, callback=lcd_off)
-            lcdbtnflag = False
+        # async with lcd_flag_lock:  # type: ignore
+        #     if lcdbtnflag:
+        #         lcd_on()
+        #         if ui_mode != UI_MODE_MENU:
+        #             tim=Timer(period=config_dict["LCD"] * 1000, mode=Timer.ONE_SHOT, callback=lcd_off)
+        #         lcdbtnflag = False
+        await lcd_flag_lock.acquire()   # type: ignore
+        try:
+            if lcdbtnflag:
+                lcd_on()    # turn on, and...
+                if ui_mode != UI_MODE_MENU:                 # don't set timer for OFF in MENU
+                    tim=Timer(period=config_dict["LCD"] * 1000, mode=Timer.ONE_SHOT, callback=lcd_off)
+                lcdbtnflag = False
+        finally:
+            lcd_flag_lock.release()
         await asyncio.sleep(0.5)
 # endregion
 # region UNUSED methods
@@ -1156,7 +1194,7 @@ def get_fill_state(d):
     return tmp
 
 def calc_ROC_SMA()-> float:
-    sum = 0
+    sum = 0.0
     n = 0
     for dval in ringbuf:
         if dval > 0:
@@ -1693,7 +1731,7 @@ def init_ringbuffers():
     eventindex  = 0
     switchring  = [tuple()]
     switchindex = 0
-    kparing = [0 for _ in range(PRESSURERINGSIZE)]
+    kparing     = [0 for _ in range(PRESSURERINGSIZE)]
     kpaindex    = 0
 
 def init_all():
@@ -1830,6 +1868,7 @@ def do_enter_process():
         elif "view" in navmode:        # careful... if more modes are added, ensure they contain "view"
             navigator.go_back()
     elif ui_mode == UI_MODE_NORM:
+        # print("in do_enter_process: Entering MENU mode")
         Change_Mode(UI_MODE_MENU)
         # ui_mode = UI_MODE_MENU
         navigator.go_to_first()
@@ -1837,8 +1876,8 @@ def do_enter_process():
     else:
         print(f'Huh? {ui_mode=}')
 
-    if ui_mode == UI_MODE_NORM:
-        Change_Mode(UI_MODE_MENU)
+    # if ui_mode == UI_MODE_NORM:
+    #     Change_Mode(UI_MODE_MENU)
 
 # def sim_pressure_pump_detect(x)->bool:            # to be hacked when I connect the CT circuit
 #     p = random.random()
@@ -2047,9 +2086,11 @@ async def processemail_queue():
 async def check_rotary_state(menu_sleep:int)->None:
     global ui_mode, encoder_count, encoder_btn_state, nav_btn_state
     while True:
-        if encoder_btn_state:               # button pressed
-            do_enter_process()
-            encoder_btn_state = False
+        async with enc_btn_lock:    # type: ignore
+
+            if encoder_btn_state:               # button pressed
+                do_enter_process()
+                encoder_btn_state = False
 
         if encoder_count != 0:
             if encoder_count > 0:

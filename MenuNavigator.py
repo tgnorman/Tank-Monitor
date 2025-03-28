@@ -46,7 +46,7 @@ class MenuNavigator:
 #        print(f"Current Item: {item['title']}")
 
     def next(self):
-        print(f"In NEXT, {self.mode=}")
+        # print(f"In NEXT, {self.mode=}")
         if self.mode == "menu":
             # menu_len = len(self.current_level[-1]["items"])
             # if self.current_index < len(self.current_level[-1]["items"]) - 1:
@@ -57,7 +57,7 @@ class MenuNavigator:
             self.display_current_item()
         elif self.mode == "value_change":
             item = self.get_current_item()
-            print(f'In NEXT, item is {item}')
+            # print(f'In NEXT, item is {item}')
             # if item['value']['W_V'] == 0:
             # if self.new_value == 0:
             #     print("Setting new_value to default...")
@@ -65,7 +65,7 @@ class MenuNavigator:
             step = item['value']['Step']
 # no if neeed for inc...            
             self.new_value += step
-            print(f'In NEXT self.new_value is {self.new_value}')
+            # print(f'In NEXT self.new_value is {self.new_value}')
             self.device.setCursor(0, 1)
             self.device.printout(str(self.new_value) + "      ")
         elif "view_" in self.mode: #self.mode == "view_events" or self.mode == "view_switch":
@@ -119,12 +119,12 @@ class MenuNavigator:
             self.device.setCursor(0, 1)
             self.device.printout(f'{log_txt:<16}')
         else:
-            print(f"In NEXT, {self.mode=}")
+            # print(f"In NEXT, {self.mode=}")
             self.device.setCursor(0, 1)
             self.device.printout(f'{self.mode=}')
 
     def previous(self):
-        print(f'In PREV, {self.mode=}')
+        # print(f'In PREV, {self.mode=}')
         if self.mode == "menu":
             # menu_len = len(self.current_level[-1]["items"])
             # if self.current_index < len(self.current_level[-1]["items"]) - 1:
@@ -135,7 +135,7 @@ class MenuNavigator:
             self.display_current_item()
         elif self.mode == "value_change":
             item = self.get_current_item()
-            print(f'In PREV, item is {item}')
+            # print(f'In PREV, item is {item}')
             # if item['value']['W_V'] == 0:
             # if self.new_value == 0:
             #     print("Setting new_value to default...")
@@ -143,7 +143,7 @@ class MenuNavigator:
             step = item['value']['Step']
             if self.new_value >= step:
                 self.new_value -= step
-                print(f'In PREV self.new_value is {self.new_value}')
+                # print(f'In PREV self.new_value is {self.new_value}')
                 self.device.setCursor(0, 1)
                 self.device.printout(str(self.new_value) + "      ")
         elif "view_" in self.mode:  #self.mode == "view_events" or self.mode == "view_switch":
@@ -197,7 +197,7 @@ class MenuNavigator:
             self.device.setCursor(0, 1)
             self.device.printout(f'{log_txt:<16}')
         else:
-            print(f"In PREV, {self.mode=}")
+            # print(f"In PREV, {self.mode=}")
             self.device.setCursor(0, 1)
             self.device.printout(f'{self.mode=}')
     
@@ -240,7 +240,7 @@ class MenuNavigator:
             param = item['title']
             val = item['value']
             self.new_value = item['value']['W_V']
-            print(f'In ENTER {param} = {val}')
+            # print(f'In ENTER {param} = {val}')
         else:
             print(f"Unknown type in item... check menu def.  {item}")
     
@@ -251,28 +251,31 @@ class MenuNavigator:
 #        param = item['title']
 #        val = self.new_value
 #        print(f'New {param} = {val}')
-        print(f'In SET before change, item is: {item}')
+        # print(f'In SET before change, item is: {item}')
         if item['value']['W_V'] !=  self.new_value and self.new_value > 0:
             item['value']['W_V'] =  self.new_value
-            print(f"In SET, updated Working Value to {self.new_value}")
+            # print(f"In SET, updated Working Value to {self.new_value}")
+            self.device.setCursor(0, 1)
+            self.device.printout(f'Set {str(self.new_value):<12}')   
         # print(f'In SET after  change, item is: {item}')
 
         self.new_value = 0          # reset this, or we copy previous remnant value
         self.mode = "menu"
 
     def set_default(self):
-        print("Setting default value")
+        # print("Setting default value")
         item = self.get_current_item()
         def_val = item['value']['D_V']
         item['value']['W_V'] = def_val
-        print(f"Default value set to {def_val}")
-        
+        print(f"Value set to Default: {def_val}")
+        self.device.setCursor(0, 1)
+        self.device.printout(f'Set {str(def_val):<12}')       
         self.new_value = 0          # reset this, or we copy previous remnant value
         self.mode = "menu"
 
     def goto_position(self, first=True):
         if "view_" in self.mode:  #self.mode == "view_events" or self.mode == "view_switch":
-            print(f'In goto_position {self.mode=}, {first=}')
+            # print(f'In goto_position {self.mode=}, {first=}')
             if self.mode == "view_events":
                 if self.eventlist is not None:
                     if len(self.eventlist) > 0:
@@ -299,7 +302,7 @@ class MenuNavigator:
                         prog_wait = self.programlist[self.program_index][1]["off"]
                         prog_str = f'Run {prog_duration} Off {prog_wait}'
                         hist_str = tuple((prog_name, prog_str))
-                    # print(f'In PREV {hist_str=}')
+                    # print(f'In goto_position {hist_str=}')
                 else:
                     hist_str = "Prog list: None"
             elif self.mode == "view_files":
@@ -355,6 +358,6 @@ class MenuNavigator:
         if self.kpalist is not None:
             del self.kpalist           # clean up old stuff...  
         self.kpalist = mylist
-        
+
     def go_to_first(self):
         self.current_index = 0
