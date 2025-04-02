@@ -1018,7 +1018,7 @@ def nav_up_cb(pin):
         elif navmode == "value_change":
             if len(navigator.current_level) > 1:
                 navigator.go_back()       # this is the up button
-        elif navmode == "view_files":
+        elif "view" in navmode:
             # print("--> goto first")
             navigator.goto_first()
 
@@ -1037,7 +1037,7 @@ def nav_dn_cb(pin):
         elif navmode == "value_change":
             # print("--> set_default")
             navigator.set_default()
-        elif navmode == "view_files":
+        elif "view" in navmode:
             # print("--> goto last")
             navigator.goto_last()
     nav_btn_last_time = new_time

@@ -30,7 +30,8 @@ DEBUGLVL    = 0                        # Multi-level debug for better analysis. 
 # region  initial declarations
 RADIO_PAUSE = 500
 LOOP_DELAY  = 400
-MAX_NON_COMM_PERIOD = 60            # maximum seconds allowed between heartbeats, turn pump off if exceeded.  FAIL-SAFE
+MAX_NON_COMM_PERIOD = 60                # maximum seconds allowed between heartbeats, turn pump off if exceeded.  FAIL-SAFE
+FLUSH_COUNT = 5 * 60 * 1000 / LOOP_DELAY  # flush logged data to flash every 5 minutes
 
 # OK, initialise control pins
 led 		= Pin('LED', Pin.OUT, value=0)
@@ -95,9 +96,12 @@ def switch_relay(state):
     if state:
         bore_ctl.value(1)			        # turn borepump ON to start
         led.value(1)
+        logstr = f"{display_time(secs_to_localtime(time.time()))} ON\n"
     else:
         bore_ctl.value(0)			        # turn borepump OFF to start
         led.value(0)
+        logstr = f"{display_time(secs_to_localtime(time.time()))} OFF\n"
+    event_log.write(logstr) 
     state_changed = pump_state != state     # definitive relay state change status
     pump_state = state			            # keep track of new state... for confirmation tests
 
@@ -235,6 +239,8 @@ def main():
   
     print("Listening for transmission...")
 
+    flush_counter = 0          # do regular flushes without needing an async task, or a timer, or a division
+
     try:
         while True:
             if radio.receive():
@@ -258,16 +264,12 @@ def main():
                     if message[0] == "OFF":
                         if pump_state:		        # pump is ON.. take action
                             switch_relay(False)
-                            logstr = f"OFF: Switching pump OFF at {display_time(secs_to_localtime(message[1]))}"
-                            event_log.write(logstr + "\n")
                             if DEBUGLVL > 0: print(logstr)
                         else:
                             if DEBUGLVL > 1: print("Ignoring OFF... already OFF")
                     elif message[0] == "ON":
                         if not pump_state:		    # pump is OFF.. take action
                             switch_relay(True)
-                            logstr = f"ON:  Switching pump ON  at {display_time(secs_to_localtime(message[1]))}"
-                            event_log.write(logstr + "\n")
                             if DEBUGLVL > 0: print(logstr)
                             last_ON_time = message[1]
                         else:
@@ -293,14 +295,22 @@ def main():
             if pump_state:
                 if DEBUGLVL > 1: print(f"Radio silence period: {radio_silence_secs} seconds")
                 if radio_silence_secs > MAX_NON_COMM_PERIOD:     # Houston, we have a problem...
-                    logstr = f"{display_time(secs_to_localtime(now))} Max radio silence period exceeded!  Switching pump OFF"
+                    logstr = f"{display_time(secs_to_localtime(now))} Max radio silence period exceeded!"
                     print(logstr)
                     event_log.write(logstr + "\n")
                     switch_relay(False)             # pump_state now OFF
                     state_changed = False       # effectively go to starting loop, waiting for incoming ON/OFF or whatever
                     if DEBUGLVL > 1: print("Resetting to initial state")
+            else:
+                led.toggle()        # blink LED to show we are alive and waiting for a message
 
             if DEBUGLVL > 1: print(".", end="")    
+            
+            flush_counter += 1
+            if flush_counter >= FLUSH_COUNT:	# do a flush every 5 minutes
+                event_log.flush()
+                flush_counter = 0
+            
             sleep_ms(LOOP_DELAY)		    # if we did NOT do implied sleep in confirm_state... delay a bit.
 
     except KeyboardInterrupt:
