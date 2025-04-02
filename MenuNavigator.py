@@ -1,6 +1,7 @@
 # This class assumes a menu containing entries with a title, possibly a list of sub-menu items, and items can have an action associated
 # The action, if a string, will just be printed (for debugging purposes), but if it is a callable function, it will be called
 
+# Added to git 30/3/2025
 from RGB1602 import RGB1602
 
 DEBUG = True
@@ -212,10 +213,12 @@ class MenuNavigator:
 #            print(f"Going back to previous menu level {len(self.current_level)}")
             self.display_current_item()
         else:
-            print("Already at the top-level menu.  This should not happen...")
+            # print("Already at the top-level menu.  This should not happen...")
+            print("Exiting nav menu")
             self.device.setCursor(0, 1)
-            self.device.printout("Cant go back")
-
+            self.device.printout("Exiting nav menu")
+            self.exit_nav_menu()            # exit menu nav, and call exit_menu() in the menu structure
+            
     def enter(self):
         item = self.get_current_item()
         if "items" in item:
@@ -257,10 +260,12 @@ class MenuNavigator:
             # print(f"In SET, updated Working Value to {self.new_value}")
             self.device.setCursor(0, 1)
             self.device.printout(f'Set {str(self.new_value):<12}')   
-        # print(f'In SET after  change, item is: {item}')
-
+        print(f'In SET after  change, item is: {item}')
+        self.device.setCursor(0, 1)
+        self.device.printout(f"Set to {str(self.new_value):<8}")
         self.new_value = 0          # reset this, or we copy previous remnant value
-        self.mode = "menu"
+        self.mode = "wait"          # wait for a 2nd press so that changed value is displayed before going back to menu
+        # self.go_back()              # go back to previous menu level
 
     def set_default(self):
         # print("Setting default value")
@@ -269,10 +274,14 @@ class MenuNavigator:
         item['value']['W_V'] = def_val
         print(f"Value set to Default: {def_val}")
         self.device.setCursor(0, 1)
-        self.device.printout(f'Set {str(def_val):<12}')       
+        self.device.printout(f"Set to {str(def_val):<8}")
         self.new_value = 0          # reset this, or we copy previous remnant value
-        self.mode = "menu"
+        self.mode = "wait"          # wait for a 2nd press so that changed value is displayed before going back to menu
+        # self.go_back()              # go back to previous menu level
 
+    # def cont_back(self)->None:
+    #     self.go_back()              # go back to previous menu level
+        
     def goto_position(self, first=True):
         if "view_" in self.mode:  #self.mode == "view_events" or self.mode == "view_switch":
             # print(f'In goto_position {self.mode=}, {first=}')
@@ -359,5 +368,18 @@ class MenuNavigator:
             del self.kpalist           # clean up old stuff...  
         self.kpalist = mylist
 
-    def go_to_first(self):
+    def go_to_start(self):
         self.current_index = 0
+
+    def exit_nav_menu(self)-> None:
+    # since I can't reference exit_menu(), but I have a reference to it in the final menu structure, find it, then call it
+        print("exit_nav_menu...")
+        self.device.clear()
+        self.device.setCursor(0, 0)
+        self.device.printout("Exiting menu...")
+        # time.sleep(1)
+        for item in self.menu["items"]:
+            if item['title'] == "Exit":     # BEWARE ... dependency on finding "Exit" in the menu structure
+                item['action']()
+                break
+

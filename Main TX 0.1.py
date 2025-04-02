@@ -1,4 +1,7 @@
 # Trev's super dooper Tank/Pump monitoring system
+
+# WTF...? 30/3/2025, getting errors on calls to Timer ???
+
 # region IMPORTS
 
 import RGB1602
@@ -16,7 +19,7 @@ from utime import sleep, ticks_us, ticks_diff
 from PiicoDev_Unified import sleep_ms
 from PiicoDev_VL53L1X import PiicoDev_VL53L1X
 from PiicoDev_Transceiver import PiicoDev_Transceiver
-from umachine import Timer, Pin, ADC, soft_reset # Import Pin
+from umachine import Timer, Pin, ADC, soft_reset, I2C # Import Pin
 from Pump import Pump               # get our Pump class
 from Tank import Tank
 from secrets import MyWiFi
@@ -24,6 +27,8 @@ from MenuNavigator import MenuNavigator
 # from encoder import Encoder
 from ubinascii import b2a_base64 as b64
 from SM_SimpleFSM import SimpleDevice
+from lcd_api import LcdApi
+from i2c_lcd import I2cLcd
 
 # endregion
 # region INITIALISE
@@ -66,7 +71,7 @@ VDIV_Ratio          = VDIV_R2/(VDIV_R1 + VDIV_R2)
 
 #All menu-CONFIGURABLE parameters
 mydelay             = 15            # seconds, main loop period
-LCD_ON_TIME         = 15            # seconds
+LCD_ON_TIME         = 25            # seconds
 Min_Dist            = 500           # full
 Max_Dist            = 1400          # empty
 MAX_LINE_PRESSURE   = 700           # TBC... but this seems about right
@@ -152,7 +157,13 @@ enc_b               = Pin(20, Pin.IN)
 # py                  = Pin(19, Pin.IN, Pin.PULL_UP)
 last_time           = 0
 count               = 0
+# new 2004 LCD...
+I2C_ADDR     = 0x27
+I2C_NUM_ROWS = 4
+I2C_NUM_COLS = 20
 
+i2c = I2C(0, sda=Pin(8), scl=Pin(9), freq=400000)
+lcd4x20 = I2cLcd(i2c, I2C_ADDR, I2C_NUM_ROWS, I2C_NUM_COLS)
 system              = SimpleDevice()                    # initialise my FSM.
 wf                  = MyWiFi()
 
@@ -550,6 +561,7 @@ def Change_Mode(newmode)-> None:
 def exit_menu():                      # exit from MENU mode
     global ui_mode
     # process_menu = False
+    print("exit_menu(): Exiting menu mode")
     lcd.setCursor(0,1)
     lcd.printout(f'{"Exit & Update":<16}')
     update_config()
@@ -955,7 +967,7 @@ new_menu = {
         ]
       },
     {
-        "title": "5 Exit", "action": exit_menu
+        "title": "Exit", "action": exit_menu
     }
     ]
 }
@@ -1011,17 +1023,18 @@ def nav_up_cb(pin):
     new_time = utime.ticks_ms()
     if (new_time - nav_btn_last_time) > DEBOUNCE_BUTTON:
         nav_btn_state = True
-        # print("U", end="")
-        navmode = navigator.mode
-        if navmode == "menu":
-            exit_menu()
-        elif navmode == "value_change":
-            if len(navigator.current_level) > 1:
-                navigator.go_back()       # this is the up button
-        elif "view" in navmode:
-            # print("--> goto first")
-            navigator.goto_first()
-
+        print("U", end="")
+        # navmode = navigator.mode
+        # if navmode == "menu":
+        #     exit_menu()
+        # elif navmode == "value_change":
+        #     if len(navigator.current_level) > 1:
+        #         navigator.go_back()       # this is the up button
+        # elif "view" in navmode:
+        #     # print("--> goto first")
+        #     navigator.goto_first()
+        navigator.go_back()       # this is the up button... ALWAYS goes up a level
+        DisplayDebug()
     nav_btn_last_time = new_time
 
 def nav_dn_cb(pin):
@@ -1030,7 +1043,7 @@ def nav_dn_cb(pin):
     new_time = utime.ticks_ms()
     if (new_time - nav_btn_last_time) > DEBOUNCE_BUTTON:
         nav_btn_state = True
-        # print("D", end="")
+        print("D", end="")
         navmode = navigator.mode
         if navmode == "menu":
             navigator.enter()   # this is the down button   
@@ -1040,6 +1053,7 @@ def nav_dn_cb(pin):
         elif "view" in navmode:
             # print("--> goto last")
             navigator.goto_last()
+        DisplayDebug()
     nav_btn_last_time = new_time
 
 def nav_OK_cb(pin):
@@ -1048,24 +1062,27 @@ def nav_OK_cb(pin):
     new_time = utime.ticks_ms()
     if (new_time - nav_btn_last_time) > DEBOUNCE_BUTTON:
         nav_btn_state = True
-        # print("S", end="")
+        print("S", end="")
         if ui_mode == UI_MODE_MENU:
             navmode = navigator.mode
             if navmode == "menu":
-                navigator.enter()
+                exit_menu()
             elif navmode == "value_change":
                 navigator.set()     # this is the select button
-            else:
+            elif navmode == "wait":
                 navigator.go_back()
+            else:
+                navigator.goto_first()
             # print("Ignoring OK press")
             # lcd.setCursor(0,1)
             # lcd.printout("Not in edit mode")
         elif ui_mode == UI_MODE_NORM:
             Change_Mode(UI_MODE_MENU)
-            navigator.go_to_first()
+            navigator.go_to_start()
             navigator.display_current_item()
         else:
-            print(f'Huh? {ui_mode=}')         
+            print(f'Huh? {ui_mode=}')
+        DisplayDebug()
     nav_btn_last_time = new_time
 
 def nav_L_cb(pin):
@@ -1074,8 +1091,10 @@ def nav_L_cb(pin):
     new_time = utime.ticks_ms()
     if (new_time - nav_btn_last_time) > DEBOUNCE_BUTTON:
         nav_btn_state = True
-        # print("L", end="")
+        print("L", end="")
         navigator.previous()    # this is the back button
+    DisplayDebug()
+
     nav_btn_last_time = new_time
 
 def nav_R_cb(pin):
@@ -1083,9 +1102,11 @@ def nav_R_cb(pin):
 
     new_time = utime.ticks_ms()
     if (new_time - nav_btn_last_time) > DEBOUNCE_BUTTON:
-        # print("R", end="")
         nav_btn_state = True
+        print("R", end="")
         navigator.next()      # this is the enter button
+    DisplayDebug()
+    
     nav_btn_last_time = new_time
 
 def enable_controls():
@@ -1125,12 +1146,14 @@ def lcd_off(x):
     #     sys.print_exception(e)      # type: ignore
     if ui_mode != UI_MODE_MENU:
         lcd.setRGB(0,0,0)
+        lcd4x20.backlight_off()
 
 def lcd_on():
     if ui_mode == UI_MODE_MENU:
         lcd.setRGB(240, 30, 240)
     else:
         lcd.setRGB(170,170,138)
+    lcd4x20.backlight_on()
 
 async def check_lcd_btn():
     global lcdbtnflag
@@ -1501,6 +1524,17 @@ def check_for_critical_states() -> None:
             raiseAlarm("RUNTIME EXCEEDED", run_minutes)
             borepump_OFF()
 
+def DisplayDebug()->None:
+
+    lcd4x20.move_to(0, 0)                # move to top left corner of LCD
+    lcd4x20.putstr(f"{display_time(secs_to_localtime(time.time()))}")             # print time in top left corner
+    lcd4x20.move_to(0, 1)                # move to second line of LCD
+    lcd4x20.putstr(f'ui: {ui_mode}  op: {op_mode}')        # print ui_mode in second line of LCD
+    lcd4x20.move_to(0, 2)                # move to third line of LCD
+    lcd4x20.putstr(f'navlvl:{len(navigator.current_level)}  navidx:{navigator.current_index}')        # print op_mode in third line of LCD
+    lcd4x20.move_to(0, 3)                # move to fourth line of LCD
+    lcd4x20.putstr(f'nav mode: {navigator.mode:<10}')        # print navigator.mode in fourth line of LCD
+
 def DisplayData()->None:
     if ui_mode != UI_MODE_MENU:             # suspend overwriting LCD whist in MENU
         lcd.clear()
@@ -1753,7 +1787,11 @@ def init_all():
     slist=[]
 
     Change_Mode(UI_MODE_NORM)
-    lcd_on()  
+    lcd_on()
+    lcd4x20.clear()
+    lcd4x20.display_on()
+    lcd4x20.backlight_on()
+
 # Get the current pump state and init my object    
     borepump = Pump("BorePump", get_initial_pump_state())
 
@@ -1871,7 +1909,7 @@ def do_enter_process():
         # print("in do_enter_process: Entering MENU mode")
         Change_Mode(UI_MODE_MENU)
         # ui_mode = UI_MODE_MENU
-        navigator.go_to_first()
+        navigator.go_to_start()
         navigator.display_current_item()
     else:
         print(f'Huh? {ui_mode=}')
@@ -2091,6 +2129,7 @@ async def check_rotary_state(menu_sleep:int)->None:
             if encoder_btn_state:               # button pressed
                 do_enter_process()
                 encoder_btn_state = False
+                DisplayDebug()
 
         if encoder_count != 0:
             if encoder_count > 0:
@@ -2105,6 +2144,7 @@ async def check_rotary_state(menu_sleep:int)->None:
                 while encoder_count < 0:
                     navigator.previous()
                     encoder_count += 1
+            DisplayDebug()
 
         await asyncio.sleep_ms(menu_sleep)
 
@@ -2201,6 +2241,7 @@ async def do_main_loop():
                 controlBorePump()		            # do nothing if in IRRIGATE mode
     #        listen_to_radio()		                # check for badness
             DisplayData()
+            DisplayDebug()		                # debug display... if needed
 # experimental...
             # if op_mode != OP_MODE_IRRIGATE and rec_num % LOG_FREQ == 0:
             if rec_num % LOG_FREQ == 0:           
@@ -2232,6 +2273,8 @@ def main() -> None:
     except KeyboardInterrupt:
         ui_mode = UI_MODE_NORM      # no point calling CHaneg... as I turn B/L off straight after anyway...
         lcd_off('')	                # turn off backlight
+        lcd4x20.backlight_off()
+        lcd4x20.display_off()
         print('\n### Program Interrupted by user')
         if op_mode == OP_MODE_IRRIGATE:
             cancel_program()
