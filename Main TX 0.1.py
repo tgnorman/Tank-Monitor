@@ -157,13 +157,14 @@ enc_b               = Pin(20, Pin.IN)
 # py                  = Pin(19, Pin.IN, Pin.PULL_UP)
 last_time           = 0
 count               = 0
-# new 2004 LCD...
-I2C_ADDR     = 0x27
-I2C_NUM_ROWS = 4
-I2C_NUM_COLS = 20
 
-i2c = I2C(0, sda=Pin(8), scl=Pin(9), freq=400000)
-lcd4x20 = I2cLcd(i2c, I2C_ADDR, I2C_NUM_ROWS, I2C_NUM_COLS)
+# new 2004 LCD...
+I2C_ADDR            = 0x27
+I2C_NUM_ROWS        = 4
+I2C_NUM_COLS        = 20
+i2c                 = I2C(0, sda=Pin(8), scl=Pin(9), freq=400000)
+lcd4x20             = I2cLcd(i2c, I2C_ADDR, I2C_NUM_ROWS, I2C_NUM_COLS)
+
 system              = SimpleDevice()                    # initialise my FSM.
 wf                  = MyWiFi()
 
@@ -567,6 +568,7 @@ def exit_menu():                      # exit from MENU mode
     update_config()
     update_timer_params()
     Change_Mode(UI_MODE_NORM)
+    DisplayDebug()
     # ui_mode = UI_MODE_NORM
     # print(f"Exiting menu...lcd_off in {config_dict['LCD']} seconds")
     tim=Timer(period=config_dict["LCD"] * 1000, mode=Timer.ONE_SHOT, callback=lcd_off)
@@ -677,7 +679,9 @@ def shutdown()->None:
     if presspump is not None: dump_pump_arg(presspump)
     dump_event_ring()
     tank_log.close()
+    ev_log.flush()
     ev_log.close()
+    pp_log.flush()
     pp_log.close()
 
 def send_tank_logs():
@@ -1138,7 +1142,7 @@ def lcdbtn_pressed(x):          # my lcd button ISR
     sleep_ms(300)
 
 def lcd_off(x):
-    # print(f'in lcd_off {ui_mode=}, called from timer={x}')
+    print(f'in lcd_off {ui_mode=}, called from timer={x}')
     # print("Stack trace:")
     # try:
     #     raise Exception("Trace")
@@ -1169,7 +1173,8 @@ async def check_lcd_btn():
             if lcdbtnflag:
                 lcd_on()    # turn on, and...
                 if ui_mode != UI_MODE_MENU:                 # don't set timer for OFF in MENU
-                    tim=Timer(period=config_dict["LCD"] * 1000, mode=Timer.ONE_SHOT, callback=lcd_off)
+                    # tim=Timer(period=config_dict["LCD"] * 1000, mode=Timer.ONE_SHOT, callback=lcd_off)
+                    lcdofftimer =Timer(id=1,period=config_dict["LCD"] * 1000, mode=Timer.ONE_SHOT, callback=lcd_off)
                 lcdbtnflag = False
         finally:
             lcd_flag_lock.release()
@@ -1448,7 +1453,7 @@ def add_to_switch_ring(msg:str):
 def dump_event_ring():                          # both rings are now tuples... (datestamp, msg)
 
     ev_len = len(eventring)
-    # print(f"Eventring has {ev_len} records")
+    print(f"Eventring has {ev_len} records")
     if ev_len > 0:
         if ev_len < EVENTRINGSIZE:
             for i in range(eventindex - 1, -1, -1):
@@ -1529,7 +1534,7 @@ def DisplayDebug()->None:
     lcd4x20.move_to(0, 0)                # move to top left corner of LCD
     lcd4x20.putstr(f"{display_time(secs_to_localtime(time.time()))}")             # print time in top left corner
     lcd4x20.move_to(0, 1)                # move to second line of LCD
-    lcd4x20.putstr(f'ui: {ui_mode}  op: {op_mode}')        # print ui_mode in second line of LCD
+    lcd4x20.putstr(f'ui: {"NORM" if ui_mode == UI_MODE_NORM else "MENU"}  op: {"AUTO" if op_mode==OP_MODE_AUTO else "IRRG"}')        # print ui_mode in second line of LCD
     lcd4x20.move_to(0, 2)                # move to third line of LCD
     lcd4x20.putstr(f'navlvl:{len(navigator.current_level)}  navidx:{navigator.current_index}')        # print op_mode in third line of LCD
     lcd4x20.move_to(0, 3)                # move to fourth line of LCD
@@ -1704,10 +1709,10 @@ def connect_wifi():
     print('Connected to:', wlan.ifconfig())
 
 def secs_to_localtime(s):
-    tupltime = time.localtime(s)
-    year = tupltime[0]
-    DST_end   = time.mktime((year, 4,(31-(int(5*year/4+4))%7),2,0,0,0,0,0)) #Time of April change to end DST
-    DST_start = time.mktime((year,10,(7-(int(year*5/4+4)) % 7),2,0,0,0,0,0)) #Time of October change to start DST
+    tupltime    = time.localtime(s)
+    year        = tupltime[0]
+    DST_end     = time.mktime((year, 4,(7-(int(5*year/4+4)) % 7),2,0,0,0,0,0)) # Time of April   change to end DST
+    DST_start   = time.mktime((year,10,(7-(int(year*5/4+5)) % 7),2,0,0,0,0,0)) # Time of October change to start DST
     
     if DST_end < s and s < DST_start:		# then adjust
 #        print("Winter ... adding 9.5 hours")
