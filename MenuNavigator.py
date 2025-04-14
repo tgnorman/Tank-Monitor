@@ -64,7 +64,7 @@ class MenuNavigator:
             #     print("Setting new_value to default...")
             #     self.new_value = item['value']['D_V']
             step = item['value']['Step']
-# no if neeed for inc...            
+# no if need for inc...            
             self.new_value += step
             # print(f'In NEXT self.new_value is {self.new_value}')
             self.device.setCursor(0, 1)
@@ -85,6 +85,16 @@ class MenuNavigator:
                         self.switch_index = (self.switch_index + 1) % len(self.switchlist)
                 else:
                     hist_str = "Switchlist: None"
+            elif self.mode == "view_kpa":
+                # print(f'In NEXT , view_kpa... {self.mode=}')
+                if self.kpalist is not None:
+                    # print(f'In NEXT {self.kpa_index=}')
+                    if len(self.kpalist) > 0:
+                        hist_str = self.kpalist[self.kpa_index]
+                        self.kpa_index = (self.kpa_index + 1) % len(self.kpalist)
+                else:
+                    print("In NEXT, kpalist is None")
+                    hist_str = "kPalist: None"
             elif self.mode == "view_program":
                 if self.programlist is not None:
                     if len(self.programlist) > 0:
@@ -119,6 +129,9 @@ class MenuNavigator:
             self.device.printout(f'{datestamp:<16}')
             self.device.setCursor(0, 1)
             self.device.printout(f'{log_txt:<16}')
+        elif self.mode == "wait":
+            # print(f'In NEXT, wait mode... {self.mode=}')
+            self.go_back()              # go back to previous menu level
         else:
             # print(f"In NEXT, {self.mode=}")
             self.device.setCursor(0, 1)
@@ -163,6 +176,13 @@ class MenuNavigator:
                         self.switch_index = (self.switch_index - 1) % len(self.switchlist)     # check if this is right
                 else:
                     hist_str = "Switchlist: None"
+            elif self.mode == "view_kpa":
+                if self.kpalist is not None:
+                    if len(self.kpalist) > 0:
+                        hist_str = self.kpalist[self.kpa_index]
+                        self.kpa_index = (self.kpa_index - 1) % len(self.kpalist)
+                else:
+                    hist_str = "kPalist: None"
             elif self.mode == "view_program":
                 if self.programlist is not None:
                     if len(self.programlist) > 0:
@@ -197,6 +217,9 @@ class MenuNavigator:
             self.device.printout(f'{datestamp:<16}')
             self.device.setCursor(0, 1)
             self.device.printout(f'{log_txt:<16}')
+        elif self.mode == "wait":
+            # print(f'In PREV, wait mode... {self.mode=}')
+            self.go_back()              # go back to previous menu level
         else:
             # print(f"In PREV, {self.mode=}")
             self.device.setCursor(0, 1)
@@ -214,7 +237,7 @@ class MenuNavigator:
             self.display_current_item()
         else:
             # print("Already at the top-level menu.  This should not happen...")
-            print("Exiting nav menu")
+            print("Exiting nav menu from go_back")
             self.device.setCursor(0, 1)
             self.device.printout("Exiting nav menu")
             self.exit_nav_menu()            # exit menu nav, and call exit_menu() in the menu structure
@@ -364,8 +387,8 @@ class MenuNavigator:
         self.filelist = mylist
 
     def set_kpa_list(self, mylist):
-        if self.kpalist is not None:
-            del self.kpalist           # clean up old stuff...  
+        # if self.kpalist is not None:
+        #     del self.kpalist           # clean up old stuff...  
         self.kpalist = mylist
 
     def go_to_start(self):
@@ -373,10 +396,13 @@ class MenuNavigator:
 
     def exit_nav_menu(self)-> None:
     # since I can't reference exit_menu(), but I have a reference to it in the final menu structure, find it, then call it
-        print("exit_nav_menu...")
+        print(f"exit_nav_menu...{self.current_index=}")
         self.device.clear()
         self.device.setCursor(0, 0)
         self.device.printout("Exiting menu...")
+
+        self.current_index = 0      # reset to top of menu.
+
         # time.sleep(1)
         for item in self.menu["items"]:
             if item['title'] == "Exit":     # BEWARE ... dependency on finding "Exit" in the menu structure
