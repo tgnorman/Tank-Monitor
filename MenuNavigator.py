@@ -283,7 +283,7 @@ class MenuNavigator:
             # print(f"In SET, updated Working Value to {self.new_value}")
             self.device.setCursor(0, 1)
             self.device.printout(f'Set {str(self.new_value):<12}')   
-        print(f'In SET after  change, item is: {item}')
+        # print(f'In SET after  change, item is: {item}')
         self.device.setCursor(0, 1)
         self.device.printout(f"Set to {str(self.new_value):<8}")
         self.new_value = 0          # reset this, or we copy previous remnant value
