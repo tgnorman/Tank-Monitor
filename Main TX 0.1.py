@@ -315,8 +315,8 @@ def update_config():
             # print(f"in update_config {param}: dict is {config_dict[param]} now is {new_working_value}")
             if new_working_value > 0 and config_dict[param] != new_working_value:
                 if param == LOGHFDATA:          # special case... we need to map 1 to 0 for False
-                    new_working_value = 1 if new_working_value > 2 else 0
-                    print(f"Updating {param} ... special case.  {new_working_value=}")
+                    new_working_value = 2 if new_working_value > 1 else 0       # do NOT set it to 1... next exit_menu will then convert the 1 to 0
+                    print(f"Updating {param} ... special case.  {new_working_value=}")      # which will turn off HF logging!
                 config_dict[param] = new_working_value
                 print(f'Updated config_dict {param} to {new_working_value}')
                 lcd.clear()
@@ -1397,7 +1397,7 @@ def updateData():
         if tmp > 0:
             average_kpa = tmp
             avg_kpa_set = True
-            print(f"Average kPa set in UpdateData to: {average_kpa}")
+            # print(f"Average kPa set in UpdateData to: {average_kpa}")
         else:
             print("Yikes!! HF_B full, but average_kpa is 0")
             for i in range(5): print(f"{hi_freq_kpa_ring[i]} ", end=" ")  
@@ -1585,6 +1585,20 @@ def add_to_kpa_ring(kpa:int):
             kpaindex = (kpaindex + 1) % PRESSURERINGSIZE
             kparing[kpaindex] = (current_time(), kpa)
 
+def add_to_ring_buffer(ring: list, index: int, ring_length: int, message: str):
+    """
+    Add a message to the ring buffer.  This is a circular buffer, so it will overwrite the oldest value when full.
+    """
+    if len(ring) == 1 and len(ring[0]) == 0:
+        ring[index] = (current_time(), message)
+    else:
+        if len(ring) < ring_length:
+            ring.append((str_time, message))
+            index = (index + 1) % ring_length
+        else:
+            index = (index + 1) % ring_length
+            ring[index] = (str_time, message)
+
 def add_to_event_ring(msg:str):
     global eventring, eventindex
     
@@ -1757,8 +1771,26 @@ def DisplayDebug()->None:
     lcd4x20.move_to(0, 0)                # move to top left corner of LCD
     lcd4x20.putstr(f"{display_time(secs_to_localtime(time.time()))}")             # print time in top left corner
     lcd4x20.move_to(0, 1)                # move to second line of LCD
-    lcd4x20.putstr(f'ui: {"NORM" if ui_mode == UI_MODE_NORM else "MENU"}  op: {"AUTO" if op_mode==OP_MODE_AUTO else "IRRG"}')        # print ui_mode in second line of LCD
+    lcd4x20.putstr(f'ui: {"NORM" if ui_mode == UI_MODE_NORM else "MENU"}  op: {"AUTO" if op_mode==OP_MODE_AUTO else "IRRIG" if op_mode == OP_MODE_IRRIGATE else "MAINT"}')        # print ui_mode in second line of LCD
     lcd4x20.move_to(0, 2)                # move to third line of LCD
+    if ui_mode == UI_MODE_MENU:
+        if op_mode   == OP_MODE_AUTO:
+            lcd4x20.putstr(f'ROC: {depth_ROC:.2f}m/min')        # print depth_ROC in third line of LCD
+        elif op_mode == OP_MODE_IRRIGATE:
+            lcd4x20.putstr(f'ROC: {depth_ROC:.2f}m/min')        # print depth_ROC in third line of LCD
+        else:       # MAINTENANCE mode
+            lcd4x20.putstr("Hit RESET to continue")
+    else:           # NORM mode
+        if op_mode   == OP_MODE_AUTO:
+            if display_mode == "depth":
+                lcd4x20.putstr(f'Depth:{depth_str} ROC: {depth_ROC:.2f}m/min')        # print depth_ROC in third line of LCD
+            elif display_mode == "pressure":
+                lcd4x20.putstr(f'BL:{baseline_pressure} Av:{average_kpa} P:{pressure_str}')        # print depth_ROC in third line of LCD
+        elif op_mode == OP_MODE_IRRIGATE:
+            pass
+        else:       # MAINTENANCE mode
+            lcd4x20.putstr("Hit RESET to continue")
+        
     lcd4x20.putstr(f'lvl:{len(navigator.current_level)} {navigator.current_index} {baseline_pressure:3}')        # print op_mode in third line of LCD
     lcd4x20.move_to(0, 3)                # move to fourth line of LCD
     lcd4x20.putstr(f'nav mode: {navigator.mode:<10}')        # print navigator.mode in fourth line of LCD
@@ -1809,6 +1841,8 @@ def DisplayData()->None:
 
         lcd.setCursor(0, 1)
         lcd.printout(f"{display_str:<16}")
+        lcd4x20.move_to(0, 2)                       # move to third line of LCD
+        lcd4x20.putstr(f"{display_str:<16}")        # print tank_is in third line of LCD
 
 def LogData()->None:
     global LOG_FREQ
