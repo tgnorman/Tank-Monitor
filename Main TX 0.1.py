@@ -25,7 +25,7 @@ from Pump import Pump               # get our Pump class
 from Tank import Tank
 from secrets import MyWiFi
 from MenuNavigator import MenuNavigator
-# from encoder import Encoder
+from encoder import Encoder
 from ubinascii import b2a_base64 as b64
 from SM_SimpleFSM import SimpleDevice
 from lcd_api import LcdApi
@@ -166,12 +166,13 @@ nav_R               = Pin(13, Pin.IN, Pin.PULL_UP)		# RIGHT button
 # Create pins for encoder lines and the onboard button
 
 enc_btn             = Pin(18, Pin.IN, Pin.PULL_UP)
-enc_a               = Pin(19, Pin.IN)
-enc_b               = Pin(20, Pin.IN)
-# px                  = Pin(20, Pin.IN, Pin.PULL_UP)
-# py                  = Pin(19, Pin.IN, Pin.PULL_UP)
+# enc_a               = Pin(19, Pin.IN)
+# enc_b               = Pin(20, Pin.IN)
+px                  = Pin(20, Pin.IN)
+py                  = Pin(19, Pin.IN)
 last_time           = 0
-count               = 0
+# count               = 0
+DO_NEXT_IN_CB       = True      # this could be a config param... but probably not worth it
 
 alarm               = Pin(21, Pin.OUT)          # for testing alarm buzzer
 
@@ -697,6 +698,8 @@ def my_reset():
     ev_log.write(f"{event_time} SOFT RESET\n")
     shutdown()
     lcd.setRGB(0,0,0)
+    lcd4x20.display_off()
+    lcd4x20.backlight_off()
     soft_reset()
 
 def hardreset():
@@ -1038,22 +1041,22 @@ new_menu = {
     ]
 }
 
-def encoder_a_IRQ(pin):
-    global enc_a_last_time, encoder_count
+# def encoder_a_IRQ(pin):
+#     global enc_a_last_time, encoder_count
 
-    new_time = utime.ticks_ms()
-    if (new_time - enc_a_last_time) > DEBOUNCE_ROTARY:
-        if enc_a.value() == enc_b.value():
-            encoder_count += 1
-            # print("+", end="")
-            # navigator.next()
-        else:
-            encoder_count -= 1
-            # navigator.previous()
-    else:
-        print(".", end="")
-    # print(encoder_count)
-    enc_a_last_time = new_time
+#     new_time = utime.ticks_ms()
+#     if (new_time - enc_a_last_time) > DEBOUNCE_ROTARY:
+#         if enc_a.value() == enc_b.value():
+#             encoder_count += 1
+#             # print("+", end="")
+#             # navigator.next()
+#         else:
+#             encoder_count -= 1
+#             # navigator.previous()
+#     else:
+#         print(".", end="")
+#     # print(encoder_count)
+#     enc_a_last_time = new_time
 
 def encoder_btn_IRQ(pin):
     global enc_btn_last_time, encoder_btn_state
@@ -1077,11 +1080,20 @@ def pp_callback(pin):
     presspmp.irq(trigger=Pin.IRQ_RISING|Pin.IRQ_FALLING, handler=pp_callback)
 
 def cb(pos, delta):
-    print(pos, delta)
+    global encoder_count
+    # print(pos, delta)
     if delta > 0:
-        navigator.next()
+        if DO_NEXT_IN_CB:
+            navigator.next()
+            DisplayDebug()
+        else:
+            encoder_count += 1
     elif delta < 0:
-        navigator.previous()
+        if DO_NEXT_IN_CB:
+            navigator.previous()
+            DisplayDebug()
+        else:
+            encoder_count -= 1
 
 def nav_up_cb(pin):
     global nav_btn_state, nav_btn_last_time
@@ -1179,8 +1191,8 @@ def enable_controls():
     
    # Enable the interupt handlers
     presspmp.irq(trigger=Pin.IRQ_RISING|Pin.IRQ_FALLING, handler=pp_callback)
-    # enc = Encoder(px, py, v=0, div=4, vmin=None, vmax=None, callback=cb)
-    enc_a.irq(trigger=Pin.IRQ_RISING, handler=encoder_a_IRQ)
+    enc = Encoder(px, py, v=0, div=4, vmin=None, vmax=None, callback=cb)
+    # enc_a.irq(trigger=Pin.IRQ_RISING, handler=encoder_a_IRQ)
     enc_btn.irq(trigger=Pin.IRQ_FALLING, handler=encoder_btn_IRQ)
 
     lcdbtn.irq(trigger=Pin.IRQ_FALLING, handler=lcdbtn_new)
@@ -2111,7 +2123,7 @@ def init_all():
     startup_calibrated_pressure = get_pressure()
     kpa_sensor_found = startup_raw_ADC > BP_SENSOR_MIN    # are we seeing a valid pressure sensor reading?
     if not kpa_sensor_found:
-        lcd4x20.move_to(0, 2)
+        lcd4x20.move_to(0, 3)
         lcd4x20.putstr(f'NO PS: kPa:{startup_calibrated_pressure:2}')
         print(f'{PS_ND} {startup_calibrated_pressure=}')
         ev_log.write(f"{display_time(secs_to_localtime(time.time()))}  {PS_ND} initial:{startup_calibrated_pressure:3} - HF kPa logging disabled\n")
@@ -2447,20 +2459,22 @@ async def check_rotary_state(menu_sleep:int)->None:
                 encoder_btn_state = False
                 DisplayDebug()
 
-        if encoder_count != 0:
-            if encoder_count > 0:
-                # print(f"CRS: {encoder_count=}")
-                # for rc in range(encoder_count):
-                while encoder_count > 0:
-                    navigator.next()
-                    encoder_count -= 1
-            elif encoder_count < 0:
-                # print(f"CRS: {encoder_count=}")
-                # for rc in range(encoder_count):
-                while encoder_count < 0:
-                    navigator.previous()
-                    encoder_count += 1
-            DisplayDebug()
+        if not DO_NEXT_IN_CB:           # OK... so we need to call next/prev as required here.
+            if encoder_count != 0:
+                if encoder_count > 0:
+                    # print(f"CRS: {encoder_count=}")
+                    # for rc in range(encoder_count):
+                    while encoder_count > 0:
+                        navigator.next()
+                        encoder_count -= 1
+                elif encoder_count < 0:
+                    # print(f"CRS: {encoder_count=}")
+                    # for rc in range(encoder_count):
+                    while encoder_count < 0:
+                        navigator.previous()
+                        encoder_count += 1
+
+                DisplayDebug()  # this updates 4x20 LCD on every rotary change
 
         await asyncio.sleep_ms(menu_sleep)
 
