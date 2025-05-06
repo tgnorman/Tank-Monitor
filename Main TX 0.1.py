@@ -125,6 +125,13 @@ eventindex          = 0             # for scrolling through error logs on screen
 switchindex         = 0
 kpaindex            = 0            # for scrolling through pressure logs on screen
 
+# modified eventring stuff...
+REPEAT_TIME_LIMIT = 10              # threshold for repeat detection
+
+event_repeat_count = 1
+event_last_message = ""
+event_last_message_time = 0
+
 # lcdbtnflag          = True          # this should immediately trigger my asyncio timer on startup...
 
 # Misc stuff
@@ -1774,22 +1781,72 @@ def add_to_ring_buffer(ring: list, index: int, ring_length: int, message: int):
             index = (index + 1) % ring_length
             ring[index] = (short_time(), message)
 
-def add_to_event_ring(msg:str):
+# def add_to_event_ring(msg:str):
+#     global eventring, eventindex
+    
+#     if len(eventring) == 1 and len(eventring[0]) == 0:
+#         eventring[eventindex] = (short_time(), msg)
+#         # print(f"Event ring[{eventindex}]: {eventring[eventindex]}")
+#     else:
+#         if len(eventring) < EVENTRINGSIZE:
+#             # print("Appending...")
+#             eventring.append((short_time(), msg))
+#             eventindex = (eventindex + 1) % EVENTRINGSIZE
+#             # print(f"Event ring[{eventindex}]: {eventring[eventindex]}")
+#         else:
+#             eventindex = (eventindex + 1) % EVENTRINGSIZE
+#             # print(f"Overwriting index {eventindex}")
+#             eventring[eventindex] = (short_time(), msg)
+
+# NOTE: New version of this... requires multiple changes elasewhere:
+#   1. MenuNavigator list processing
+#   2. ???
+
+def add_to_event_ring(msg: str) -> None:
+    global eventring, eventindex, timeindex, event_repeat_count, event_last_message, event_last_message_time
+    
+    current_time = time.time()
+
+    # Handle first message case
+    if not eventring:
+        eventring.append((current_time, msg))
+        eventindex = 0
+        event_last_message = msg
+        event_last_message_time = current_time
+        event_repeat_count = 1
+        return
+
+    # Check if message is repeating
+    if msg == event_last_message:
+        if current_time - event_last_message_time <= REPEAT_TIME_LIMIT:
+            event_repeat_count += 1
+            # Update the existing entry with new repeat count
+            if event_repeat_count > 1:
+                eventring[eventindex] = (event_last_message_time, f"{event_last_message} (x{event_repeat_count})")
+                event_last_message_time = current_time
+            return
+        else:
+            # Time limit exceeded, start fresh
+            event_repeat_count = 1
+            add_entry_to_ring(current_time, msg)
+    else:
+        # Different message, start new entry
+        event_repeat_count = 1
+        add_entry_to_ring(current_time, msg)
+
+    # Update tracking variables for the new message
+    event_last_message = msg
+    event_last_message_time = current_time
+
+def add_entry_to_ring(timestamp: int, message: str) -> None:
     global eventring, eventindex
     
-    if len(eventring) == 1 and len(eventring[0]) == 0:
-        eventring[eventindex] = (short_time(), msg)
-        # print(f"Event ring[{eventindex}]: {eventring[eventindex]}")
+    if len(eventring) < EVENTRINGSIZE:
+        eventring.append((timestamp, message))
     else:
-        if len(eventring) < EVENTRINGSIZE:
-            # print("Appending...")
-            eventring.append((short_time(), msg))
-            eventindex = (eventindex + 1) % EVENTRINGSIZE
-            # print(f"Event ring[{eventindex}]: {eventring[eventindex]}")
-        else:
-            eventindex = (eventindex + 1) % EVENTRINGSIZE
-            # print(f"Overwriting index {eventindex}")
-            eventring[eventindex] = (short_time(), msg)
+        eventindex = (eventindex + 1) % EVENTRINGSIZE
+        eventring[eventindex] = (timestamp, message)
+    eventindex = len(eventring) - 1
 
 def add_to_switch_ring(msg:str):
     global switchring, switchindex
@@ -1806,23 +1863,35 @@ def add_to_switch_ring(msg:str):
 #            print(f"Overwriting index {switchindex}")
             switchring[switchindex] = (short_time(), msg)
 
-def dump_event_ring():                          # both rings are now tuples... (datestamp, msg)
+# def dump_event_ring():                          # both rings are now tuples... (datestamp, msg)
 
-    ev_len = len(eventring)
-    print(f"Eventring has {ev_len} records")
-    if ev_len > 0:
-        if ev_len < EVENTRINGSIZE:
-            for i in range(eventindex, -1, -1): # was index - 1... wrong!
-                s = eventring[i]
-                if len(s) > 0: print(f"Event log {i}: {s[0]} {s[1]}")
-        else:
-            i = (eventindex - 1) % EVENTRINGSIZE            # start with last log entered
-            for k in range(EVENTRINGSIZE):
-                s = eventring[i]
-                if len(s) > 0: print(f"Event log {i}: {s[0]} {s[1]}")
-                i = (i - 1) % EVENTRINGSIZE
-    else:
+#     ev_len = len(eventring)
+#     print(f"Eventring has {ev_len} records")
+#     if ev_len > 0:
+#         if ev_len < EVENTRINGSIZE:
+#             for i in range(eventindex, -1, -1): # was index - 1... wrong!
+#                 s = eventring[i]
+#                 if len(s) > 0: print(f"Event log {i}: {s[0]} {s[1]}")
+#         else:
+#             i = (eventindex - 1) % EVENTRINGSIZE            # start with last log entered
+#             for k in range(EVENTRINGSIZE):
+#                 s = eventring[i]
+#                 if len(s) > 0: print(f"Event log {i}: {s[0]} {s[1]}")
+#                 i = (i - 1) % EVENTRINGSIZE
+#     else:
+#         print("Eventring empty")
+def dump_event_ring():
+    if not eventring:
         print("Eventring empty")
+        return
+    print("Event Log:")
+    entries_to_show = len(eventring)
+    current = eventindex
+    
+    for _ in range(entries_to_show):
+        entry = eventring[current]
+        print(f"Event log {current}: {display_time(secs_to_localtime(entry[0]))} {entry[1]}")
+        current = (current - 1) % entries_to_show
 
 def dump_zone_peak()->None:
     print("Zone Peak Pressures:")
@@ -2384,8 +2453,10 @@ def init_ringbuffers():
     if DEBUGLVL > 0: print("Ringbuf is ", ringbuf)
     ringbufferindex = 0
 
-    eventring   = [tuple()]         # initialise to an empty tuple
-    eventindex  = 0
+    # eventring   = [tuple()]         # initialise to an empty tuple
+    # eventindex  = 0
+    eventring = []          # initialize as empty list
+    eventindex = -1        # -1 indicates empty ring
     switchring  = [tuple()]
     switchindex = 0
     kparing     = [tuple()]

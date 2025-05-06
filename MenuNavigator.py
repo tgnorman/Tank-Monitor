@@ -2,18 +2,55 @@
 # The action, if a string, will just be printed (for debugging purposes), but if it is a callable function, it will be called
 
 # Added to git 30/3/2025
+
+import time
+from machine import I2C, Pin
 from RGB1602 import RGB1602
+from lcd_api import LcdApi
+from i2c_lcd import I2cLcd
+
+I2C_ADDR            = 0x27
+I2C_NUM_ROWS        = 4
+I2C_NUM_COLS        = 20
+i2c                 = I2C(0, sda=Pin(8), scl=Pin(9), freq=400000)
+lcd4x20             = I2cLcd(i2c, I2C_ADDR, I2C_NUM_ROWS, I2C_NUM_COLS)
 
 DEBUG = True
 
+def nav_secs_to_localtime(s):
+    tupltime    = time.localtime(s)
+    year        = tupltime[0]
+    DST_end     = time.mktime((year, 4,(7-(int(5*year/4+4)) % 7),2,0,0,0,0,0)) # Time of April   change to end DST
+    DST_start   = time.mktime((year,10,(7-(int(year*5/4+5)) % 7),2,0,0,0,0,0)) # Time of October change to start DST
+    
+    if DST_end < s and s < DST_start:		# then adjust
+#        print("Winter ... adding 9.5 hours")
+        adj_time = time.localtime(s + int(9.5 * 3600))
+    else:
+#        print("DST... adding 10.5 hours")
+        adj_time = time.localtime(s + int(10.5 * 3600))
+    return(adj_time)
+
+def LCD_time(t)-> str:
+    now   = nav_secs_to_localtime(t)          # getcurrent time, convert to local SA time
+    # year  = now[0]
+    month = now[1]
+    day   = now[2]
+    hour  = now[3]
+    min   = now[4]
+    sec   = now[5]
+    HMS = f"{hour:02}:{min:02}:{sec:02}"
+    return f"{month:02}/{day:02} {HMS}"
+
 class MenuNavigator:
-    def __init__(self, menu, dev:RGB1602):
+    def __init__(self, menu, dev2:RGB1602): #, dev4:I2cLcd):
         self.menu = menu
         # self.current_level = [menu]  # Stack to keep track of menu levels
         self.current_level = [{'submenu': menu, 'index': 0}]  # Stack to keep track of menu levels
         self.current_index = 0
         # self.prev_index = 0
-        self.device = dev
+        self.LCD2R = dev2
+        # self.LCD4R = lcd4x20
         self.mode = "menu"
         self.new_value = 0
         self.eventlist = None
@@ -26,6 +63,8 @@ class MenuNavigator:
         self.file_index = 0
         self.kpalist = None
         self.kpa_index = 0
+        self.errorlist = None
+        self.error_index = 0
         self.display_current_item()
 
     # def get_current_item(self):
@@ -36,13 +75,19 @@ class MenuNavigator:
     
     def display_current_item(self):
         item = self.get_current_item()
-        self.device.clear()
-        self.device.setCursor(0,0)
-        self.device.printout(item['title'])
+        self.LCD2R.clear()
+        self.LCD2R.setCursor(0,0)
+        self.LCD2R.printout(item['title'])
+
+        # lcd4x20.move_to(0, 1)
+        # lcd4x20.putstr(str(item['title']))
         # print(item['title'])
         if "value" in item:
-            self.device.setCursor(0, 1)
-            self.device.printout(item['value']['W_V'])
+            self.LCD2R.setCursor(0, 1)
+            self.LCD2R.printout(item['value']['W_V'])
+
+            # lcd4x20.move_to(0, 2)
+            # lcd4x20.putstr(str(item['value']['W_V']))
 #        print("Current Item: ", item)
 #        print(f"Current Item: {item['title']}")
 
@@ -67,8 +112,11 @@ class MenuNavigator:
 # no if need for inc...            
             self.new_value += step
             # print(f'In NEXT self.new_value is {self.new_value}')
-            self.device.setCursor(0, 1)
-            self.device.printout(str(self.new_value) + "      ")
+            self.LCD2R.setCursor(0, 1)
+            self.LCD2R.printout(str(self.new_value) + "      ")
+
+            # lcd4x20.move_to(0, 2)
+            # lcd4x20.putstr(str(self.new_value) + "      ")
         elif "view_" in self.mode: #self.mode == "view_events" or self.mode == "view_switch":
             # print(f'In NEXT {self.mode=}')
             if self.mode == "view_events":
@@ -85,6 +133,13 @@ class MenuNavigator:
                         self.switch_index = (self.switch_index + 1) % len(self.switchlist)
                 else:
                     hist_str = "Switchlist: None"
+            elif self.mode == "view_errors":
+                if self.errorlist is not None:
+                    if len(self.errorlist) > 0:
+                        hist_str = self.errorlist[self.error_index]
+                        self.error_index = (self.error_index + 1) % len(self.errorlist)     # check if this is right
+                else:
+                    hist_str = "Errorlist: None"              
             elif self.mode == "view_kpa":
                 # print(f'In NEXT , view_kpa... {self.mode=}')
                 if self.kpalist is not None:
@@ -116,7 +171,10 @@ class MenuNavigator:
                     hist_str = "File list: None"
             if type(hist_str) == tuple:
                 if(len(hist_str) > 0):
-                    datestamp = hist_str[0]
+                    if self.mode == "view_events":
+                        datestamp = LCD_time(nav_secs_to_localtime(hist_str[0]))
+                    else:
+                        datestamp = hist_str[0]
                     log_txt   = hist_str[1]
                 else:
                     datestamp = f'{self.mode:<16}'
@@ -125,17 +183,22 @@ class MenuNavigator:
                 datestamp = "Err in NEXT"
                 log_txt   = "hist not a tuple"
 
-            self.device.setCursor(0, 0)
-            self.device.printout(f'{datestamp:<16}')
-            self.device.setCursor(0, 1)
-            self.device.printout(f'{log_txt:<16}')
+            self.LCD2R.setCursor(0, 0)
+            self.LCD2R.printout(f'{datestamp:<16}')
+            self.LCD2R.setCursor(0, 1)
+            self.LCD2R.printout(f'{log_txt:<16}')
+
+            # lcd4x20.move_to(0, 2)
+            # lcd4x20.putstr(f'{datestamp:<16}')
+            # lcd4x20.move_to(0, 3)
+            # lcd4x20.putstr(f'{log_txt:<16}')
         elif self.mode == "wait":
             # print(f'In NEXT, wait mode... {self.mode=}')
             self.go_back()              # go back to previous menu level
         else:
             # print(f"In NEXT, {self.mode=}")
-            self.device.setCursor(0, 1)
-            self.device.printout(f'{self.mode=}')
+            self.LCD2R.setCursor(0, 1)
+            self.LCD2R.printout(f'{self.mode=}')
 
     def previous(self):
         # print(f'In PREV, {self.mode=}')
@@ -158,10 +221,13 @@ class MenuNavigator:
             if self.new_value >= step:
                 self.new_value -= step
                 # print(f'In PREV self.new_value is {self.new_value}')
-                self.device.setCursor(0, 1)
-                self.device.printout(str(self.new_value) + "      ")
+                self.LCD2R.setCursor(0, 1)
+                self.LCD2R.printout(str(self.new_value) + "      ")
+                
+                # lcd4x20.move_to(0, 2)
+                # lcd4x20.putstr(str(self.new_value) + "      ")
         elif "view_" in self.mode:  #self.mode == "view_events" or self.mode == "view_switch":
-            # print(f'In PREV {self.mode=}')
+                        # print(f'In PREV {self.mode=}')
             if self.mode == "view_events":
                 if self.eventlist is not None:
                     if len(self.eventlist) > 0:
@@ -176,6 +242,13 @@ class MenuNavigator:
                         self.switch_index = (self.switch_index - 1) % len(self.switchlist)     # check if this is right
                 else:
                     hist_str = "Switchlist: None"
+            elif self.mode == "view_errors":
+                if self.errorlist is not None:
+                    if len(self.errorlist) > 0:
+                        hist_str = self.errorlist[self.error_index]
+                        self.error_index = (self.error_index - 1) % len(self.errorlist)     # check if this is right
+                else:
+                    hist_str = "Errorlist: None"              
             elif self.mode == "view_kpa":
                 if self.kpalist is not None:
                     if len(self.kpalist) > 0:
@@ -204,8 +277,11 @@ class MenuNavigator:
                     hist_str = "File list: None"
             if type(hist_str) == tuple:
                 if(len(hist_str) > 0):
-                    datestamp = hist_str[0]
-                    log_txt   = hist_str[1]
+                    if self.mode == "view_events":
+                        datestamp = LCD_time(nav_secs_to_localtime(hist_str[0]))
+                    else:
+                        datestamp = hist_str[0]                    
+                        log_txt   = hist_str[1]
                 else:
                     datestamp = f'{self.mode:<16}'
                     log_txt   = "Nothing here"
@@ -213,17 +289,22 @@ class MenuNavigator:
                 datestamp = "Err in PREV"
                 log_txt   = "hist not a tuple"
 
-            self.device.setCursor(0, 0)
-            self.device.printout(f'{datestamp:<16}')
-            self.device.setCursor(0, 1)
-            self.device.printout(f'{log_txt:<16}')
+            self.LCD2R.setCursor(0, 0)
+            self.LCD2R.printout(f'{datestamp:<16}')
+            self.LCD2R.setCursor(0, 1)
+            self.LCD2R.printout(f'{log_txt:<16}')
+
+            # lcd4x20.move_to(0, 2)
+            # lcd4x20.putstr(f'{datestamp:<16}')
+            # lcd4x20.move_to(0, 3)
+            # lcd4x20.putstr(f'{log_txt:<16}')
         elif self.mode == "wait":
             # print(f'In PREV, wait mode... {self.mode=}')
             self.go_back()              # go back to previous menu level
         else:
             # print(f"In PREV, {self.mode=}")
-            self.device.setCursor(0, 1)
-            self.device.printout(f'{self.mode=}')
+            self.LCD2R.setCursor(0, 1)
+            self.LCD2R.printout(f'{self.mode=}')
     
     def go_back(self):
         if len(self.current_level) > 1:
@@ -238,8 +319,8 @@ class MenuNavigator:
         else:
             # print("Already at the top-level menu.  This should not happen...")
             print("Exiting nav menu from go_back")
-            self.device.setCursor(0, 1)
-            self.device.printout("Exiting nav menu")
+            self.LCD2R.setCursor(0, 1)
+            self.LCD2R.printout("Exiting nav menu")
             self.exit_nav_menu()            # exit menu nav, and call exit_menu() in the menu structure
             
     def enter(self):
@@ -281,11 +362,11 @@ class MenuNavigator:
         if item['value']['W_V'] !=  self.new_value and self.new_value > 0:
             item['value']['W_V'] =  self.new_value
             # print(f"In SET, updated Working Value to {self.new_value}")
-            self.device.setCursor(0, 1)
-            self.device.printout(f'Set {str(self.new_value):<12}')   
+            self.LCD2R.setCursor(0, 1)
+            self.LCD2R.printout(f'Set {str(self.new_value):<12}')   
         # print(f'In SET after  change, item is: {item}')
-        self.device.setCursor(0, 1)
-        self.device.printout(f"Set to {str(self.new_value):<8}")
+        self.LCD2R.setCursor(0, 1)
+        self.LCD2R.printout(f"Set to {str(self.new_value):<8}")
         self.new_value = 0          # reset this, or we copy previous remnant value
         self.mode = "wait"          # wait for a 2nd press so that changed value is displayed before going back to menu
         # self.go_back()              # go back to previous menu level
@@ -296,8 +377,8 @@ class MenuNavigator:
         def_val = item['value']['D_V']
         item['value']['W_V'] = def_val
         print(f"Value set to Default: {def_val}")
-        self.device.setCursor(0, 1)
-        self.device.printout(f"Set to {str(def_val):<8}")
+        self.LCD2R.setCursor(0, 1)
+        self.LCD2R.printout(f"Set to {str(def_val):<8}")
         self.new_value = 0          # reset this, or we copy previous remnant value
         self.mode = "wait"          # wait for a 2nd press so that changed value is displayed before going back to menu
         # self.go_back()              # go back to previous menu level
@@ -324,6 +405,14 @@ class MenuNavigator:
                         hist_str = self.switchlist[self.switch_index]
                 else:
                     hist_str = "Switchlist: None"
+            elif self.mode == "view_errors":
+                if self.errorlist is not None:
+                    if len(self.errorlist) > 0:
+                        pos = 0 if first else len(self.errorlist) - 1
+                        self.error_index = pos
+                        hist_str = self.errorlist[self.error_index]
+                else:
+                    hist_str = "Errorlist: None"                   
             elif self.mode == "view_program":
                 if self.programlist is not None:
                     if len(self.programlist) > 0:
@@ -356,13 +445,13 @@ class MenuNavigator:
                 datestamp = "Err in FIRST"
                 log_txt   = "hist not a tuple"
 
-            self.device.setCursor(0, 0)
-            self.device.printout(f'{datestamp:<16}')
-            self.device.setCursor(0, 1)
-            self.device.printout(f'{log_txt:<16}')
+            self.LCD2R.setCursor(0, 0)
+            self.LCD2R.printout(f'{datestamp:<16}')
+            self.LCD2R.setCursor(0, 1)
+            self.LCD2R.printout(f'{log_txt:<16}')
         else:
-            self.device.setCursor(0, 1)
-            self.device.printout("Not in VIEW mode")
+            self.LCD2R.setCursor(0, 1)
+            self.LCD2R.printout("Not in VIEW mode")
 
     def goto_first(self):
         self.goto_position(True)
@@ -391,15 +480,18 @@ class MenuNavigator:
         #     del self.kpalist           # clean up old stuff...  
         self.kpalist = mylist
 
+    def set_error_list(self, mylist):
+        self.errorlist = mylist
+
     def go_to_start(self):
         self.current_index = 0
 
     def exit_nav_menu(self)-> None:
     # since I can't reference exit_menu(), but I have a reference to it in the final menu structure, find it, then call it
         print(f"exit_nav_menu...{self.current_index=}")
-        self.device.clear()
-        self.device.setCursor(0, 0)
-        self.device.printout("Exiting menu...")
+        self.LCD2R.clear()
+        self.LCD2R.setCursor(0, 0)
+        self.LCD2R.printout("Exiting menu...")
 
         self.current_index = 0      # reset to top of menu.
 
