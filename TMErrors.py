@@ -16,6 +16,7 @@ class TankError:
     HFKPA_ZONEMAX       = 13
     ZONE_NOTFOUND       = 14
     AVG_KPA_ZERO        = 15
+    MAX_REPEAT_EVENT    = 100
 
     def __init__(self):
         # Define all error details in initialization
@@ -35,7 +36,8 @@ class TankError:
             self.NOVALVEOFFWHILEON: ("NGVO", "Cant turn GV off"),
             self.HFKPA_ZONEMAX:     ("ZMXX", "Zone MAX exceeded"),
             self.ZONE_NOTFOUND:     ("ZNF", "Zone not found"),
-            self.AVG_KPA_ZERO:      ("AKP0", "Avg kPa zero")
+            self.AVG_KPA_ZERO:      ("AKP0", "Avg kPa zero"),
+            self.MAX_REPEAT_EVENT:  ("XREP", "Max repeated events")
         }
     
     def get_code(self, error_id):
