@@ -1,0 +1,30 @@
+# Ignore sensitive files
+secrets.py
+.env
+
+# VS Code and MicroPico settings
+.micropico/
+
+# Ignore third-party libraries
+Libraries/
+
+# Ignore output and archive directories
+logs/
+archive/
+docs/*.txt
+
+# Never ignore lib directory (my custom libraries)
+!lib/
+!lib/*
+
+# Track VS Code config
+!.vscode/
+.vscode/*
+!.vscode/settings.json
+!.vscode/pyrightconfig.json
+
+# Keep empty directories
+!logs/.gitkeep
+!archive/.gitkeep
+!docs/.gitkeep
+
