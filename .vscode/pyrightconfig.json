@@ -1,0 +1,6 @@
+{
+    "extraPaths": [
+        "${workspaceFolder}/lib",
+        "${workspaceFolder}/Libraries"
+    ]
+}

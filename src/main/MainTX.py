@@ -1,7 +1,11 @@
 # Trev's super dooper Tank/Pump monitoring system
 
 # region IMPORTS
-SW_VERSION          = "7/5/25"      # for display
+SW_VERSION          = "10/5/25"      # for display
+# This added after restructing folders
+# import sys
+# sys.path.append('../lib')           # My custom libraries
+# sys.path.append('../Libraries')     # Third-party libraries
 
 import RGB1602
 import umail # type: ignore
@@ -20,8 +24,6 @@ from PiicoDev_Unified import sleep_ms
 from PiicoDev_VL53L1X import PiicoDev_VL53L1X
 from PiicoDev_Transceiver import PiicoDev_Transceiver
 from umachine import Timer, Pin, ADC, soft_reset, I2C # Import Pin
-from Pump import Pump               # get our Pump class
-from Tank import Tank
 from secrets import MyWiFi
 from MenuNavigator import MenuNavigator
 from encoder import Encoder
@@ -29,6 +31,8 @@ from ubinascii import b2a_base64 as b64
 from SM_SimpleFSM import SimpleDevice
 from lcd_api import LcdApi
 from i2c_lcd import I2cLcd
+from Pump import Pump               # get our Pump class
+from Tank import Tank
 from TMErrors import TankError
 from utils import secs_to_localtime, display_time, short_time, long_time, format_local_time, format_local_time_short
 from ringbuffer import RingBuffer, DuplicateDetectingBuffer
@@ -84,7 +88,7 @@ VDIV_Ratio          = VDIV_R2/(VDIV_R1 + VDIV_R2)
 
 # All menu-CONFIGURABLE parameters
 mydelay             = 15            # seconds, main loop period
-LCD_ON_TIME         = 120            # seconds
+LCD_ON_TIME         = 90            # LCD time seconds
 Min_Dist            = 500           # full
 Max_Dist            = 1400          # empty
 MAX_LINE_PRESSURE   = 700           # TODO redundant... now zone-specific.  Remove.
@@ -95,7 +99,7 @@ MAX_CONTIN_RUNMINS  = 360           # 3 hours max runtime.  More than this looks
 LOG_HF_PRESSURE     = 2             # log high frequency pressure data.  Need to use int, not bool, for menu
 SIMULATE_PUMP       = False         # debugging aid...replace pump switches with a PRINT
 SIMULATE_KPA        = False         # debugging aid...replace pressure sensor with a PRINT
-ROC_AVERAGE         = 5             # impacts responsiveness ... also slows ALARM detection
+ROC_AVERAGE         = 3             # TODO review ROC setting impacts responsiveness ... also slows ALARM detection
                                     # make 1 for NO averaging... otherwise do an SMA of this period.  Need a ring buffer?
 
 # Physical Constants
@@ -350,13 +354,15 @@ def update_config():
         if param in config_dict.keys():
             if new_working_value > 0 and config_dict[param] != new_working_value:
   #              print(f'Updated config_dict {param} to {new_working_value}')
+                old_value = config_dict[param]
+                config_dict[param] = new_working_value
                 lcd.clear()
                 lcd.setCursor(0,0)
                 lcd.printout(f'Updated {param}')
                 lcd.setCursor(0,1)
                 lcd.printout(f'to {new_working_value}')
                 ev_log.write(f"Updated {param} to {new_working_value}\n")
-                print(f"in update_config {param}: dict is {config_dict[param]} now is {new_working_value}")
+                print(f"in update_config {param}: dict was {old_value} is now {new_working_value}")
         else:
             print(f"GAK! Config param {param} not found in dict!")
             lcd.clear()
@@ -679,9 +685,9 @@ def Change_Mode(newmode)-> None:
         print(f"Change_Mode: Unknown mode {newmode}")
 
 def exit_menu():                      # exit from MENU mode
-    global ui_mode, lcdtimer
+    global ui_mode, lcd_timer
     # process_menu = False
-    print("exit_menu(): Exiting menu mode")
+    # print("exit_menu(): Exiting menu mode")
     lcd.setCursor(0,1)
     lcd.printout(f'{"Exit & Update":<16}')
     update_config()
@@ -690,7 +696,9 @@ def exit_menu():                      # exit from MENU mode
     DisplayInfo()
     # ui_mode = UI_MODE_NORM
     # print(f"Exiting menu...lcd_off in {config_dict['LCD']} seconds")
-    lcdtimer = Timer(period=config_dict[LCD] * 1000, mode=Timer.ONE_SHOT, callback=lcd_off)
+    if not lcd_timer is None:
+        lcd_timer.deinit
+    lcd_timer = Timer(period=config_dict[LCD] * 1000, mode=Timer.ONE_SHOT, callback=lcd_off)
 
 def cancel_program()->None:
     global program_pending, op_mode, twm_timer
@@ -747,28 +755,32 @@ def show_program():
     navigator.mode = "view_program"
                
 def show_events():
+    navigator.set_display_list("events")
     navigator.mode              = "view_ring"
-    navigator.displaylistname   = "events"
-    navigator.displaylist       = navigator.eventlist
-    navigator.display_navindex  = navigator.event_navindex
+    # navigator.displaylistname   = "events"
+    # navigator.displaylist       = navigator.eventlist
+    # navigator.display_navindex  = navigator.event_navindex
 
 def show_switch():
+    navigator.set_display_list("switch")
     navigator.mode              = "view_ring"
-    navigator.displaylistname   = "switch"
-    navigator.displaylist       = navigator.switchlist
-    navigator.display_navindex  = navigator.switch_navindex
+    # navigator.displaylistname   = "switch"
+    # navigator.displaylist       = navigator.switchlist
+    # navigator.display_navindex  = navigator.switch_navindex
 
 def show_errors():
+    navigator.set_display_list("errors")
     navigator.mode              = "view_ring"
-    navigator.displaylistname   = "errors"                  # this will need special handling to decode in MenuNavigator
-    navigator.displaylist       = navigator.errorlist
-    navigator.display_navindex  = navigator.error_navindex
+    # navigator.displaylistname   = "errors"                  # this will need special handling to decode in MenuNavigator
+    # navigator.displaylist       = navigator.errorlist
+    # navigator.display_navindex  = navigator.error_navindex
 
 def show_pressure():
+    navigator.set_display_list("kpa")
     navigator.mode              = "view_ring"
-    navigator.displaylistname   = "kpa"
-    navigator.displaylist       = navigator.kpalist
-    navigator.display_navindex  = navigator.kpa_navindex
+    # navigator.displaylistname   = "kpa"
+    # navigator.displaylist       = navigator.kpalist
+    # navigator.display_navindex  = navigator.kpa_navindex
 
 def show_depth():
     print("Not implemented")
@@ -840,8 +852,11 @@ def shutdown()->None:
     ev_log.write("\nevent_ring dump:\n")
     event_ring.dump()
     dump_zone_peak()
-    ev_log.write("\nerror_ring dump\n")
+    ev_log.write("\nerror_ring dump:\n")
     error_ring.dump()
+    if switch_ring.index > -1:
+        ev_log.write("\nSwitch activity:\n")
+        switch_ring.dump()
     tank_log.flush()
     tank_log.close()
     ev_log.flush()
@@ -900,8 +915,10 @@ def show_dir():
 
         filelist.append((f, f'Size: {fsize}'))        # this is NOT kosher... allocating mem in ISR context
 
-    navigator.set_file_list(filelist)
+    # navigator.set_file_list(filelist)
     navigator.mode = "view_files"
+    navigator.set_file_list(filelist)
+
     navigator.goto_first()
     # navigator.next()
     # navigator.previous()                # kludge to show first entry
@@ -1369,6 +1386,8 @@ def lcdbtn_new(pin):
     global lcd_timer
 # so far, with no debounce logic...
     lcd_on()
+    if not lcd_timer is None:
+        lcd_timer.deinit()
     lcd_timer = Timer(period=config_dict[LCD] * 1000, mode=Timer.ONE_SHOT, callback=lcd_off)
 
 # def lcdbtn_pressed(x):          # my lcd button ISR
@@ -2148,7 +2167,7 @@ def DisplayInfo()->None:
             e_code = ""
             if error_ring.index > -1:
                 entry = error_ring.buffer[error_ring.index]
-                print(f'{error_ring.index=} {entry=}')
+                # print(f'{error_ring.index=} {entry=}')
                 e_code = errors.get_code(entry[1])
             lcd4x20.move_to(0, 0)                # move to top left corner of LCD
             lcd4x20.putstr(f'EC:{e_code:<4}')
@@ -2489,7 +2508,8 @@ def init_ringbuffers():
     switch_ring = RingBuffer(
         size=SWITCHRINGSIZE, 
         time_formatter=lambda t: format_local_time(t),
-        short_time_formatter=lambda t: format_local_time_short(t)
+        short_time_formatter=lambda t: format_local_time_short(t),
+        logger=ev_log.write
     )
 
     kpa_ring = RingBuffer(
@@ -2527,7 +2547,7 @@ def init_all():
     global slist, program_pending, sys_start_time, rotary_btn_pressed, kpa_sensor_found
     global nav_btn_state, nav_btn_last_time
     global baseline_pressure, baseline_set, zone, zone_minimum, zone_maximum, hf_kpa_hiwater, stable_pressure, average_kpa, last_ON_time
-    global ONESECBLINK
+    global ONESECBLINK, lcd_timer
     global ut_long, ut_short
 
     PS_ND               = "Pressure sensor not detected"
@@ -2569,11 +2589,17 @@ def init_all():
 
     init_ringbuffers()                      # this is required BEFORE we raise any alarms...
 
-    navigator.set_event_list(event_ring.buffer)
-    navigator.set_switch_list(switch_ring.buffer)
+    # navigator.set_event_list(event_ring.buffer)
+    # navigator.set_switch_list(switch_ring.buffer)
+    # navigator.set_kpa_list(kpa_ring.buffer)
+    # navigator.set_error_list(error_ring.buffer)
+    navigator.set_buffer("events", event_ring.buffer)
+    navigator.set_buffer("switch", switch_ring.buffer)
+    navigator.set_buffer("kpa",    kpa_ring.buffer)
+    navigator.set_buffer("errors", error_ring.buffer)
+
     navigator.set_program_list(program_list)
-    navigator.set_kpa_list(kpa_ring.buffer)
-    navigator.set_error_list(error_ring.buffer)
+    #  Note: filelist is set in show_dir
 
     free_space_KB = free_space()
     if free_space_KB < FREE_SPACE_LOWATER:
@@ -2622,7 +2648,8 @@ def init_all():
         ev_log.write(f"{display_time(secs_to_localtime(time.time()))} Pressure sensor detected - logging enabled\n")
 
     enable_controls()               # enable rotary encoder, LCD B/L button etc
-    ONESECBLINK         = 850          # 1 second blink time for LCD 
+    ONESECBLINK         = 850          # 1 second blink time for LED
+    lcd_timer           = None
 
 def heartbeat() -> bool:
     global borepump
@@ -3081,7 +3108,7 @@ async def do_main_loop():
             delay_ms = config_dict[DELAY] * 1000
             if heartbeat():                         # send heartbeat if ON... not if OFF.  For now, anyway
                 delay_ms -= RADIO_PAUSE
-        # print(f"{long_time()} main loop: {rec_num=}, {op_mode=}, {steady_state=}")
+            # print(f"{long_time()} main loop: {rec_num=}, {op_mode=}, {steady_state=}, {delay_ms=}")
         await asyncio.sleep_ms(delay_ms)
 
 # endregion

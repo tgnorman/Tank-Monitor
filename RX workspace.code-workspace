@@ -1,0 +1,23 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"name": "RX Pico Workspace",
+			"uri": "pico:"
+		}
+	],
+	"settings": {
+		"python.languageServer": "Pylance",
+		"micropico.manualComDevice": "COM7",
+		"python.analysis.typeshedPaths": [
+			"~/.micropico-stubs/micropython-rp2-rpi_pico_w-stubs==1.23.0.post1"
+		],
+		"python.analysis.extraPaths": [
+			"/Users/trevor/.micropico-stubs/included",
+			"./src",
+			"~/.micropico-stubs/micropython-rp2-rpi_pico_w-stubs==1.23.0.post1"
+		]
+	}
+}
