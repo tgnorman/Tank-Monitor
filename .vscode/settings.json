@@ -12,11 +12,11 @@
     ],
     "python.analysis.extraPaths": [
         "~/.micropico-stubs/included",
-        "${workspaceFolder}/lib",
-        "${workspaceFolder}/Libraries"
+        "${workspaceFolder}/lib",           // this projects libs
+        "../Libraries"                      // 3rd party libs
     ],
     "python.autoComplete.extraPaths": [
         "${workspaceFolder}/lib",
-        "${workspaceFolder}/Libraries"
+        "../Libraries"
     ]
 }

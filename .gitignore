@@ -8,10 +8,22 @@ secrets.py
 # Ignore third-party libraries
 Libraries/
 
-# Ignore output and archive directories
+# Ignore output, docs and archive directories
 logs/
 archive/
+Chats/*
 docs/*.txt
+docs/*.xlsx
+docs/*.pdf
+docs/Design/*.fzz
+docs/Design/*.png
+docs/Design/*.jpg
+docs/Design/*.gif
+
+# Ignore test files
+src/tests/*
+__pycache__/
+*.pyc
 
 # Never ignore lib directory (my custom libraries)
 !lib/
@@ -27,4 +39,5 @@ docs/*.txt
 !logs/.gitkeep
 !archive/.gitkeep
 !docs/.gitkeep
+!src/tests/.gitkeep
 
