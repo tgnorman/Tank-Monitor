@@ -1,11 +1,7 @@
 # Trev's super dooper Tank/Pump monitoring system
 
 # region IMPORTS
-SW_VERSION          = "10/5/25"      # for display
-# This added after restructing folders
-# import sys
-# sys.path.append('../lib')           # My custom libraries
-# sys.path.append('../Libraries')     # Third-party libraries
+SW_VERSION          = "14/5/25"      # for display
 
 import RGB1602
 import umail # type: ignore
@@ -23,7 +19,7 @@ from utime import sleep, ticks_us, ticks_diff
 from PiicoDev_Unified import sleep_ms
 from PiicoDev_VL53L1X import PiicoDev_VL53L1X
 from PiicoDev_Transceiver import PiicoDev_Transceiver
-from umachine import Timer, Pin, ADC, soft_reset, I2C # Import Pin
+from umachine import Timer, Pin, ADC, soft_reset, I2C
 from secrets import MyWiFi
 from MenuNavigator import MenuNavigator
 from encoder import Encoder
@@ -31,11 +27,12 @@ from ubinascii import b2a_base64 as b64
 from SM_SimpleFSM import SimpleDevice
 from lcd_api import LcdApi
 from i2c_lcd import I2cLcd
-from Pump import Pump               # get our Pump class
+from Pump import Pump
 from Tank import Tank
 from TMErrors import TankError
 from utils import secs_to_localtime, display_time, short_time, long_time, format_local_time, format_local_time_short
 from ringbuffer import RingBuffer, DuplicateDetectingBuffer
+from TimerManager import TimerManager
 
 # endregion
 # region INITIALISE
@@ -49,6 +46,7 @@ DEBUGLVL            = 0
 OP_MODE_AUTO        = 0
 OP_MODE_IRRIGATE    = 1
 OP_MODE_MAINT       = 2
+OP_MODE_DISABLED    = 9             # experimental ... pumping disabled due to low water level.  Must be > other modes
 
 UI_MODE_NORM        = 0
 UI_MODE_MENU        = 1
@@ -69,14 +67,14 @@ PRESSURE_PERIOD_MS  = 1000
 
 EVENTRINGSIZE       = 20            # max log ringbuffer length
 SWITCHRINGSIZE      = 20
-KPARINGSIZE    = 10            # size of ring buffer for pressure logging... NOT for calculation of average
-HI_FREQ_RINGSIZE    = 120           # for high frequency pressure logging.  At 1 Hz that's 2 minutes of data
+KPARINGSIZE         = 20            # size of ring buffer for pressure logging... NOT for calculation of average
 ERRORRINGSIZE       = 20            # max error log ringbuffer length
+HI_FREQ_RINGSIZE    = 120           # for high frequency pressure logging.  At 1 Hz that's 2 minutes of data
 
 HI_FREQ_AVG_COUNT   = 5             # for high frequency pressure alarm
 LO_FREQ_AVG_COUNT   = 30            # for high frequency pressure alarm
 BASELINE_AVG_COUNT  = 5             # for baseline pressure calculation
-LOOKBACKCOUNT       = 90            # for looking back at pressure history... to see if kPa drop is normal or not
+LOOKBACKCOUNT       = 60            # for looking back at pressure history... to see if kPa drop is normal or not
 
 MAX_OUTAGE          = 30            # seconds of no power
 ALARMTIME           = 10            # seconds of alarm on/off time
@@ -87,20 +85,21 @@ VDIV_R2             = 33000
 VDIV_Ratio          = VDIV_R2/(VDIV_R1 + VDIV_R2)
 
 # All menu-CONFIGURABLE parameters
-mydelay             = 15            # seconds, main loop period
+mydelay             = 5             # seconds, main loop period
 LCD_ON_TIME         = 90            # LCD time seconds
 Min_Dist            = 500           # full
 Max_Dist            = 1400          # empty
 MAX_LINE_PRESSURE   = 700           # TODO redundant... now zone-specific.  Remove.
 MIN_LINE_PRESSURE   = 280           # tweak after running... and this ONLY applies in OP_MODE_IRRIG
 NO_LINE_PRESSURE    = 8             # tweak this too... applies in ANY pump-on mode
-MAX_KPA_DROP        = 6             # max drop in kpa before we assume pump is sucking air... or rebaseline
+MAX_KPA_DROP        = 8             # max drop in kpa before we assume pump is sucking air... or rebaseline
 MAX_CONTIN_RUNMINS  = 360           # 3 hours max runtime.  More than this looks like trouble
 LOG_HF_PRESSURE     = 2             # log high frequency pressure data.  Need to use int, not bool, for menu
 SIMULATE_PUMP       = False         # debugging aid...replace pump switches with a PRINT
 SIMULATE_KPA        = False         # debugging aid...replace pressure sensor with a PRINT
-ROC_AVERAGE         = 3             # TODO review ROC setting impacts responsiveness ... also slows ALARM detection
+DEPTHRINGSIZE         = 12            # TODO review ROC setting impacts responsiveness ... also slows ALARM detection
                                     # make 1 for NO averaging... otherwise do an SMA of this period.  Need a ring buffer?
+DEAD_TIME           = 30            # minutes to disable pumping after drop detected... or other reasons
 
 # Physical Constants
 Tank_Height         = 1700
@@ -122,7 +121,7 @@ ui_mode             = UI_MODE_NORM
 LOG_FREQ            = 1
 last_logged_depth   = 0
 last_logged_kpa     = 0
-min_log_change_m    = 0.02          # to save space... only write to file if significant change in level
+MIN_DEPTH_CHANGE_M  = 0.01          # to save space... only write to file if significant change in level
 MAX_KPA_CHANGE      = 10            # update after pressure sensor active
 level_init          = False 		# to get started
 
@@ -219,7 +218,9 @@ distSensor 	        = PiicoDev_VL53L1X()
 lcd 		        = RGB1602.RGB1602(16,2)
 radio               = PiicoDev_Transceiver()
 
-errors = TankError()
+errors              = TankError()
+timer_mgr           = TimerManager()
+
 
 #rtc 		        = PiicoDev_RV3028()                 # Initialise the RTC module, enable charging
 
@@ -447,7 +448,7 @@ P8 = "XP"
 zone_list:list[tuple[str, int, int, int, float, float, int]] = [
     (P0, 0,   0,   5,    2E-5, -0.1021, 0),      # ZERO 
     (P1, 6,   15,  20,   2E-5, -0.1021, 2),      # AIR
-    (P2, 10,  20,  40,   1E-7, -0.005,  30),     # HT: don't make this min higher... I want to resume from a cancelled cycle, not abort in HT mode
+    (P2, 10,  20,  40,   8E-7, -0.004,  30),     # HT: don't make this min higher... I want to resume from a cancelled cycle, not abort in HT mode
     (P3, 200, 35,  350,  1E-5, -0.1021, 340),    # Z45
     (P4, 300, 350, 450,  2E-5, -0.1021, 445),    # Z3
     (P5, 350, 420, 580,  2E-5, -0.1021, 575),    # Z2
@@ -487,24 +488,6 @@ def get_zone_from_list(pressure: int):
             i -= 1
             # print(f'Index {i}')
     return "???", 0, 0, 0, 0, 0  # Return None if no zone found
-
-# def get_pressure_category(pressure: int) -> str:
-#     """Map pressure value to category using linear search"""
-#     for i, threshold in enumerate(PRESSURE_THRESHOLDS):
-#         if pressure <= threshold:
-#             return PRESSURE_CATEGORIES[i-1]
-#     return PRESSURE_CATEGORIES[-1]  # Return last category if pressure exceeds all thresholds
-
-# def get_pressure_category_binary(pressure: int) -> str:
-#     """Map pressure value to category using binary search"""
-#     left, right = 0, len(PRESSURE_THRESHOLDS)
-#     while left < right:
-#         mid = (left + right) // 2
-#         if pressure <= PRESSURE_THRESHOLDS[mid]:
-#             right = mid
-#         else:
-#             left = mid + 1
-#     return PRESSURE_CATEGORIES[left]
 
 # endregion
 # region TIMED IRRIGATION
@@ -792,7 +775,10 @@ def show_space():
 def my_reset():
     ev_log.write(f"{long_time()} SOFT RESET\n")
     shutdown()
-    sleep(5)
+    sleep(FLUSH_PERIOD + 1)
+    beepx3()
+    lcd.setCursor(0,1)
+    lcd.printout("OK to power OFF")
     lcd.setRGB(0,0,0)
     lcd4x20.display_off()
     lcd4x20.backlight_off()
@@ -865,9 +851,8 @@ def shutdown()->None:
     pp_log.close()
     hf_log.flush()
     hf_log.close()
-    beepx3()
-    lcd.setCursor(0,1)
-    lcd.printout("OK to power OFF")
+
+    timer_mgr.cancel_all()
 
 def send_last_HF_data():
     filenames = [x for x in uos.listdir() if x.startswith("HF ") and x.endswith(".txt") ]
@@ -920,17 +905,6 @@ def show_dir():
     navigator.set_file_list(filelist)
 
     navigator.goto_first()
-    # navigator.next()
-    # navigator.previous()                # kludge to show first entry
-
-    # print(f'File list: {filelist}')   
-
-    # for f in uos.ilistdir():
-    #     fn = f[0]
-    #     if "tank" in fn:
-    #         fstat = uos.stat(fn)
-    #         fdate = fstat[7]
-    #         print(f'{fn} time {display_time(secs_to_localtime(fdate))}')
 
 def show_duty_cycle():
     boredc: float = borepump.calc_duty_cycle()
@@ -1495,7 +1469,7 @@ def count_HFkpa_ring()-> int:
             count += 1
     return count
 
-def calc_average_HFpressure(start:int, length:int)->int:
+def calc_average_HFpressure(start:int, length:int)->float:
     # if length > HI_FREQ_AVG_COUNT:
     #     print(f"***>>>calc_average_pressure: {start=} length {length} > {HI_FREQ_AVG_COUNT}")
     p = 0
@@ -1509,7 +1483,7 @@ def calc_average_HFpressure(start:int, length:int)->int:
             print(f"***>>>ZERO hi_freq_kpa ring buffer at index {mod_index}, {hf_kpa_hiwater=}, {length=}")
 
         p += tmp
-    return round(p/length)
+    return p/length
 
 def get_tank_depth():
     global depth, tank_is
@@ -1528,7 +1502,7 @@ def set_baseline_kpa(timer: Timer):
             for i in range(BASELINE_AVG_COUNT):
                 idx = (hi_freq_kpa_index - i - 1) % HI_FREQ_RINGSIZE    # need to -1 as index is the next write location
                 tmp = hi_freq_kpa_ring[idx]  # change to average hi_freq_kpa readings
-                ev_log.write(f"set_baseline:{idx=} {tmp=}\n")
+                # ev_log.write(f"set_baseline:{idx=} {tmp=}\n")
                 p += tmp
             baseline_pressure = int(p/BASELINE_AVG_COUNT)  # get average of last BASELINE_AVG_COUNT readings.
             baseline_time = time.time()
@@ -1587,9 +1561,7 @@ def updateData():
   
     get_tank_depth()
 
-    # depth = 1.0
-
-    ringbuf[ringbufferindex] = depth ; ringbufferindex = (ringbufferindex + 1) % ROC_AVERAGE
+    ringbuf[ringbufferindex] = depth ; ringbufferindex = (ringbufferindex + 1) % DEPTHRINGSIZE
     sma_depth = calc_SMA_Depth()
     time_factor = config_dict[DELAY] / 60
     if DEBUGLVL > 0:
@@ -1620,44 +1592,13 @@ def get_pressure():
     adc_val = bp_pressure.read_u16()
     measured_volts = 3.3 * float(adc_val) / 65535
     sensor_volts = measured_volts / VDIV_Ratio
-    kpa = max(0, int(sensor_volts * 200 - 100))     # 200 is 800 / delta v, ie 4.5 - 0.5
+    kpa = max(0, round(sensor_volts * 200 - 100))     # 200 is 800 / delta v, ie 4.5 - 0.5  Changed int to round 13/5/25
     # print(f"ADC value: {adc_val=}")
     return adc_val, kpa
      
-# def short_time()-> str:
-#     now   = secs_to_localtime(time.time())          # getcurrent time, convert to local SA time
-#     # year  = now[0]
-#     month = now[1]
-#     day   = now[2]
-#     hour  = now[3]
-#     min   = now[4]
-#     sec   = now[5]
-#     HMS = f"{hour:02}:{min:02}:{sec:02}"
-#     return f"{month:02}/{day:02} {HMS}"
-
-# def long_time()-> str:
-#     now   = secs_to_localtime(time.time())      # getcurrent time, convert to local SA time
-#     year  = now[0]
-#     month = now[1]
-#     day   = now[2]
-#     hour  = now[3]
-#     min   = now[4]
-#     sec   = now[5]
-#     HMS = f"{hour:02}:{min:02}:{sec:02}"
-#     return f"{year:4}/{month:02}/{day:02} {HMS}"
-
 def updateClock():
     global str_time
 
-    # now   = secs_to_localtime(time.time())      # getcurrent time, convert to local SA time
-    # year  = now[0]
-    # month = now[1]
-    # day   = now[2]
-    # hour  = now[3]
-    # min   = now[4]
-    # sec   = now[5]
-    # short_time = f"{hour:02}:{min:02}:{sec:02}"
-    # str_time = str(month) + "/" + str(day) + " " + short_time 
     str_time = short_time()
 
 def log_switch_error(new_state):
@@ -1769,7 +1710,7 @@ def borepump_OFF():
             else:
                 log_switch_error(new_state)
 
-def controlBorePump():
+def manage_tank_fill():
     global tank_is, radio, system
     if tank_is == fill_states[0]:		# Overfull
         buzzer.value(1)			        # raise alarm
@@ -1791,169 +1732,13 @@ def controlBorePump():
             if DEBUGLVL > 0: print("in controlBorePump, switching pump OFF")
             borepump_OFF()
 
-# def add_to_kpa_ring(kpa:int):
-#     """
-#     Add a kPa value to the ring buffer.  This is a circular buffer, so it will overwrite the oldest value when full.
-#     NOTE: This stores low-frequency average kpa... NOT high frequency kpa.  ANd this is what is visible via the LCD menu
-#     """
-#     global kparing, kpaindex
-
-#     if len(kparing) == 1 and len(kparing[0]) == 0:
-#         kparing[kpaindex] = (short_time(), kpa)
-#     else:
-#         if len(kparing) < KPARINGSIZE:
-#             kparing.append((short_time(), kpa))
-#             kpaindex = (kpaindex + 1) % KPARINGSIZE
-#         else:
-#             kpaindex = (kpaindex + 1) % KPARINGSIZE
-#             kparing[kpaindex] = (short_time(), kpa)
-
-time.time()
-
-# def add_to_event_ring(msg:str):
-#     global eventring, eventindex
-    
-#     if len(eventring) == 1 and len(eventring[0]) == 0:
-#         eventring[eventindex] = (short_time(), msg)
-#         # print(f"Event ring[{eventindex}]: {eventring[eventindex]}")
-#     else:
-#         if len(eventring) < EVENTRINGSIZE:
-#             # print("Appending...")
-#             eventring.append((short_time(), msg))
-#             eventindex = (eventindex + 1) % EVENTRINGSIZE
-#             # print(f"Event ring[{eventindex}]: {eventring[eventindex]}")
-#         else:
-#             eventindex = (eventindex + 1) % EVENTRINGSIZE
-#             # print(f"Overwriting index {eventindex}")
-#             eventring[eventindex] = (short_time(), msg)
-
-# NOTE: New version of this... requires multiple changes elasewhere:
-#   1. MenuNavigator list processing
-#   2. ???
-
-# def add_to_event_ring(msg: str) -> None:
-#     global eventring, eventindex, op_mode, event_repeat_count, event_last_message, event_last_message_time
-    
-#     current_time = time.time()
-
-#     # Handle first message case
-#     if not eventring:
-#         eventring.append((current_time, msg))
-#         eventindex = 0
-#         event_last_message = msg
-#         event_last_message_time = current_time
-#         event_repeat_count = 1
-#         return
-
-#     # Check if message is repeating
-#     if msg == event_last_message:
-#         if current_time - event_last_message_time <= REPEAT_TIME_LIMIT:
-#             event_repeat_count += 1
-#             if event_repeat_count > MAX_REPEATS:
-#                 str = f"Repeat event {msg} exceeded"
-#                 print(str)       # TODO do something more like sound alarm/buzzer or goto MAINT mode
-#                 ev_log.write(str + "\n")
-#                 error_ring.add(TankError.MAX_REPEAT_EVENT)
-#                 event_repeat_count = 1
-#                 op_mode = OP_MODE_MAINT
-#             # Update the existing entry with new repeat count
-#             if event_repeat_count > 1:
-#                 eventring[eventindex] = (event_last_message_time, f"{event_last_message} (x{event_repeat_count})")
-#                 event_last_message_time = current_time
-#             return
-#         else:
-#             # Time limit exceeded, start fresh
-#             event_repeat_count = 1
-#             add_entry_to_ring(current_time, msg)
-#     else:
-#         # Different message, start new entry
-#         event_repeat_count = 1
-#         add_entry_to_ring(current_time, msg)
-
-#     # Update tracking variables for the new message
-#     event_last_message = msg
-#     event_last_message_time = current_time
-
-# def add_entry_to_ring(timestamp: int, message: str) -> None:
-#     global eventring, eventindex
-    
-#     if len(eventring) < EVENTRINGSIZE:
-#         eventring.append((timestamp, message))
-#     else:
-#         eventindex = (eventindex + 1) % EVENTRINGSIZE
-#         eventring[eventindex] = (timestamp, message)
-#     eventindex = len(eventring) - 1
-
-# def add_to_switch_ring(msg:str):
-#     global switchring, switchindex
-
-#     if len(switchring) == 1 and len(switchring[0]) == 0:
-#         switchring[switchindex] = (short_time(), msg)
-#     else:
-#         if len(switchring) < SWITCHRINGSIZE:
-# #            print("Appending...")
-#             switchring.append((short_time(), msg))
-#             switchindex = (switchindex + 1) % SWITCHRINGSIZE
-#         else:
-#             switchindex = (switchindex + 1) % SWITCHRINGSIZE
-# #            print(f"Overwriting index {switchindex}")
-#             switchring[switchindex] = (short_time(), msg)
-
-# def dump_event_ring():                          # both rings are now tuples... (datestamp, msg)
-
-#     ev_len = len(eventring)
-#     print(f"Eventring has {ev_len} records")
-#     if ev_len > 0:
-#         if ev_len < EVENTRINGSIZE:
-#             for i in range(eventindex, -1, -1): # was index - 1... wrong!
-#                 s = eventring[i]
-#                 if len(s) > 0: print(f"Event log {i}: {s[0]} {s[1]}")
-#         else:
-#             i = (eventindex - 1) % EVENTRINGSIZE            # start with last log entered
-#             for k in range(EVENTRINGSIZE):
-#                 s = eventring[i]
-#                 if len(s) > 0: print(f"Event log {i}: {s[0]} {s[1]}")
-#                 i = (i - 1) % EVENTRINGSIZE
-#     else:
-#         print("Eventring empty")
-# def dump_event_ring():
-#     if not eventring:
-#         print("Eventring empty")
-#         return
-#     print("Event Log:")
-#     entries_to_show = len(eventring)
-#     current = eventindex
-    
-#     for _ in range(entries_to_show):
-#         entry = eventring[current]
-#         print(f"Event log {current}: {display_time(secs_to_localtime(entry[0]))} {entry[1]}")
-#         current = (current - 1) % entries_to_show
-
 def dump_zone_peak()->None:
     print("Zone Peak Pressures:")
     for z in peak_pressure_dict.keys():
         if peak_pressure_dict[z][1] > 0:
-            str = f"  Zone {z:<3}: peak {peak_pressure_dict[z][1]}kPa at {display_time(secs_to_localtime(peak_pressure_dict[z][0]))} : {peak_pressure_dict[z][2]} seconds after ON"
+            str = f"{display_time(secs_to_localtime(peak_pressure_dict[z][0]))}  Zone {z:<3}: peak {peak_pressure_dict[z][1]}kPa {peak_pressure_dict[z][2]} seconds after ON"
             print(str)
             ev_log.write(str + "\n")
-
-# def dump_error_ring():                          # both rings are now tuples... (datestamp, msg)
-
-#     ev_len = len(errorring)
-#     print(f"errorring has {ev_len} records")
-#     if ev_len > 0:
-#         if ev_len < ERRORRINGSIZE:
-#             for i in range(errorindex, -1, -1): # was index - 1... wrong!
-#                 s = errorring[i]
-#                 if len(s) > 0: print(f"error log {i}: {s[0]} {errors.get_description(s[1])}")
-#         else:
-#             i = (errorindex - 1) % ERRORRINGSIZE            # start with last log entered
-#             for k in range(ERRORRINGSIZE):
-#                 s = errorring[i]
-#                 if len(s) > 0: print(f"error log {i}: {s[0]} {errors.get_description(s[1])}")
-#                 i = (i - 1) % ERRORRINGSIZE
-#     else:
-#         print("errorring empty")
 
 def raiseAlarm(param, val):
 
@@ -1963,8 +1748,16 @@ def raiseAlarm(param, val):
     ev_log.write(f"{logstr}\n")
     event_ring.add(ev_str)
 
+def cancel_deadtime(timer:Timer)->None:
+    global op_mode
+
+    if previous_op_mode < OP_MODE_DISABLED:
+        ev_log.write(f'{display_time(secs_to_localtime(time.time()))} Disabled mode cancelled, returning to {previous_op_mode}\n')
+        event_ring.add("Disabled mode cancelled")
+        op_mode = previous_op_mode
+
 def kpadrop_cb(timer:Timer)->None:
-    global kpa_drop_timer, alarm
+    global kpa_drop_timer, alarm, op_mode, previous_op_mode, disable_timer
 
     alarm.value(0)                  # turn off alarm
     
@@ -1973,9 +1766,13 @@ def kpadrop_cb(timer:Timer)->None:
         kpa_drop_timer = None
 
     # if op_mode == OP_MODE_IRRIGATE: # don't abort... just turn off pump, but let cycle continue
-    drop_str = f"{long_time()} kPa DROP detected - stopped pump"
-    ev_log.write(drop_str + "\n")
+    disable_timer = Timer(period=DEAD_TIME*60*1000, mode=Timer.ONE_SHOT, callback=cancel_deadtime)
+    previous_op_mode = op_mode  # save to restore later
+    op_mode = OP_MODE_DISABLED
+
     borepump_OFF()              # turn off pump
+    drop_str = f"{long_time()} kPa DROP detected - stopped pump, disabling operation for {DEAD_TIME} minutes"
+    ev_log.write(drop_str + "\n")
     print(drop_str)
     # else:
     #     change_logging(False)
@@ -2066,21 +1863,22 @@ def checkForAnomalies()->None:
                 raiseAlarm(f"Baseline {baseline_pressure } lower than avg_kpa", average_kpa)
                 error_ring.add(TankError.BASELINE_LOW)
 
-            samples_since_last_ON = int((time.time() - last_ON_time) / (PRESSURE_PERIOD_MS / 1000))
-            expected_pressure_just_now = quad(qa, qb, qc, samples_since_last_ON - LOOKBACKCOUNT)
-            expected_pressure_now      = quad(qa, qb, qc, samples_since_last_ON)  # calculate expected pressure using quadratic equation
-            expected_drop = expected_pressure_just_now - expected_pressure_now    # TODO - this might need to look at cumulative runtime over say the last 12 hours
+            # samples_since_last_ON = int((time.time() - last_ON_time) / (PRESSURE_PERIOD_MS / 1000))
+            # expected_pressure_just_now = quad(qa, qb, qc, samples_since_last_ON - LOOKBACKCOUNT)
+            # expected_pressure_now      = quad(qa, qb, qc, samples_since_last_ON)  # calculate expected pressure using quadratic equation
+            # expected_drop = expected_pressure_just_now - expected_pressure_now    # TODO - this might need to look at cumulative runtime over say the last 12 hours
             # if pressure_drop > config_dict[MAXDROP]:          # first check for slow drift, or rapid change
-            av_p_just_now = calc_average_HFpressure(LOOKBACKCOUNT, AVG_KPA_DELAY)  # get average of last AVG_KPA_DELAY readings.
-            av_p_now      = calc_average_HFpressure(0, AVG_KPA_DELAY)  # get average of last AVG_KPA_DELAY readings.
-            actual_pressure_drop = av_p_just_now - av_p_now
+            av_p_just_now = calc_average_HFpressure(LOOKBACKCOUNT, HI_FREQ_AVG_COUNT)  # get average of last HI_FREQ_AVG_COUNT readings.
+            av_p_now      = calc_average_HFpressure(0, HI_FREQ_AVG_COUNT)
+            actual_pressure_drop = int(av_p_just_now - av_p_now)       # Important!  Avoid rounding errors.. avg drop of 0.3 on HT triggered alarm without this!
             # if isRapidDrop(LOOKBACKCOUNT, expected_drop):   # check for rapid drop... if so, then set alarm and turn off pump
                                     # WARNING: this looks back 120 records ... hence ref to hf_kpa_hiwater above
-            if actual_pressure_drop > expected_drop:
+            if actual_pressure_drop > config_dict[MAXDROP]:
                 runtime = (time.time() - last_ON_time)
                 runmins = int(runtime / 60)
                 runseconds = runtime % 60
-                raiseAlarm(f"Pressure DROP after {runmins}:{runseconds:02}. Expected:{expected_drop}", actual_pressure_drop)
+                # raiseAlarm(f"Pressure DROP after {runmins}:{runseconds:02}. Expected:{expected_drop}", actual_pressure_drop)
+                raiseAlarm(f"Pressure DROP after {runmins}:{runseconds:02}  Exceeds max drop:{config_dict[MAXDROP]}", actual_pressure_drop)
                 error_ring.add(TankError.PRESSUREDROP)
                 alarm.value(1)                              # this might change... to ONLY if not in TWM/IRRIGATE    
                 kpa_drop_timer = Timer(period=ALARMTIME * 1000, mode=Timer.ONE_SHOT, callback=kpadrop_cb)
@@ -2141,7 +1939,7 @@ def check_for_critical_states() -> None:
         if kpa_sensor_found:        # if we have a pressure sensor, check for critical values
             if avg_kpa_set:         # if we have a valid average kPa reading... but MUST be delayed until we have a few readings
                 if average_kpa > config_dict[MAXPRESSURE]:
-                    raiseAlarm("Excess kPa", average_kpa)
+                    raiseAlarm("Excess kPa", average_kpa)       # TODO this test should NOT use average_kpa... too slow.  15 seconds!!
                     error_ring.add(TankError.EXCESS_KPA)               
                     abort_pumping("check_for_critical_states: Excess kPa")
 
@@ -2183,7 +1981,7 @@ def DisplayInfo()->None:
             lcd4x20.putstr(f'{ut_short} {calc_pump_runtime(borepump)}')        # runtime calcs
 
             lcd4x20.move_to(0, 2)
-            lcd4x20.putstr(f'D {depth:<.2f} R {depth_ROC:<.2f} ZP {peak_pressure_dict[zone][1]:<3}')                # print depth & state in third line of LCD
+            lcd4x20.putstr(f'D {depth:<.2f} R{depth_ROC:>5.2f} ZP {peak_pressure_dict[zone][1]:>3}')                # print depth & state in third line of LCD
 
             lcd4x20.move_to(0, 3)
             lcd4x20.putstr(f'BL:{baseline_pressure:3} Av:{average_kpa:3} IP:{hi_freq_kpa_ring[hi_freq_kpa_index]:3}')        # print depth_ROC in third line of LCD
@@ -2327,12 +2125,13 @@ def LogData()->None:
     else:
         level_change = abs(depth - last_logged_depth)
         pressure_change = abs(last_logged_kpa - average_kpa)
-        if level_change > min_log_change_m:
+        if level_change > MIN_DEPTH_CHANGE_M:
             last_logged_depth = depth
             enter_log = True
         if pressure_change > MAX_KPA_CHANGE:
             last_logged_kpa = average_kpa
             enter_log = True
+
         if enter_log: tank_log.write(logstr)
     # tank_log.write(logstr)          # *** REMOVE AFTER kPa TESTING ***
     print(dbgstr)
@@ -2436,31 +2235,7 @@ def connect_wifi():
             time.sleep(1)
     system.on_event("ACK WIFI")
     print('Connected to:', wlan.ifconfig())
-
-# def secs_to_localtime(s):
-#     tupltime    = time.localtime(s)
-#     year        = tupltime[0]
-#     DST_end     = time.mktime((year, 4,(7-(int(5*year/4+4)) % 7),2,0,0,0,0,0)) # Time of April   change to end DST
-#     DST_start   = time.mktime((year,10,(7-(int(year*5/4+5)) % 7),2,0,0,0,0,0)) # Time of October change to start DST
-    
-#     if DST_end < s and s < DST_start:		# then adjust
-# #        print("Winter ... adding 9.5 hours")
-#         adj_time = time.localtime(s + int(9.5 * 3600))
-#     else:
-# #        print("DST... adding 10.5 hours")
-#         adj_time = time.localtime(s + int(10.5 * 3600))
-#     return(adj_time)
-
-# def display_time(t):
-#     year  = t[0]
-#     month = t[1]
-#     day   = t[2]
-#     hour  = t[3]
-#     min   = t[4]
-#     sec   = t[5]
-#     time_str = f"{year}/{month:02}/{day:02} {hour:02}:{min:02}:{sec:02}"
-#     return time_str
-    
+   
 def set_time():
  # Set time using NTP server
     print("Syncing time with NTP...")
@@ -2490,8 +2265,8 @@ def init_ringbuffers():
     global event_ring, error_ring, switch_ring, kpa_ring
 
     ringbuf = [0.0]                 # start with a list containing zero...
-    if ROC_AVERAGE > 1:             # expand it as needed...
-        for x in range(ROC_AVERAGE - 1):
+    if DEPTHRINGSIZE > 1:             # expand it as needed...
+        for x in range(DEPTHRINGSIZE - 1):
             ringbuf.append(0.0)
     if DEBUGLVL > 0: print("Ringbuf is ", ringbuf)
     ringbufferindex = 0
@@ -2526,16 +2301,6 @@ def init_ringbuffers():
         short_time_formatter=lambda t: format_local_time_short(t),
         logger=ev_log.write
     )
-    # eventring   = [tuple()]         # initialise to an empty tuple
-    # eventindex  = 0
-    # eventring = []          # initialize as empty list
-    # eventindex = -1        # -1 indicates empty ring
-    # switchring  = [tuple()]
-    # switchindex = 0
-    # kparing     = [tuple()]
-    # kpaindex    = 0
-    # errorring   = [tuple()]
-    # errorindex  = 0
 
     # for now, this one is different...
     hi_freq_kpa_ring = [0 for _ in range(HI_FREQ_RINGSIZE)]
@@ -2563,7 +2328,7 @@ def init_all():
     nav_btn_state       = False
 
     ev_log.write(f"\n{display_time(secs_to_localtime(time.time()))} Pump Monitor starting - sw ver:{SW_VERSION}\n")
-
+    ev_log.write(f'{DELAY=}s {PRESSURE_PERIOD_MS=}ms {DEPTHRINGSIZE=}\n')
     slist=[]
 
     Change_Mode(UI_MODE_NORM)
@@ -2589,10 +2354,6 @@ def init_all():
 
     init_ringbuffers()                      # this is required BEFORE we raise any alarms...
 
-    # navigator.set_event_list(event_ring.buffer)
-    # navigator.set_switch_list(switch_ring.buffer)
-    # navigator.set_kpa_list(kpa_ring.buffer)
-    # navigator.set_error_list(error_ring.buffer)
     navigator.set_buffer("events", event_ring.buffer)
     navigator.set_buffer("switch", switch_ring.buffer)
     navigator.set_buffer("kpa",    kpa_ring.buffer)
@@ -3052,7 +2813,7 @@ async def do_main_loop():
             sleep(1)
 
     start_time = time.time()
-    init_logging()          # needs corect time first!
+    init_logging()          # needs correct time first!
     print(f"Main TX starting {display_time(secs_to_localtime(start_time))} swv:{SW_VERSION}")
     updateClock()				    # get DST-adjusted local time
     
@@ -3092,9 +2853,9 @@ async def do_main_loop():
         if borepump.state: check_for_Baseline_Drift()                  # reset baseline pressure if pump is ON
         check_for_critical_states()
         if op_mode != OP_MODE_MAINT:
-            if op_mode != OP_MODE_IRRIGATE: 
+            if op_mode == OP_MODE_AUTO:             # changed, do nothing if OP_MODE_DISABLED or IRRIGATE
                 # if DEBUGLVL > 0: print(f"in DML, op_mode is {op_mode} controlBP() starting")
-                controlBorePump()		            # do nothing if in IRRIGATE mode
+                manage_tank_fill()		            # do nothing if in IRRIGATE mode
     #        listen_to_radio()		                # check for badness
             DisplayData()
             DisplayInfo()		                    # info display... one of several views
@@ -3104,7 +2865,7 @@ async def do_main_loop():
                 LogData()			                # record it
             if steady_state: checkForAnomalies()	# test for weirdness
             rec_num += 1
-            if rec_num > ROC_AVERAGE and not steady_state: steady_state = True    # just ignore data until ringbuf is fully populated
+            if rec_num > DEPTHRINGSIZE and not steady_state: steady_state = True    # just ignore data until ringbuf is fully populated
             delay_ms = config_dict[DELAY] * 1000
             if heartbeat():                         # send heartbeat if ON... not if OFF.  For now, anyway
                 delay_ms -= RADIO_PAUSE
