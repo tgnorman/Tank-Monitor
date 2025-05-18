@@ -13,7 +13,7 @@ class TimerManager:
         
         # Store original callback and schedule time
         self.callbacks[name] = callback
-        self.schedules[name] = time.time() + (period / 1000)  # Convert ms to seconds
+        self.schedules[name] = time.time() + int(period / 1000)  # Convert ms to seconds.  The int() is CRITICAL
         
         # Create and store timer
         self.timers[name] = Timer(period=period, mode=mode, callback=callback)
@@ -24,7 +24,7 @@ class TimerManager:
         return (name in self.schedules and 
                 self.schedules[name] > time.time())
 
-    def get_time_remaining(self, name: str) -> float:
+    def get_time_remaining(self, name: str) -> int:
         """Get seconds remaining until timer triggers"""
         if not self.is_pending(name):
             return 0
@@ -37,13 +37,13 @@ class TimerManager:
             
         # Calculate new trigger time and period
         remaining = self.get_time_remaining(name)
-        new_period = int((remaining + delay_seconds) * 1000)  # Convert to ms
+        new_period = int(remaining + delay_seconds)  # Convert to ms
         
         # Update schedule and recreate timer
-        self.schedules[name] = time.time() + remaining + delay_seconds
+        self.schedules[name] = time.time() + new_period
         self.timers[name].deinit()
         self.timers[name] = Timer(
-            period=new_period, 
+            period=new_period * 1000, 
             mode=Timer.ONE_SHOT,
             callback=self.callbacks[name]
         )

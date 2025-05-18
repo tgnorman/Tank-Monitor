@@ -19,6 +19,7 @@ docs/Design/*.fzz
 docs/Design/*.png
 docs/Design/*.jpg
 docs/Design/*.gif
+docs/Design/*.ipynb
 
 # Ignore test files
 src/tests/*
