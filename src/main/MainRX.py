@@ -19,6 +19,7 @@ import time
 import network
 import ntptime
 from secrets import MyWiFi
+from utils import now_time_long, now_time_tuple
 
 # Configure your WiFi SSID and password
 wf          = MyWiFi()
@@ -96,11 +97,11 @@ def switch_relay(state):
     if state:
         bore_ctl.value(1)			        # turn borepump ON to start
         led.value(1)
-        logstr = f"{display_time(secs_to_localtime(time.time()))} ON\n"
+        logstr = f"{now_time_long()} ON\n"
     else:
         bore_ctl.value(0)			        # turn borepump OFF to start
         led.value(0)
-        logstr = f"{display_time(secs_to_localtime(time.time()))} OFF\n"
+        logstr = f"{now_time_long()} OFF\n"
     event_log.write(logstr) 
     state_changed = pump_state != state     # definitive relay state change status
     pump_state = state			            # keep track of new state... for confirmation tests
@@ -128,30 +129,6 @@ def transmit_and_pause(msg, delay):
     if DEBUGLVL > 1: print(f"RX Sending {msg}")
     radio.send(msg)
     sleep_ms(delay)
-
-def secs_to_localtime(s):
-    tupltime = time.localtime(s)
-    year = tupltime[0]
-    DST_end   = time.mktime((year, 4,(31-(int(5*year/4+4))%7),2,0,0,0,0,0)) #Time of April change to end DST
-    DST_start = time.mktime((year,10,(7-(int(year*5/4+4)) % 7),2,0,0,0,0,0)) #Time of October change to start DST
-    
-    if DST_end < s and s < DST_start:		# then adjust
-#        print("Winter ... adding 9.5 hours")
-        adj_time = time.localtime(s + int(9.5 * 3600))
-    else:
-#        print("DST... adding 10.5 hours")
-        adj_time = time.localtime(s + int(10.5 * 3600))
-    return(adj_time)
-
-def display_time(t):
-    year  = t[0]
-    month = t[1]
-    day   = t[2]
-    hour  = t[3]
-    min   = t[4]
-    sec   = t[5]
-    time_str = f"{year}/{month:02}/{day:02} {hour:02}:{min:02}:{sec:02}"
-    return time_str
 
 def connect_wifi():
 # Connect to Wi-Fi
@@ -198,7 +175,7 @@ def init_logging():
     global year, month, day, shortyear
     global f, event_log, pp_log
 
-    now   = secs_to_localtime(time.time())      # getcurrent time, convert to local SA time
+    now   = now_time_tuple()      # getcurrent time, convert to local SA time
     year  = now[0]
     month = now[1]
     day   = now[2]
@@ -210,7 +187,7 @@ def init_logging():
 def housekeeping(close_files: bool):
     print("Flushing data to flash...")
 
-    event_log.write(f"Receiver shutdown at {display_time(secs_to_localtime(time.time()))}\n")
+    event_log.write(f"Receiver shutdown at {now_time_long()}\n")
     event_log.flush()
     if close_files:
         event_log.close()
@@ -222,7 +199,7 @@ def main():
     init_logging()
     start_time = time.time()
     state_changed = False
-    logstr = f"Receiver starting at {display_time(secs_to_localtime(start_time))}"
+    logstr = f"Receiver starting at {now_time_long()}\n"
     print(logstr)
     event_log.write(logstr + "\n")
 
@@ -295,7 +272,7 @@ def main():
             if pump_state:
                 if DEBUGLVL > 1: print(f"Radio silence period: {radio_silence_secs} seconds")
                 if radio_silence_secs > MAX_NON_COMM_PERIOD:     # Houston, we have a problem...
-                    logstr = f"{display_time(secs_to_localtime(now))} Max radio silence period exceeded!"
+                    logstr = f"{now_time_long()} Max radio silence period exceeded!"
                     print(logstr)
                     event_log.write(logstr + "\n")
                     switch_relay(False)             # pump_state now OFF

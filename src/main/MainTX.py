@@ -1,7 +1,7 @@
 # Trev's super dooper Tank/Pump monitoring system
 
 # region IMPORTS
-SW_VERSION          = "19/5/25"      # for display
+SW_VERSION          = "20/5/25"      # for display
 
 import RGB1602
 import umail # type: ignore
@@ -30,7 +30,8 @@ from i2c_lcd import I2cLcd
 from Pump import Pump
 from Tank import Tank
 from TMErrors import TankError
-from utils import secs_to_localtime, display_time, short_time, long_time, format_local_time, format_local_time_short
+# from utils import secs_to_localtime         # old methods... , display_time, short_time, long_time, format_secs_long, format_secs_short
+from utils import now_time_short, now_time_long, format_secs_short, format_secs_long, now_time_tuple
 from ringbuffer import RingBuffer, DuplicateDetectingBuffer
 from TimerManager import TimerManager
 
@@ -510,13 +511,13 @@ def toggle_borepump(x:Timer):
     mem = gc.mem_free()
     # need to use tuples to get this... cant index dictionary, as unordered.  D'oh...
     cyclename = str(sl_index)
-    # print(f'{long_time()} in toggle, {sl_index=}, {cyclename=}, {timer_state=}, {period=},  {secs} seconds... {mins} minutes... {mem} free')
+    # print(f'{now_time_long()} in toggle, {sl_index=}, {cyclename=}, {timer_state=}, {period=},  {secs} seconds... {mins} minutes... {mem} free')
     if op_mode == OP_MODE_IRRIGATE:
         if sl_index < len(slist) - 1:
             timer_state = (timer_state + 1) % 3
             now = time.time()
             if  timer_state == 1:
-                # print(f"{long_time()}: TOGGLE - turning pump ON")
+                # print(f"{now_time_long()}: TOGGLE - turning pump ON")
                 diff = slist[sl_index + 1] - slist[sl_index]        # look forward to next timer event
                 ON_cycle_end_time = now + diff * TIMERSCALE
                 if sl_index < len(slist) - 3:
@@ -529,20 +530,20 @@ def toggle_borepump(x:Timer):
             elif timer_state == 2:
                 # diff = slist[sl_index + 2] - slist[sl_index]
                 # nextcycle_ON_time = now + diff * TIMERSCALE
-                # print(f"{long_time()}: TOGGLE - turning pump OFF")
+                # print(f"{now_time_long()}: TOGGLE - turning pump OFF")
                 if not borepump.state:      # then it looks like a kpa test paused this cycle
-                    print(f"{long_time()}: TOGGLE - cycle paused - did we detect pressure drop?")
+                    print(f"{now_time_long()}: TOGGLE - cycle paused - did we detect pressure drop?")
 
                 borepump_OFF()       #turn_off()
             elif timer_state == 0:
                 pass
                 # diff = slist[sl_index + 1] - slist[sl_index]
                 # nextcycle_ON_time = now + diff * TIMERSCALE
-                # print(f"{long_time()}: TOGGLE - Doing nothing")
+                # print(f"{now_time_long()}: TOGGLE - Doing nothing")
             if sl_index == len(slist) - 2:              # we must be in penultimate cycle, or last cycle
                 next_ON_cycle_time = now - 2 * TIMERSCALE
 
-            # print(f" end cycle {display_time(secs_to_localtime(ON_cycle_end_time))}\nnext cycle {display_time(secs_to_localtime(next_ON_cycle_time))}")
+            # print(f" end cycle {format_time_short(secs_to_localtime(ON_cycle_end_time))}\nnext cycle {format_time_short(secs_to_localtime(next_ON_cycle_time))}")
             # now, set up next timer
             sl_index += 1
             diff = slist[sl_index] - slist[sl_index - 1]
@@ -551,7 +552,7 @@ def toggle_borepump(x:Timer):
             toggle_timer = Timer(period=diff*TIMERSCALE*1000, mode=Timer.ONE_SHOT, callback=toggle_borepump)
             # print(f"{timer_state=}")
         else:
-            prog_str = f"{long_time()} Ending timed watering..."
+            prog_str = f"{now_time_long()} Ending timed watering..."
             print(prog_str)
             event_ring.add("End PROG")
             ev_log.write(prog_str + "\n")
@@ -559,16 +560,16 @@ def toggle_borepump(x:Timer):
             op_mode = OP_MODE_AUTO
             DisplayData()       # show status immediately, don't wait for next loop ??
 
-            # print(f"{long_time()} in TOGGLE... END IRRIGATION mode !  Now in {op_mode}")
+            # print(f"{now_time_long()} in TOGGLE... END IRRIGATION mode !  Now in {op_mode}")
             if borepump.state:
                 borepump_OFF()       # to be sure, to be sure...
-                print(f"{long_time()} in toggle, at END turning bp OFF.  Should already be OFF...")
+                print(f"{now_time_long()} in toggle, at END turning bp OFF.  Should already be OFF...")
         if mem < 60000:
             print("Collecting garbage...")              # moved to AFTER timer created... might avoid the couple seconds discrepancy.  TBC
             gc.collect()
     else:
         if not program_cancelled:
-            print(f'{long_time()} in toggle {op_mode=}.  Why are we here?? Program has NOT been cancelled')
+            print(f'{now_time_long()} in toggle {op_mode=}.  Why are we here?? Program has NOT been cancelled')
 
 def apply_duty_cycle()-> None:
 
@@ -593,7 +594,7 @@ def start_irrigation_schedule():
         else:
             # apply_duty_cycle()                  # what it says
             swl=sorted(program_list, key = lambda x: x[0])      # so, the source of things is program_list... need to ensure that is updated
-            prog_str = f"{long_time()} Starting timed watering..."
+            prog_str = f"{now_time_long()} Starting timed watering..."
             print(prog_str)
             event_ring.add("Start PROG")
             ev_log.write(prog_str + "\n")
@@ -709,7 +710,7 @@ def cancel_program()->None:
         lcd.printout("Prog CANCELLED")
 
         event_ring.add("Prog cancelled")
-        ev_log.write(f"{long_time()} Prog cancelled\n")
+        ev_log.write(f"{now_time_long()} Prog cancelled\n")
 
     except:
         print("No prog to cancel")
@@ -780,7 +781,7 @@ def show_space():
     lcd.printout(f'Free KB: {free_space():<6}')
 
 def my_reset():
-    ev_log.write(f"{long_time()} SOFT RESET\n")
+    ev_log.write(f"{now_time_long()} SOFT RESET\n")
     shutdown()
     sleep(FLUSH_PERIOD + 1)
     beepx3()
@@ -836,8 +837,8 @@ def shutdown()->None:
     if borepump is not None:                # in case i bail before this is defined...
         if borepump.state:                  # to be sure...
             borepump_OFF()
-    ev_log.write(f"{long_time()} STOP\n")
-    ev_log.write(f"Monitor shutdown at {display_time(secs_to_localtime(time.time()))}\n")
+    ev_log.write(f"{now_time_long()} STOP\n")
+    ev_log.write(f"Monitor shutdown at {now_time_long()}\n")
     if borepump is not None: dump_pump_arg(borepump)
     if presspump is not None:
         if presspump.num_switch_events > 0:
@@ -903,7 +904,7 @@ def show_dir():
         # print(f'file {f}  stat returns: {fstat}')
         fsize = fstat[6]
         fdate = fstat[7]
-        print(f'{f} {fsize:>7} bytes, time {display_time(secs_to_localtime(fdate))}')
+        print(f'{f} {fsize:>7} bytes, time {format_secs_long(int(fdate))}')
 
         filelist.append((f, f'Size: {fsize}'))        # this is NOT kosher... allocating mem in ISR context
 
@@ -1028,24 +1029,24 @@ def make_more_space()->None:
         ftuple = uos.stat(f)
         kb = int(ftuple[6] / 1024)
         ts = ftuple[7]
-        tstr = display_time(secs_to_localtime(ts))
+        tstr = format_secs_long(int(ts))
         file_entry = tuple((f, kb, ts, tstr))
         hitList.append(file_entry)
 
     sorted_by_date = sorted(hitList, key=lambda x: x[2])
     print(f"Files by date:\n{sorted_by_date}")
     if free_space() < FREE_SPACE_LOWATER:
-        ev_log.write(f"{long_time()} Deleting files\n")
+        ev_log.write(f"{now_time_long()} Deleting files\n")
         while free_space() < FREE_SPACE_HIWATER:
             df = sorted_by_date[0][0]
             print(f"removing file {df}")
             uos.remove(df)
-            ev_log.write(f"{long_time()} Removed file {df} size{sorted_by_date[0][1]} Kb")
+            ev_log.write(f"{now_time_long()} Removed file {df} size{sorted_by_date[0][1]} Kb")
             sorted_by_date.pop(0)
 
         fs = free_space()
         print(f"After cleanup: {fs} Kb")
-        ev_log.write(f"{long_time()} free space {fs}")
+        ev_log.write(f"{now_time_long()} free space {fs}")
 
 def exit_maint_mode()->None:
     global op_mode
@@ -1430,7 +1431,7 @@ def init_logging():
     global year, month, day, shortyear
     global tank_log, ev_log, pp_log, eventlogname, hf_log
 
-    now             = secs_to_localtime(time.time())      # getcurrent time, convert to local SA time
+    now             = now_time_tuple()      # getcurrent time, convert to local SA time
     year            = now[0]
     month           = now[1]
     day             = now[2]
@@ -1518,9 +1519,9 @@ def set_baseline_kpa(timer: Timer):
             baseline_time = time.time()
             baseline_set = True
             bl_by_func = calc_average_HFpressure(0, BASELINE_AVG_COUNT)  # get average of last BASELINE_AVG_COUNT readings.
-            bp_str = f"{long_time()} Baseline set to {baseline_pressure} kPa.  Func returned {bl_by_func}"
+            bp_str = f"{now_time_long()} Baseline set to {baseline_pressure} kPa.  Func returned {bl_by_func}"
             bl_by_func = calc_average_HFpressure(0, BASELINE_AVG_COUNT)  # get average of last BASELINE_AVG_COUNT readings.
-            bp_str = f"{long_time()} Baseline set to {baseline_pressure} kPa.  Func returned {bl_by_func}"
+            bp_str = f"{now_time_long()} Baseline set to {baseline_pressure} kPa.  Func returned {bl_by_func}"
             print(bp_str)
             ev_log.write(bp_str + "\n")
 
@@ -1530,13 +1531,13 @@ def set_baseline_kpa(timer: Timer):
                     peak_pressure_dict[new_zone] = (time_peak, kpa_peak, time_peak - last_ON_time)     # set in read_pressure
                 else:
                     error_ring.add(TankError.ZONE_NOTFOUND)
-                z_str = f"{long_time()} Zone changed from {zone} to {new_zone}"
+                z_str = f"{now_time_long()} Zone changed from {zone} to {new_zone}"
                 zone = new_zone
                 print(z_str)
                 ev_log.write(z_str + "\n")
         else:                       # reset timer for another try
             print("No valid average kPa reading to set baseline.  Resetting timer...")
-            ev_log.write(f"{long_time()} set_baseline_kpa: resetting timer for extra 15 seconds\n")
+            ev_log.write(f"{now_time_long()} set_baseline_kpa: resetting timer for extra 15 seconds\n")
             timer.init(period=15 * 1000, mode=Timer.ONE_SHOT, callback=set_baseline_kpa)   # type: ignore
 
     except Exception as e:
@@ -1608,12 +1609,12 @@ def get_pressure():
 def updateClock():
     global str_time
 
-    str_time = short_time()
+    str_time = now_time_short()
 
 def log_switch_error(new_state):
     global ev_log
     print(f"!!! log_switch_error  !! {new_state}")
-    ev_log.write(f"{long_time()} ERROR on switching to state {new_state}\n")
+    ev_log.write(f"{now_time_long()} ERROR on switching to state {new_state}\n")
     event_ring.add(f"ERR swtch {new_state}")
     
 def parse_reply(rply):
@@ -1655,7 +1656,7 @@ def borepump_ON():
     global steady_state, rec_num
 
     if SIMULATE_PUMP:
-        print(f"{display_time(secs_to_localtime(time.time()))} SIM Pump ON")
+        print(f"{now_time_long()} SIM Pump ON")
     else:
         tup = ("ON", radio_time(time.time()))   # was previosuly counter... now, time
     #            print(tup)
@@ -1674,10 +1675,10 @@ def borepump_ON():
                 borepump.switch_pump(True)
                 last_ON_time = time.time()          # for easy calculation of runtime to DROP pressure OFF    
                 switch_ring.add("PUMP ON")
-                # print(f"***********Setting timer for average_kpa at {long_time()}")    
-                ev_log.write(f"{long_time()} ON\n")
+                # print(f"***********Setting timer for average_kpa at {now_time_long()}")    
+                ev_log.write(f"{now_time_long()} ON\n")
                 system.on_event("ON ACK")
-                # print(f"***********Setting timer for baseline_kpa at {long_time()}")
+                # print(f"***********Setting timer for baseline_kpa at {now_time_long()}")
                 if kpa_sensor_found:
                     hf_kpa_hiwater = 0              # reset this to zero... for calc average_pressure
                     avg_kpa_set = False             # ? Should I also set hf_kpa_index to 0 ??
@@ -1697,7 +1698,7 @@ def borepump_ON():
 def borepump_OFF():
 
     if SIMULATE_PUMP:
-        print(f"{display_time(secs_to_localtime(time.time()))} SIM Pump OFF")
+        print(f"{now_time_long()} SIM Pump OFF")
     else:
         tup = ("OFF", radio_time(time.time()))
     #            print(tup)
@@ -1714,7 +1715,7 @@ def borepump_OFF():
                 borepump.switch_pump(False)
                 switch_ring.add("PUMP OFF")
                 change_logging(False)
-                ev_log.write(f"{long_time()} OFF\n")
+                ev_log.write(f"{now_time_long()} OFF\n")
                 system.on_event("OFF ACK")
                 if DEBUGLVL > 1: print("borepump_OFF: Closing valve")
                 solenoid.value(1)               # wait until pump OFF confirmed before closing valve !!!
@@ -1747,13 +1748,13 @@ def dump_zone_peak()->None:
     print("Zone Peak Pressures:")
     for z in peak_pressure_dict.keys():
         if peak_pressure_dict[z][1] > 0:
-            str = f"{display_time(secs_to_localtime(peak_pressure_dict[z][0]))}  Zone {z:<3}: peak {peak_pressure_dict[z][1]}kPa {peak_pressure_dict[z][2]} seconds after ON"
+            str = f"{format_secs_long(peak_pressure_dict[z][0])}  Zone {z:<3}: peak {peak_pressure_dict[z][1]}kPa {peak_pressure_dict[z][2]} seconds after ON"
             print(str)
             ev_log.write(str + "\n")
 
 def raiseAlarm(param, val):
 
-    logstr = f"{long_time()} ALARM {param}, value {val:.3g}"
+    logstr = f"{now_time_long()} ALARM {param}, value {val:.3g}"
     ev_str = f"ALARM {param}, value {val:.3g}"
     print(logstr)
     ev_log.write(f"{logstr}\n")
@@ -1763,7 +1764,7 @@ def cancel_deadtime(timer:Timer)->None:
     global op_mode
 
     if previous_op_mode < OP_MODE_DISABLED:
-        str = f'{display_time(secs_to_localtime(time.time()))} Disabled mode cancelled, returning to {previous_op_mode}'
+        str = f'{now_time_long()} Disabled mode cancelled, returning to {previous_op_mode}'
         ev_log.write(f'{str}\n')
         print(str)
         event_ring.add("Disabled mode cancelled")
@@ -1789,7 +1790,7 @@ def kpadrop_cb(timer:Timer)->None:
     recovery_time = last_runsecs * 2        # simple version for quick test  TODO review recovery_time
     # disable_timer = Timer(period=recovery_time*1000, mode=Timer.ONE_SHOT, callback=cancel_deadtime)
     timer_mgr.create_timer('disable', recovery_time * 1000, cancel_deadtime)
-    drop_str = f"{long_time()} kPa DROP detected - stopped pump, disabling operation for {recovery_time / 60} minutes"
+    drop_str = f"{now_time_long()} kPa DROP detected - stopped pump, disabling operation for {recovery_time / 60} minutes"
     ev_log.write(drop_str + "\n")
     print(drop_str)
     # else:
@@ -1837,7 +1838,7 @@ def isRapidDrop(lookback:int, zone_max_drop: int)->bool:
     return prev_avg - average_kpa < zone_max_drop
     # if prev_avg - average_kpa < zone_max_drop:   # looks like a slow drift, not a rapid drop
         # if abs(average_kpa - zone_minimum) < 5:  # if we are close to the minimum pressure, then don't reset baseline]:
-        #     near_min_str = f"{long_time()} Pressure near zone minimum, not resetting baseline: {zone_minimum=}, {average_kpa=}"
+        #     near_min_str = f"{now_time_long()} Pressure near zone minimum, not resetting baseline: {zone_minimum=}, {average_kpa=}"
         #     print(near_min_str)
         #     ev_log.write(near_min_str + "\n")
         #     return True
@@ -1846,7 +1847,7 @@ def isRapidDrop(lookback:int, zone_max_drop: int)->bool:
         #     old_baseline = baseline_pressure
         #     baseline_pressure = average_kpa
         #     baseline_time = time.time()
-        #     bl_reset_str = f'{long_time()} Baseline reset from {old_baseline} to {baseline_pressure}'
+        #     bl_reset_str = f'{now_time_long()} Baseline reset from {old_baseline} to {baseline_pressure}'
         #     print(bl_reset_str)
         #     ev_log.write(bl_reset_str + "\n")
         #     event_ring.add("Baseline reset")
@@ -1860,14 +1861,14 @@ def check_for_Baseline_Drift()->None:
     # prev_avg = calc_average_HFpressure(lookback, LO_FREQ_AVG_COUNT)
     if average_kpa > 0 and baseline_pressure / average_kpa > 1.1:         # average_kpa has dropped of more than 10% from previous baseline
         if abs(average_kpa - zone_minimum) < 5:
-            near_min_str = f"{long_time()} Pressure near zone minimum, not resetting baseline: {zone_minimum=}, {average_kpa=}"
+            near_min_str = f"{now_time_long()} Pressure near zone minimum, not resetting baseline: {zone_minimum=}, {average_kpa=}"
             print(near_min_str)
             ev_log.write(near_min_str + "\n")
         else:
             old_baseline = baseline_pressure
             baseline_pressure = average_kpa
             baseline_time = time.time()
-            bl_reset_str = f'{long_time()} Baseline reset in check_for_Drift from {old_baseline} to {baseline_pressure}'
+            bl_reset_str = f'{now_time_long()} Baseline reset in check_for_Drift from {old_baseline} to {baseline_pressure}'
             print(bl_reset_str)
             ev_log.write(bl_reset_str + "\n")
             event_ring.add("Baseline reset")
@@ -1936,13 +1937,13 @@ def abort_pumping(reason:str)-> None:
 
     if borepump.state:              # pump is ON
         borepump_OFF()
-    logstr = f"{long_time()} ABORT invoked! {reason}"
+    logstr = f"{now_time_long()} ABORT invoked! {reason}"
     print(logstr)
     event_ring.add("ABORT!!")
     ev_log.write(logstr + "\n")
     lcd.clear()
     lcd.setCursor(0,0)
-    lcd.printout(short_time())
+    lcd.printout(now_time_short())
     lcd.setCursor(0,1)
     lcd.printout("MAINTENANCE MODE")
     BlinkDelay = 300               # fast LED flash to indicate maintenance mode
@@ -2110,7 +2111,7 @@ def DisplayData()->None:
                     secs_to_next_ON = next_ON_cycle_time - now 
                     if secs_to_next_ON < 0:                 # there is no next ON...
                         display_str = "End TWM soon"        # TODO ... fix this display to a proper time
-                        # print(f"{display_time(secs_to_localtime(now))}: {secs_to_next_ON=}")
+                        # print(f"{format_secs_long(now)}: {secs_to_next_ON=}")
                     else:
                         if secs_to_next_ON < 60:
                             display_str = f"Wait {cycle_number}/{total_cycles} {secs_to_next_ON}s"
@@ -2247,7 +2248,7 @@ def dump_pump_arg(p:Pump):
 
     dc: float = p.calc_duty_cycle()
     
-    ev_log.write(f"Last switch time:   {display_time(secs_to_localtime(p.last_time_switched))}\n")
+    ev_log.write(f"Last switch time:   {format_secs_long(p.last_time_switched)}\n")
     ev_log.write(f"Total switches this period: {p.num_switch_events}\n")
     ev_log.write(f"Cumulative runtime: {days} days {hours} hours {mins} minutes {secs} seconds\n")
     ev_log.write(f"Duty cycle: {dc:.2f}%\n")
@@ -2307,31 +2308,31 @@ def init_ringbuffers():
 # Standard ring buffer for errors using the instance
     error_ring = RingBuffer(
         size=ERRORRINGSIZE, 
-        time_formatter=lambda t: format_local_time(t),
-        short_time_formatter=lambda t: format_local_time_short(t),
+        time_formatter=lambda t: format_secs_long(t),
+        short_time_formatter=lambda t: format_secs_short(t),
         value_formatter=lambda x: errors.get_description(x),
         logger=ev_log.write
     )
 
     switch_ring = RingBuffer(
         size=SWITCHRINGSIZE, 
-        time_formatter=lambda t: format_local_time(t),
-        short_time_formatter=lambda t: format_local_time_short(t),
+        time_formatter=lambda t: format_secs_long(t),
+        short_time_formatter=lambda t: format_secs_short(t),
         logger=ev_log.write
     )
 
     kpa_ring = RingBuffer(
         size=KPARINGSIZE, 
-        time_formatter=lambda t: format_local_time(t),
-        short_time_formatter=lambda t: format_local_time_short(t)
+        time_formatter=lambda t: format_secs_long(t),
+        short_time_formatter=lambda t: format_secs_short(t)
     )
 
     # Ring buffer with duplicate detection for events
     event_ring = DuplicateDetectingBuffer(
         size=EVENTRINGSIZE,
         time_limit=10,
-        time_formatter=lambda t: format_local_time(t),
-        short_time_formatter=lambda t: format_local_time_short(t),
+        time_formatter=lambda t: format_secs_long(t),
+        short_time_formatter=lambda t: format_secs_short(t),
         logger=ev_log.write
     )
 
@@ -2360,7 +2361,7 @@ def init_all():
     nav_btn_last_time   = 0
     nav_btn_state       = False
 
-    ev_log.write(f"\n{display_time(secs_to_localtime(time.time()))} Pump Monitor starting - sw ver:{SW_VERSION}\n")
+    ev_log.write(f"\n{now_time_long()} Pump Monitor starting - sw ver:{SW_VERSION}\n")
     ev_log.write(f'{config_dict[DELAY]=}s {PRESSURE_PERIOD_MS=}ms {DEPTHRINGSIZE=}\n')
     
     slist=[]
@@ -2436,11 +2437,11 @@ def init_all():
         lcd4x20.move_to(0, 3)
         lcd4x20.putstr(f'NO PS: kPa:{startup_calibrated_pressure:2}')
         print(f'{PS_ND} {startup_calibrated_pressure=}')
-        ev_log.write(f"{display_time(secs_to_localtime(time.time()))}  {PS_ND} initial:{startup_calibrated_pressure:3} - HF kPa logging disabled\n")
+        ev_log.write(f"{now_time_long()}  {PS_ND} initial:{startup_calibrated_pressure:3} - HF kPa logging disabled\n")
         change_logging(False)
     else:
         print(f"Pressure sensor detected - {startup_raw_ADC=} {startup_calibrated_pressure=}")
-        ev_log.write(f"{display_time(secs_to_localtime(time.time()))} Pressure sensor detected - logging enabled\n")
+        ev_log.write(f"{now_time_long()} Pressure sensor detected - logging enabled\n")
 
     enable_controls()               # enable rotary encoder, LCD B/L button etc
     ONESECBLINK         = 850          # 1 second blink time for LED
@@ -2545,7 +2546,7 @@ async def monitor_vbus()->None:
                 now = time.time()
                 vbus_on_time = now
                 report_outage = True
-                s = f"{display_time(secs_to_localtime(time.time()))}  {str_restored}\n"
+                s = f"{now_time_long()}  {str_restored}\n"
                 print(s)
                 event_ring.add(str_restored)
                 ev_log.write(s)
@@ -2554,7 +2555,7 @@ async def monitor_vbus()->None:
                 vbus_status = True
         else:
             if report_outage:
-                s = f"{display_time(secs_to_localtime(time.time()))}  {str_lost}\n"
+                s = f"{now_time_long()}  {str_lost}\n"
                 print(s)
                 event_ring.add(str_lost)
                 ev_log.write(s)
@@ -2565,7 +2566,7 @@ async def monitor_vbus()->None:
 
             now = time.time()
             if (now - vbus_on_time >= MAX_OUTAGE) and report_outage:
-                s = f"{display_time(secs_to_localtime(time.time()))}  Power off more than {MAX_OUTAGE} seconds\n"
+                s = f"{now_time_long()}  Power off more than {MAX_OUTAGE} seconds\n"
                 print(s)
                 ev_log.write(s)  # seconds since last saw power 
                 event_ring.add("MAX_OUTAGE")
@@ -2606,7 +2607,7 @@ async def read_pressure()->None:
             lcd4x20.putstr(f"{bpp:>3}")
             if config_dict[LOGHFDATA] > 1:      # conditionally, write to logfile... but note I ALWAYS add to the ring buffer
                                             # This gets switched On/OFF depending on pump state... but NOTE: buffer updates happen ALWAYS!
-                hf_log.write(f"{display_time(secs_to_localtime(time.time()))} {bpp:>3} {hi_freq_avg}\n")
+                hf_log.write(f"{now_time_long()} {bpp:>3} {hi_freq_avg}\n")
             if ui_mode == UI_MODE_NORM:
                 if op_mode ==  OP_MODE_AUTO: 
                     if display_mode == "pressure":
@@ -2774,7 +2775,6 @@ async def check_rotary_state(menu_sleep:int)->None:
         async with enc_btn_lock:    # type: ignore
 
             if encoder_btn_state:               # button pressed
-                print(">", end="")
                 do_enter_process()
                 encoder_btn_state = False
                 # DisplayDebug()
@@ -2849,7 +2849,7 @@ async def do_main_loop():
 
     start_time = time.time()
     init_logging()          # needs correct time first!
-    print(f"Main TX starting {display_time(secs_to_localtime(start_time))} swv:{SW_VERSION}")
+    print(f"Main TX starting {format_secs_long(start_time)} swv:{SW_VERSION}")
     updateClock()				    # get DST-adjusted local time
     
     get_tank_depth()
@@ -2904,7 +2904,7 @@ async def do_main_loop():
             delay_ms = config_dict[DELAY] * 1000
             if heartbeat():                         # send heartbeat if ON... not if OFF.  For now, anyway
                 delay_ms -= RADIO_PAUSE
-            # print(f"{long_time()} main loop: {rec_num=}, {op_mode=}, {steady_state=}, {delay_ms=}")
+            # print(f"{now_time_long()} main loop: {rec_num=}, {op_mode=}, {steady_state=}, {delay_ms=}")
         await asyncio.sleep_ms(delay_ms)
 
 # endregion

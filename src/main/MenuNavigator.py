@@ -8,9 +8,9 @@
 
 import time
 from RGB1602 import RGB1602
-from utils import LCD_time, secs_to_localtime
+from utils import format_secs_short         # old methodsLCD_time, secs_to_localtime
 from TMErrors import TankError
-from ringbuffer import RingBuffer, DuplicateDetectingBuffer
+# from ringbuffer import RingBuffer, DuplicateDetectingBuffer
 
 # This 4x20 lcd no longer used by navigator... maybe later I will return to this.
 # from lcd_api import LcdApi
@@ -88,7 +88,7 @@ class MenuNavigator:
             return f'{self.mode:<16}', "Nothing here"
             
         if self.mode == "view_ring":
-            datestamp = LCD_time(secs_to_localtime(int(hist_str[0])))
+            datestamp = format_secs_short(int(hist_str[0]))
             log_txt = (self.errors.get_code(hist_str[1]) 
                     if self.displaylistname == "errors" 
                     else hist_str[1])
@@ -184,166 +184,8 @@ class MenuNavigator:
         if "value" in item:
             self.LCD2R.setCursor(0, 1)
             self.LCD2R.printout(item['value']['W_V'])
-
-            # lcd4x20.move_to(0, 2)
-            # lcd4x20.putstr(str(item['value']['W_V']))
 #        print("Current Item: ", item)
 #        print(f"Current Item: {item['title']}")
-
-#     def next(self):
-#         # print(f"In NEXT, {self.mode=}")
-#         if self.mode == "menu":
-#             # menu_len = len(self.current_level[-1]["items"])
-#             # if self.current_menuindex < len(self.current_level[-1]["items"]) - 1:
-#             current = self.current_level[-1]
-#             menu_len = len(current['submenu']["items"])
-#             self.current_menuindex = (self.current_menuindex + 1) % menu_len
-#             current['index'] = self.current_menuindex
-#             self.display_current_item()
-#         elif self.mode == "value_change":
-#             item = self.get_current_item()
-#             # print(f'In NEXT, item is {item}')
-#             # if item['value']['W_V'] == 0:
-#             # if self.new_value == 0:
-#             #     print("Setting new_value to default...")
-#             #     self.new_value = item['value']['D_V']
-#             step = item['value']['Step']
-# # no if need for inc...            
-#             self.new_value += step
-#             # print(f'In NEXT self.new_value is {self.new_value}')
-#             self.LCD2R.setCursor(0, 1)
-#             self.LCD2R.printout(str(self.new_value) + "      ")
-
-#             # lcd4x20.move_to(0, 2)
-#             # lcd4x20.putstr(str(self.new_value) + "      ")
-#         elif "view_" in self.mode: #self.mode == "view_events" or self.mode == "view_switch":
-#             # print(f'In NEXT {self.mode=}')
-#             if self.mode == "view_ring":
-#                 if self.displaylist is not None:
-#                     # print(f"len = {len(self.eventlist)}")
-#                     if len(self.displaylist) > 0:
-#                         hist_str = self.displaylist[self.display_navindex]
-#                         self.display_navindex = (self.display_navindex + 1) % len(self.displaylist)
-#                     else:
-#                         hist_str = f"{self.displaylistname}list: Empty"
-#                 else:
-#                     hist_str = f"{self.displaylistname}list: None"
-#             # elif self.mode == "view_events":
-#             #     if self.eventlist is not None:
-#             #         # print(f"len = {len(self.eventlist)}")
-#             #         if len(self.eventlist) > 0:
-#             #             hist_str = self.eventlist[self.event_navindex]
-#             #             self.event_navindex = (self.event_navindex + 1) % len(self.eventlist)
-#             #         else:
-#             #             hist_str = "Eventlist: Empty"
-#             #     else:
-#             #         hist_str = "Eventlist: None"
-#             # elif self.mode == "view_switch":
-#             #     if self.switchlist is not None:
-#             #         if len(self.switchlist) > 0:
-#             #             hist_str = self.switchlist[self.switch_navindex]
-#             #             self.switch_navindex = (self.switch_navindex + 1) % len(self.switchlist)
-#             #         else:
-#             #             hist_str = "Switchlist: Empty"
-#             #     else:
-#             #         hist_str = "Switchlist: None"
-#             # elif self.mode == "view_errors":
-#             #     if self.errorlist is not None:
-#             #         if len(self.errorlist) > 0:
-#             #             ring_val = self.errorlist[self.error_navindex]
-#             #             hist_str = self.errors.get_description(ring_val)
-#             #             self.error_navindex = (self.error_navindex + 1) % len(self.errorlist)     # check if this is right
-#             #         else:
-#             #             hist_str = "Errorlist: Empty"
-#             #     else:
-#             #         hist_str = "Errorlist: None"              
-#             # elif self.mode == "view_kpa":
-#             #     # print(f'In NEXT , view_kpa... {self.mode=}')
-#             #     if self.kpalist is not None:
-#             #         # print(f'In NEXT {self.kpa_navindex=}')
-#             #         if len(self.kpalist) > 0:
-#             #             hist_str = self.kpalist[self.kpa_navindex]
-#             #             self.kpa_navindex = (self.kpa_navindex + 1) % len(self.kpalist)
-#             #         else:
-#             #             hist_str = "kPalist: Empty"
-#             #     else:
-#             #         # print("In NEXT, kpalist is None")
-#             #         hist_str = "kPalist: None"
-#             elif self.mode == "view_program":
-#                 if self.programlist is not None:
-#                     if len(self.programlist) > 0:
-#                         self.program_navindex = (self.program_navindex + 1) % len(self.programlist)
-#                         prog_name = self.programlist[self.program_navindex][0]
-#                         prog_duration = self.programlist[self.program_navindex][1]["run"]
-#                         prog_wait = self.programlist[self.program_navindex][1]["off"]
-#                         prog_str = f'Run {prog_duration} Off {prog_wait}'
-#                         hist_str = tuple((prog_name, prog_str))
-#                         # print(f'In NEXT {hist_str=}')
-#                     else:
-#                         hist_str = "Prog list: Empty"
-#                 else:
-#                     hist_str = "Prog list: None"
-#             elif self.mode == "view_files":
-#                 if self.filelist is not None:
-#                     if len(self.filelist) > 0:
-#                         self.file_navindex = (self.file_navindex + 1) % len(self.filelist)
-#                         hist_str = self.filelist[self.file_navindex]
-#                     else:
-#                         hist_str = "File list: Empty"
-#                 else:
-#                     hist_str = "File list: None"
-#             if type(hist_str) == tuple:
-#                 if(len(hist_str) > 0):
-#                     if self.mode == "view_ring":  # "view_events" or self.mode == "view_errors" or self.mode == "view_switch"or self.mode == "view_kpa":
-#                         hs0 = int(hist_str[0])
-#                         # print(f"in NEXT/events B4 nstl: {hs0=}")
-#                         lt = secs_to_localtime(hs0)
-#                         # print(f"in NEXT/events: {hs0=}  {lt=}")
-#                         lcdt = LCD_time(lt)
-#                         # print(f"SELF: {hist_str[0]=} of type {type(hist_str[0])}")
-#                         datestamp = lcdt
-#                     else:
-#                         datestamp = hist_str[0]
-#                     if self.mode == "view_ring" and self.displaylistname == "errors":      # special lookup required
-#                         log_txt = self.errors.get_code(hist_str[1])
-#                     else:
-#                         log_txt   = hist_str[1]
-#                     # print(f"in NEXT/events {log_txt=}")
-#                 else:
-#                     datestamp = f'{self.mode:<16}'
-#                     log_txt   = "Nothing here"
-#             else:
-#                 datestamp = "Err in NEXT"
-#                 log_txt   = "hist not a tuple"
-
-#             self.LCD2R.setCursor(0, 0)
-#             self.LCD2R.printout(f'{datestamp:<16}')
-#             self.LCD2R.setCursor(0, 1)
-#             self.LCD2R.printout(f'{log_txt:<16}')
-
-#             # lcd4x20.move_to(0, 2)
-#             # lcd4x20.putstr(f'{datestamp:<16}')
-#             # lcd4x20.move_to(0, 3)
-#             # lcd4x20.putstr(f'{log_txt:<16}')
-#         elif self.mode == "wait":
-#             # print(f'In NEXT, wait mode... {self.mode=}')
-#             self.go_back()              # go back to previous menu level
-#         else:
-#             # print(f"In NEXT, {self.mode=}")
-#             self.LCD2R.setCursor(0, 1)
-#             self.LCD2R.printout(f'{self.mode=}')
-
-    # def next(self):
-    #     if self.mode == "menu":
-    #         self._handle_menu_move(forward=True)
-    #     elif self.mode == "value_change":
-    #         self._handle_value_change(increment=True)
-    #     elif "view_" in self.mode:
-    #         hist_str = self._handle_ring_view(forward=True)
-    #         datestamp, log_txt = self._format_display_entry(hist_str)
-    #         self._update_display(datestamp, log_txt)
-    #     elif self.mode == "wait":
-    #         self.go_back()
 
     def next(self):
         if self.mode == "menu":
