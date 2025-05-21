@@ -10,6 +10,7 @@ Libraries/
 
 # Ignore output, docs and archive directories
 logs/
+logData/*
 archive/
 Chats/*
 docs/*.txt
