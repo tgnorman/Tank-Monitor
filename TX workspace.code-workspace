@@ -12,7 +12,7 @@
 			"name": "PicoDev libs"
 		},
 		{
-			"name": "TX Pico Workspace",
+			"name": "Mpy Remote Workspace",
 			"uri": "pico:"
 		}
 	],
