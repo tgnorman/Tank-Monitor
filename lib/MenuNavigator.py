@@ -74,10 +74,10 @@ class MenuNavigator:
         if not self.displaylist:
             return f"{self.displaylistname}list: Empty"
             
-        hist_str = self.displaylist[self.display_navindex]
         direction = 1 if forward else -1
         self.display_navindex = (self.display_navindex + direction) % len(self.displaylist)
-        return hist_str
+        hist_str = self.displaylist[self.display_navindex]      # moved to AFTER index update... 22/5/25
+        return hist_str                                         # now consistent with handle_list_view
 
     def _format_display_entry(self, hist_str):
         """Format entry for LCD display"""
