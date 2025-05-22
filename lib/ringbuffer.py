@@ -38,7 +38,10 @@ class RingBuffer:
         for _ in range(entries):
             entry = self.buffer[current]
             if self.value_formatter:
-                message = f"Log {current:2}: {time_fmt(entry[0])} {self.value_formatter(entry[1])}\n"   # type: ignore
+                tmp = entry[1]                          # Yuk.  This scrambled code is because I now overload the tuple 2nd elemnt
+                if type(tmp) == str:                    # error_ring has either an int... or an int followed by a repeat count string
+                    tmp = int(tmp.split(" ")[0])        # Maybe there's a better way to do this...
+                message = f"Log {current:2}: {time_fmt(entry[0])} {self.value_formatter(tmp)}\n"   # type: ignore
             else:
                 message = f"Log {current:2}: {time_fmt(entry[0])} {entry[1]}\n"                         # type: ignore
             self.logger(message)
@@ -66,8 +69,8 @@ class RingBuffer:
         return (timestamp, message)
 
 class DuplicateDetectingBuffer(RingBuffer):
-    def __init__(self, size, time_limit, time_formatter=None, short_time_formatter=None, logger=print):
-        super().__init__(size, time_formatter, short_time_formatter, logger=logger)
+    def __init__(self, size, time_limit, time_formatter=None, short_time_formatter=None, value_formatter=None, logger=print):
+        super().__init__(size, time_formatter, short_time_formatter, value_formatter, logger=logger)
         self.time_limit = time_limit
         self.last_message = None
         self.last_message_time = 0

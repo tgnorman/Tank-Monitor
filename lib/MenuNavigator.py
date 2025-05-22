@@ -89,12 +89,18 @@ class MenuNavigator:
             
         if self.mode == "view_ring":
             datestamp = format_secs_short(int(hist_str[0]))
-            log_txt = (self.errors.get_code(hist_str[1]) 
-                    if self.displaylistname == "errors" 
-                    else hist_str[1])
+            if self.displaylistname == "errors":
+                tmp = hist_str[1]
+                if type(tmp) == str:
+                    tmp = int(tmp.split(" ")[0])
+                log_txt = self.errors.get_code(tmp)                 # needed since I added duplicate count after code
+            else:
+                log_txt = hist_str[1]
+            if type(log_txt) == str: log_txt = log_txt[:16]         # trim to 16 chars
         else:
             datestamp = hist_str[0]
             log_txt = hist_str[1]
+            if type(log_txt) == str: log_txt = log_txt[:16]         # trim to 16 chars
             
         return datestamp, log_txt
 
@@ -198,7 +204,7 @@ class MenuNavigator:
         elif self.mode in ["view_program", "view_files"]:
             list_name = self.mode.split("_")[1]
             timestamp, message = self._handle_list_view(list_name, forward=True)
-            self._update_display(timestamp, message)
+            self._update_display(timestamp, message[:16])
         elif self.mode == "wait":
             self.go_back()
 
@@ -213,7 +219,7 @@ class MenuNavigator:
         elif self.mode in ["view_program", "view_files"]:
             list_name = self.mode.split("_")[1]
             timestamp, message = self._handle_list_view(list_name, forward=False)
-            self._update_display(timestamp, message)
+            self._update_display(timestamp, message[:16])
         elif self.mode == "wait":
             self.go_back()
     # def previous(self):
