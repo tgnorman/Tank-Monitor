@@ -36,9 +36,9 @@ from TimerManager import TimerManager
 
 # endregion
 # region INITIALISE
-SW_VERSION          = "27/5/25"      # for display
+SW_VERSION          = "28/5/25"      # for display
 PRODUCTION_MODE     = False         # change to True when no longer in development cycle
-CALIBRATE_MODE      = True
+CALIBRATE_MODE      = False
 
 # micropython.mem_info()
 # gc.collect()
@@ -109,7 +109,7 @@ SIMULATE_PUMP       = False         # debugging aid...replace pump switches with
 SIMULATE_KPA        = False         # debugging aid...replace pressure sensor with a PRINT
 
 # Physical Constants
-Tank_Height         = 2500          # was 1700 ... changed 27/5/25
+Tank_Height         = 2600          # was 1700 ... changed 28/5/25.  Compared reading 1.71m to physical measure 1.81 - increased 
 OverFull	        = 300
 Delta               = 50            # this is NOT calibration accuracy!  It defines the size of Nearly full/empty zones
 TEMP_CONV_FACTOR 	= 3.3 / 65535   # looks like 3.3V / max res of 16-bit ADC ??
@@ -128,7 +128,7 @@ ui_mode             = UI_MODE_NORM
 LOG_FREQ            = 1
 last_logged_depth   = 0
 last_logged_kpa     = 0
-LOG_MIN_DEPTH_CHANGE_M  = 0.005          # TODO reset after test run. to save space... only write to file if significant change in level
+LOG_MIN_DEPTH_CHANGE_M  = 0.01      # reset after test run. to save space... only write to file if significant change in level
 LOG_MIN_KPA_CHANGE  = 10            # update after pressure sensor active
 level_init          = False 		# to get started
 
@@ -1145,49 +1145,44 @@ Value_Str  = "value"
 ActionStr  = "action"
 Step_Str   = "Step"
 
-# TODO add an admin menu section...
+# added new admin menu section...
 new_menu = {
     Title_Str: "L0 Main Menu",
     "items": [              # items[0]
       {
         Title_Str: "1 Display->",         # items[0]
         "items": [
-          { Title_Str: "1.1 Pressure", ActionStr: display_pressure},
-          { Title_Str: "1.2 Depth",    ActionStr: display_depth},
-          { Title_Str: "1.3 Files",    ActionStr: show_dir},
-          { Title_Str: "1.4 Space",    ActionStr: show_space},
-          { Title_Str: "1.5 Uptime",   ActionStr: show_uptime},
-          { Title_Str: "1.6 Version",  ActionStr: show_version},
-          { Title_Str: "1.7 Go Back",  ActionStr: my_go_back}
+          { Title_Str: "1.1 Pressure",      ActionStr: display_pressure},
+          { Title_Str: "1.2 Depth",         ActionStr: display_depth},
+          { Title_Str: "1.3 Files",         ActionStr: show_dir},
+          { Title_Str: "1.4 Space",         ActionStr: show_space},
+          { Title_Str: "1.5 Uptime",        ActionStr: show_uptime},
+          { Title_Str: "1.6 Version",       ActionStr: show_version},
+          { Title_Str: "1.7 Go Back",       ActionStr: my_go_back}
         ]
       },
       {
         Title_Str: "2 History->",         # items[1]
         "items": [
-          { Title_Str: "2.1 Events",     ActionStr: show_events},
-          { Title_Str: "2.2 Switch",     ActionStr: show_switch},
-          { Title_Str: "2.3 Pressure",   ActionStr: show_pressure},
-          { Title_Str: "2.4 Errors",     ActionStr: show_errors},
-          { Title_Str: "2.5 Program",    ActionStr: show_program},
-          { Title_Str: "2.6 Stats",      ActionStr: show_duty_cycle},
-          { Title_Str: "2.7 Go back",    ActionStr: my_go_back}
+          { Title_Str: "2.1 Events",        ActionStr: show_events},
+          { Title_Str: "2.2 Switch",        ActionStr: show_switch},
+          { Title_Str: "2.3 Pressure",      ActionStr: show_pressure},
+          { Title_Str: "2.4 Errors",        ActionStr: show_errors},
+          { Title_Str: "2.5 Program",       ActionStr: show_program},
+          { Title_Str: "2.6 Stats",         ActionStr: show_duty_cycle},
+          { Title_Str: "2.7 Go back",       ActionStr: my_go_back}
         ]
       },
       {
         Title_Str: "3 Actions->",         # items[2]
-        "items": [                        # TODO add another menu level for admin things... reduce to a shorter list
-          { Title_Str: "3.1 Timed Water", ActionStr: start_irrigation_schedule},
-          { Title_Str: "3.2 Cancel Prog", ActionStr: cancel_program},
-          { Title_Str: "3.3 Flush",       ActionStr: flush_data},
-          { Title_Str: "3.4 Make Space",  ActionStr: make_more_space},
-          { Title_Str: "3.5 Email evlog", ActionStr: send_log},
-          { Title_Str: "3.6 Email tank",  ActionStr: send_tank_logs},
-          { Title_Str: "3.7 Email HFlog", ActionStr: send_last_HF_data},
-          { Title_Str: "3.8 Reset",       ActionStr: my_reset},
-          { Title_Str: "3.9 Test Beep",   ActionStr: beepx3},
-          { Title_Str: "3.A Enter MAINT", ActionStr: enter_maint_mode},
-          { Title_Str: "3.B Exit  MAINT", ActionStr: exit_maint_mode},
-          { Title_Str: "3.C Go back",     ActionStr: my_go_back}
+        "items": [
+          { Title_Str: "3.1 Timed Water",   ActionStr: start_irrigation_schedule},
+          { Title_Str: "3.2 Cancel Prog",   ActionStr: cancel_program},
+          { Title_Str: "3.3 Flush",         ActionStr: flush_data},
+          { Title_Str: "3.4 Email evlog",   ActionStr: send_log},
+          { Title_Str: "3.5 Email tank",    ActionStr: send_tank_logs},
+          { Title_Str: "3.6 Email HFlog",   ActionStr: send_last_HF_data},
+          { Title_Str: "3.7 Go back",       ActionStr: my_go_back}
         ]
       },
       {
@@ -1211,21 +1206,31 @@ new_menu = {
           },
            { Title_Str: "4.2 Set Timers->",
             "items": [                  # items[3][1]
-                { Title_Str: "Start Delay",  Value_Str: {"D_V": 5,   "W_V" : 0,                     Step_Str : 15}},
-                { Title_Str: "Duty Cycle",   Value_Str: {"D_V": 50,  "W_V" : DEFAULT_DUTY_CYCLE,    Step_Str : 5}},
-                { Title_Str: "Cycle1",       Value_Str: {"D_V": 1,   "W_V" : DEFAULT_CYCLE,         Step_Str : 5}},
-                { Title_Str: "Cycle2",       Value_Str: {"D_V": 2,   "W_V" : DEFAULT_CYCLE,         Step_Str : 5}},
-                { Title_Str: "Cycle3",       Value_Str: {"D_V": 3,   "W_V" : DEFAULT_CYCLE,         Step_Str : 5}},
-                { Title_Str: "Add cycle",      ActionStr: add_cycle},
-                { Title_Str: "Delete cycle",   ActionStr: remove_cycle},
-                { Title_Str: "Update program", ActionStr: update_program_data},
-                { Title_Str: "Go back",        ActionStr: my_go_back}
+                { Title_Str: "Start Delay",     Value_Str: {"D_V": 5,   "W_V" : 0,                     Step_Str : 15}},
+                { Title_Str: "Duty Cycle",      Value_Str: {"D_V": 50,  "W_V" : DEFAULT_DUTY_CYCLE,    Step_Str : 5}},
+                { Title_Str: "Cycle1",          Value_Str: {"D_V": 1,   "W_V" : DEFAULT_CYCLE,         Step_Str : 5}},
+                { Title_Str: "Cycle2",          Value_Str: {"D_V": 2,   "W_V" : DEFAULT_CYCLE,         Step_Str : 5}},
+                { Title_Str: "Cycle3",          Value_Str: {"D_V": 3,   "W_V" : DEFAULT_CYCLE,         Step_Str : 5}},
+                { Title_Str: "Add cycle",       ActionStr: add_cycle},
+                { Title_Str: "Delete cycle",    ActionStr: remove_cycle},
+                { Title_Str: "Update program",  ActionStr: update_program_data},
+                { Title_Str: "Go back",         ActionStr: my_go_back}
             ]
           },
-          { Title_Str: "4.3 Save Config",    ActionStr: update_config},
-          { Title_Str: "4.4 Load Config",    ActionStr: "Load Config"},
-          { Title_Str: "4.5 Go back",        ActionStr: my_go_back}
         ]
+      },
+        { Title_Str: "5 Admin->",
+         "items": [
+          { Title_Str: "5.1 Flush",             ActionStr: flush_data},
+        #   { Title_Str: "4.3 Save Config",       ActionStr: update_config},
+          { Title_Str: "5.2 Make Space",        ActionStr: make_more_space},
+          { Title_Str: "5.3 Test Beep",         ActionStr: beepx3},
+          { Title_Str: "5.4 Enter MAINT",       ActionStr: enter_maint_mode},
+          { Title_Str: "5.5 Exit  MAINT",       ActionStr: exit_maint_mode},         
+          { Title_Str: "5.6 Reset",             ActionStr: my_reset},
+        #   { Title_Str: "4.4 Load Config",       ActionStr: "Load Config"},
+          { Title_Str: "5.7 Go back",           ActionStr: my_go_back}
+         ]
       },
     {
         Title_Str: "Exit", ActionStr: exit_menu
@@ -2694,7 +2699,7 @@ async def read_pressure()->None:
             hi_freq_kpa_index = (hi_freq_kpa_index + 1) % HI_FREQ_RINGSIZE
             if hi_freq_kpa_index > hf_kpa_hiwater:
                 hf_kpa_hiwater = hi_freq_kpa_index      # for testing if calc average is valid
-            if hf_kpa_hiwater > HI_FREQ_AVG_COUNT:      # TODO not good design... overloading this count.
+            if hf_kpa_hiwater > HI_FREQ_AVG_COUNT:      # 
                 stable_pressure = True                  # need to reset in pump_ON
 
             lcd4x20.move_to(17, 3)
@@ -2979,7 +2984,7 @@ async def do_main_loop():
     while True:
         if op_mode != OP_MODE_MAINT:
             updateData()			                # monitor water depth
-            if borepump.state and steady_state:     # TODO should have separate kPa steady_state var, but I have! stable_pressure
+            if borepump.state and steady_state:     # stable_pressure set when we have required number of readings to get average_kpa
                 check_for_Baseline_Drift()          # reset baseline pressure if pump is ON.  Don't care if delayed a bit...
             check_for_critical_states()             # do this regardless of steady_state
             if op_mode == OP_MODE_AUTO:             # changed, do nothing if OP_MODE_DISABLED or IRRIGATE
