@@ -33,10 +33,11 @@ from TMErrors import TankError
 from utils import now_time_short, now_time_long, format_secs_short, format_secs_long, now_time_tuple
 from ringbuffer import RingBuffer, DuplicateDetectingBuffer
 from TimerManager import TimerManager
+from math import sqrt  # MicroPython does include math
 
 # endregion
 # region INITIALISE
-SW_VERSION          = "28/5/25"      # for display
+SW_VERSION          = "6/6/25"      # for display
 PRODUCTION_MODE     = False         # change to True when no longer in development cycle
 CALIBRATE_MODE      = False
 
@@ -82,6 +83,11 @@ LOOKBACKCOUNT       = 60            # for looking back at pressure history... to
 KPA_DROP_DC         = 2.2           # Ratio of OFF/ON time after kPa drop detected
 MAX_OUTAGE          = 30            # seconds of no power
 ALARMTIME           = 10            # seconds of alarm on/off time
+
+D_STD_DEV_COUNT     = 10            # standard deviation calcs
+P_STD_DEV_COUNT     = 15
+DEPTH_SD_MAX        = 2             # test...
+PRESS_SD_MAX        = 2
 
 BP_SENSOR_MIN       = 3000          # raw ADC read... this will trigger sensor detect logic
 VDIV_R1             = 12000         # ohms
@@ -341,11 +347,12 @@ opmode_dict         = {
 }
 
 program_list = [
-              ("Cycle1", {"init" : 0, "run" : 25, "off" : 50}),
-              ("Cycle2", {"init" : 0, "run" : 25, "off" : 50}),
-              ("Cycle3", {"init" : 1, "run" : 25, "off" : 1})]
+              ("Cycle1", {"init" : 0, "run" : 22, "off" : 50}),
+              ("Cycle2", {"init" : 0, "run" : 22, "off" : 50}),
+              ("Cycle3", {"init" : 0, "run" : 22, "off" : 50}),
+              ("Cycle4", {"init" : 1, "run" : 24, "off" : 1})]
 #
-#   TODO UST FOR DEBUGGING...  REMOVE LATER
+# UST FOR DEBUGGING...  REMOVE LATER
 # program_list = [
 #               ("Cycle1", {"init" : 0, "run" : 3, "off" : 6}),
 #               ("Cycle2", {"init" : 0, "run" : 3, "off" : 4}),
@@ -1485,7 +1492,7 @@ def lcd_on():
 # endregion
 # region MAIN METHODS
 def init_logging():
-    global year, month, day, shortyear
+    # global year, month, day, shortyear
     global tank_log, ev_log, pp_log, eventlogname, hf_log
 
     now             = now_time_tuple()      # getcurrent time, convert to local SA time
@@ -1552,6 +1559,25 @@ def calc_average_HFpressure(start:int, length:int)->float:
 
         p += tmp
     return p/length
+
+def mean_stddev(buff, buffidx:int, buflen:int, count:int)->tuple:
+    if count < 2:
+        return 0, 0
+    s = 0.0
+    for i in range(count):
+        mod_index = (buffidx - i - 1) % buflen  # change to average hi_freq_kpa readings
+        s += buff[mod_index]    
+    mean: float = s / count
+
+    ss = 0.0
+    for i in range(count):
+        mod_index = (buffidx - i - 1) % buflen  # change to average hi_freq_kpa readings
+        x = buff[mod_index]
+        d = (x - mean)
+        ss += d * d
+    v = ss / (count - 1)
+    sd = sqrt(v)
+    return mean, sd
 
 def get_tank_depth():
     global depth, tank_is
@@ -1625,7 +1651,7 @@ def updateData():
     global depth
     global last_depth
     global depth_ROC
-    global depthringbuf, depthringindex
+    global depthringindex
     global average_kpa, zone, avg_kpa_set
     global temp
   
@@ -1845,7 +1871,7 @@ def kpadrop_cb(timer:Timer)->None:
     recovery_duration = f'{recovery_hrs}:{recovery_mins:02}:{recovery_secs:02}'
     # disable_timer = Timer(period=recovery_time*1000, mode=Timer.ONE_SHOT, callback=cancel_deadtime)
     timer_mgr.create_timer(DISABLE_TIMER_NAME, recovery_seconds * 1000, cancel_deadtime)
-    drop_str = f"{now_time_long()} kPa DROP detected - disabling operation for {recovery_duration}"
+    drop_str = f"{now_time_long()} kPa DROP detected in {opmode_dict[op_mode]} zone {zone}- disabling operation for {recovery_duration}"
     ev_log.write(drop_str + "\n")
     print(drop_str)
 # now... delay any pending TWM operations    
@@ -1933,7 +1959,7 @@ def check_for_Baseline_Drift()->None:
             event_ring.add("Baseline reset")
 
 def checkForAnomalies()->None:
-    global borepump, depth_ROC, tank_is, average_kpa, kpa_drop_timer
+    global borepump, depth_ROC, tank_is, average_kpa, kpa_drop_timer, stdev_Depth, stdev_Press
 
     if borepump.state:                          # pump is ON
         if baseline_set and baseline_pressure > 0 and avg_kpa_set and hf_kpa_hiwater > (LOOKBACKCOUNT + HI_FREQ_AVG_COUNT):   # == HI_FREQ_RINGSIZE - 1: # this ensures we get a valid average kPa reading
@@ -1944,7 +1970,7 @@ def checkForAnomalies()->None:
             # samples_since_last_ON = int((time.time() - last_ON_time) / (PRESSURE_PERIOD_MS / 1000))
             # expected_pressure_just_now = quad(qa, qb, qc, samples_since_last_ON - LOOKBACKCOUNT)
             # expected_pressure_now      = quad(qa, qb, qc, samples_since_last_ON)  # calculate expected pressure using quadratic equation
-            # expected_drop = expected_pressure_just_now - expected_pressure_now    # TODO - this might need to look at cumulative runtime over say the last 12 hours
+            # expected_drop = expected_pressure_just_now - expected_pressure_now    # TODO might need to look at cumulative runtime over say the last 12 hours
             av_p_prior  = calc_average_HFpressure(LOOKBACKCOUNT, HI_FREQ_AVG_COUNT)  # get average of last HI_FREQ_AVG_COUNT readings.
             av_p_now    = calc_average_HFpressure(0, HI_FREQ_AVG_COUNT)
             actual_pressure_drop = int(av_p_prior - av_p_now)       # Important!  Avoid rounding errors.. avg drop of 0.3 on HT triggered alarm without this!
@@ -1981,8 +2007,20 @@ def checkForAnomalies()->None:
 
             if abs(depth_ROC) > MAX_ROC:                    # this one is less critical...
                 raiseAlarm("XS ROC", depth_ROC)
-                error_ring.add(TankError.MAX_ROC_EXCEEDED)   
-    
+                error_ring.add(TankError.MAX_ROC_EXCEEDED)
+
+        # now, check standard deviation for high values...    
+            mean_D, stdev_Depth = mean_stddev(depthringbuf, depthringindex, DEPTHRINGSIZE, D_STD_DEV_COUNT)
+            if stdev_Depth > DEPTH_SD_MAX:
+                raiseAlarm("XS D SDEV", stdev_Depth)
+                error_ring.add(TankError.HI_VAR_Dist)
+
+            if kpa_sensor_found and avg_kpa_set:
+                mean_P, stdev_Press = mean_stddev(hi_freq_kpa_ring, hi_freq_kpa_index, HI_FREQ_RINGSIZE,P_STD_DEV_COUNT)
+                if stdev_Press > PRESS_SD_MAX:
+                    raiseAlarm("XS P SDEV", stdev_Press)
+                    error_ring.add(TankError.HI_VAR_Pres)
+
     else:                                       # pump is OFF
         if op_mode == OP_MODE_AUTO:
             if depth_ROC > MIN_ROC and not CALIBRATE_MODE:                         # pump is OFF but level is rising!
@@ -2032,7 +2070,6 @@ def check_for_critical_states() -> None:
             abort_pumping("XS Runtime")                         # this too warrants manual intervention
 
 def DisplayInfo()->None:
-    global program_start_time, program_end_time
 
 # NOTE: to avoid overlapping content on a line, really need to compose a full line string, then putstr the entire thing :20
 #       moving to a field and updating bits doesn't relly work so well... at least not unless ALL modes use consistent field defs...
@@ -2140,7 +2177,7 @@ def DisplayInfo()->None:
             ev_len = len(event_ring.buffer)
             er_len = len(error_ring.buffer)
             lcd4x20.move_to(0, 0)
-            lcd4x20.putstr(f'EV:{ev_len:2} ER:{er_len:2}')
+            lcd4x20.putstr(f'EV:{ev_len:2}/{er_len:2} SP:{stdev_Press:.1f} SD:{stdev_Depth:.1f}')
 
             remain_str = f'{" ":^8}'
             opm_str = f'{opmode_dict[op_mode]:4}'
@@ -2154,7 +2191,7 @@ def DisplayInfo()->None:
             lcd4x20.putstr(f'M:{opm_str} R: {remain_str}')
 
             lcd4x20.move_to(0, 2)
-            lcd4x20.putstr(f'Rec#:{rec_num:>6}')
+            lcd4x20.putstr(f'R#:{rec_num:>6}')
         
         elif info_display_mode == INFO_MAINT:       # MAINTENANCE mode
             lcd4x20.move_to(0, 0)
@@ -2239,7 +2276,6 @@ def DisplayData()->None:
         lcd.printout(f"{display_str:<16}")
 
 def LogData()->None:
-    global LOG_FREQ
     global level_init
     global last_logged_depth
     global last_logged_kpa
@@ -2446,6 +2482,7 @@ def init_all():
     global baseline_pressure, baseline_set, zone, zone_max_drop, zone_minimum, zone_maximum, hf_kpa_hiwater, stable_pressure, average_kpa, last_ON_time
     global ONESECBLINK, lcd_timer
     global ut_long, ut_short
+    global stdev_Depth, stdev_Press
 
     PS_ND               = "Pressure sensor not detected"
     str_msg             = "At startup, BorePump is "
@@ -2531,6 +2568,9 @@ def init_all():
     ut_long             = ""
     startup_raw_ADC, startup_calibrated_pressure = get_pressure()
     kpa_sensor_found = startup_raw_ADC > BP_SENSOR_MIN    # are we seeing a valid pressure sensor reading?
+    
+    stdev_Press         = 0
+    stdev_Depth         = 0
     change_logging(True)
     if not kpa_sensor_found:
         lcd4x20.move_to(0, 3)

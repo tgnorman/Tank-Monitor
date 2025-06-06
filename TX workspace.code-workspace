@@ -12,7 +12,7 @@
 			"name": "PicoDev libs"
 		},
 		{
-			"name": "TX Pico Workspace",
+			"name": "TX Remote Workspace",
 			"uri": "pico:"
 		}
 	],

@@ -16,12 +16,13 @@ Chats/*
 docs/*.txt
 docs/*.xlsx
 docs/*.pdf
-docs/Design/*.fzz
-docs/Design/*.png
-docs/Design/*.jpg
-docs/Design/*.gif
-docs/Design/*.ipynb
-
+# docs/Design/*.fzz
+# docs/Design/*.png
+# docs/Design/*.jpg
+# docs/Design/*.gif
+# docs/Design/*.ipynb
+# docs/Design/*.drawio
+docs/Design/*
 # Ignore test files
 src/tests/*
 __pycache__/
@@ -30,6 +31,7 @@ __pycache__/
 # Never ignore lib directory (my custom libraries)
 !lib/
 !lib/*
+lib/__init__.py
 
 # Track VS Code config
 !.vscode/

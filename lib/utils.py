@@ -49,3 +49,14 @@ def format_secs_short(secs: int) -> str:
 def format_secs_long(secs: int) -> str:
     """Long format from seconds."""
     return format_time_long(secs_to_localtime(secs))
+
+def calculate_variance(values)-> tuple:
+    n = len(values)
+    if n < 2:
+        return 0, 0
+    mean = sum(values) / n
+    squared_diff_sum = sum((x - mean) ** 2 for x in values)
+    variance = squared_diff_sum / (n - 1)  # Using n-1 for sample variance
+    # std_dev = sqrt(variance)    # don't really need std dev.. and import math
+    
+    return mean, variance

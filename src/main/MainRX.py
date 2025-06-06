@@ -19,7 +19,7 @@ import time
 import network
 import ntptime
 from secrets import MyWiFi
-from utils import now_time_long, now_time_tuple
+from utils import now_time_short, now_time_long, format_secs_short, format_secs_long, now_time_tuple
 
 # Configure your WiFi SSID and password
 wf          = MyWiFi()

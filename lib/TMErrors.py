@@ -16,6 +16,8 @@ class TankError:
     HFKPA_ZONEMAX       = 13
     ZONE_NOTFOUND       = 14
     AVG_KPA_ZERO        = 15
+    HI_VAR_Pres         = 16
+    HI_VAR_Dist         = 17,
     MAX_REPEAT_EVENT    = 100
 
     def __init__(self):
@@ -23,20 +25,22 @@ class TankError:
         self._errors = {
             self.BASELINE_LOW:      ("BLLO", "Baseline is low"),
             self.PRESSUREDROP:      ("DROP", "Pressure dropped"),
-            self.BELOW_ZONE_MIN:    ("BZM", "Below zone minimum"),
-            self.MAX_ROC_EXCEEDED:  ("MRX", "Max ROC exceeded"),
+            self.BELOW_ZONE_MIN:    ("BZM",  "Below zone minimum"),
+            self.MAX_ROC_EXCEEDED:  ("MRX",  "Max ROC exceeded"),
             self.OVERFLOW_ON:       ("OVWO", "Overflow still ON"),
-            self.FILLWHILE_OFF:     ("FWO", "Filling while OFF"),
-            self.DRAINWHILE_ON:     ("DWO", "Drain while ON"),
-            self.VALVE_CLOSED:      ("GVC", "Gatevalve closed"),
-            self.EXCESS_KPA:        ("XSP", "Excess pressure"),
-            self.NO_PRESSURE:       ("NOP", "No pressure"),
-            self.RUNTIME_EXCEEDED:  ("RTX", "Runtime exceeded"),
-            self.NOFREESPACE:       ("NFS", "No Free Space"),
+            self.FILLWHILE_OFF:     ("FWO",  "Filling while OFF"),
+            self.DRAINWHILE_ON:     ("DWO",  "Drain while ON"),
+            self.VALVE_CLOSED:      ("GVC",  "Gatevalve closed"),
+            self.EXCESS_KPA:        ("XSP",  "Excess pressure"),
+            self.NO_PRESSURE:       ("NOP",  "No pressure"),
+            self.RUNTIME_EXCEEDED:  ("RTX",  "Runtime exceeded"),
+            self.NOFREESPACE:       ("NFS",  "No Free Space"),
             self.NOVALVEOFFWHILEON: ("NGVO", "Cant turn GV off"),
             self.HFKPA_ZONEMAX:     ("ZMXX", "Zone MAX exceeded"),
-            self.ZONE_NOTFOUND:     ("ZNF", "Zone not found"),
+            self.ZONE_NOTFOUND:     ("ZNF",  "Zone not found"),
             self.AVG_KPA_ZERO:      ("AKP0", "Avg kPa zero"),
+            self.HI_VAR_Pres:       ("XVP",  "Hi P Variance"),
+            self.HI_VAR_Dist:       ("XVD",  "Hi D Variance"),
             self.MAX_REPEAT_EVENT:  ("XREP", "Max repeated events")
         }
     
