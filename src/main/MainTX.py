@@ -29,15 +29,15 @@ from i2c_lcd import I2cLcd
 from Pump import Pump
 from Tank import Tank
 from TMErrors import TankError
-# from utils import secs_to_localtime         # old methods... , display_time, short_time, long_time, format_secs_long, format_secs_short
 from utils import now_time_short, now_time_long, format_secs_short, format_secs_long, now_time_tuple
+from stats import mean_stddev, linear_regression
 from ringbuffer import RingBuffer, DuplicateDetectingBuffer
 from TimerManager import TimerManager
-from math import sqrt  # MicroPython does include math
+# from math import sqrt  # MicroPython does include math
 
 # endregion
 # region INITIALISE
-SW_VERSION          = "6/6/25"      # for display
+SW_VERSION          = "10/6/25"      # for display
 PRODUCTION_MODE     = False         # change to True when no longer in development cycle
 CALIBRATE_MODE      = False
 
@@ -85,11 +85,11 @@ MAX_OUTAGE          = 30            # seconds of no power
 ALARMTIME           = 10            # seconds of alarm on/off time
 
 D_STD_DEV_COUNT     = 10            # standard deviation calcs
-P_STD_DEV_COUNT     = 15
+P_STD_DEV_COUNT     = 20
 DEPTH_SD_MAX        = 2             # test...
 PRESS_SD_MAX        = 2
-
-BP_SENSOR_MIN       = 3000          # raw ADC read... this will trigger sensor detect logic
+hf_xvalues          = [i for i in range(HI_FREQ_RINGSIZE)]  # 
+BP_SENSOR_MIN       = 250           # raw ADC read... this will trigger sensor detect logic.  Changed for 12-bit range
 VDIV_R1             = 12000         # ohms
 VDIV_R2             = 33000
 VDIV_Ratio          = VDIV_R2/(VDIV_R1 + VDIV_R2)
@@ -111,6 +111,8 @@ NO_LINE_PRESSURE    = 8             # tweak this too... applies in ANY pump-on m
 # MAX_KPA_DROP        = 20             # replaced by per-zone number
 MAX_CONTIN_RUNMINS  = 360           # 3 hours max runtime.  More than this looks like trouble
 LOG_HF_PRESSURE     = 2             # log high frequency pressure data.  Need to use int, not bool, for menu
+kPa_stdev_mult      = 3             # 3 std devs ... a LOT of wiggle room
+
 SIMULATE_PUMP       = False         # debugging aid...replace pump switches with a PRINT
 SIMULATE_KPA        = False         # debugging aid...replace pressure sensor with a PRINT
 
@@ -320,6 +322,7 @@ MAXPRESSURE         = "Max Pressure"
 NOPRESSURE          = "No Pressure"
 MAXRUNMINS          = "Max RunMins"
 LOGHFDATA           = "Log HF Data"
+KPASTDEVMULT        = "P SD Mult"
 
 config_dict         = {
     DELAY           : mydelay,
@@ -331,7 +334,8 @@ config_dict         = {
     # MAXDROP         : MAX_KPA_DROP,
     NOPRESSURE      : NO_LINE_PRESSURE,
     MAXRUNMINS      : MAX_CONTIN_RUNMINS,
-    LOGHFDATA       : LOG_HF_PRESSURE
+    LOGHFDATA       : LOG_HF_PRESSURE,
+    KPASTDEVMULT    : kPa_stdev_mult
             }
 
 timer_dict          = {
@@ -364,14 +368,111 @@ program_list = [
 #               ("Cycle8", {"init" : 0, "run" : 5, "off" : 2}),
 #               ("Cycle9", {"init" : 0, "run" : 5, "off" : 1})]
 
-def update_config():
+# def update_config():
     
-    for param_index in range(len(config_dict)):
-        param: str             = new_menu['items'][3]['items'][0]['items'][param_index]['title']
-        new_working_value: int = new_menu['items'][3]['items'][0]['items'][param_index]['value']['W_V']
+#     for param_index in range(len(config_dict)):
+#         param: str             = new_menu['items'][3]['items'][0]['items'][param_index]['title']
+#         new_working_value: int = new_menu['items'][3]['items'][0]['items'][param_index]['value']['W_V']
+#         if param in config_dict.keys():
+#             if new_working_value > 0 and config_dict[param] != new_working_value:
+#   #              print(f'Updated config_dict {param} to {new_working_value}')
+#                 old_value = config_dict[param]
+#                 config_dict[param] = new_working_value
+#                 lcd.clear()
+#                 lcd.setCursor(0,0)
+#                 lcd.printout(f'Updated {param}')
+#                 lcd.setCursor(0,1)
+#                 lcd.printout(f'to {new_working_value}')
+#                 ev_log.write(f"{now_time_long()} Updated {param} to {new_working_value}\n")
+#                 print(f"in update_config {param}: dict was {old_value} is now {new_working_value}")
+#         else:
+#             print(f"GAK! Config param {param} not found in dict!")
+#             lcd.clear()
+#             lcd.setCursor(0,0)
+#             lcd.printout("No dict entry:  ")
+#             lcd.setCursor(0,1)
+#             lcd.printout(param)
+
+# def update_timer_params():
+    
+#     for param_index in range(len(timer_dict)):
+#         param: str             = new_menu['items'][3]['items'][1]['items'][param_index]['title']    # GAK... more bad dependencies
+#         new_working_value: int = new_menu['items'][3]['items'][1]['items'][param_index]['value']['W_V']
+#         # print(f">> {param=}, {new_working_value}")
+#         if param in timer_dict.keys():
+#             # print(f"in update_timers {param}: dict is {timer_dict[param]} nwv is {new_working_value}")
+#             if new_working_value > 0 and timer_dict[param] != new_working_value:
+#                 timer_dict[param] = new_working_value
+#                 # print(f'Updated timer_dict {param} to {new_working_value}')
+#                 lcd.clear()
+#                 lcd.setCursor(0,0)
+#                 lcd.printout('Updated param')
+#                 lcd.setCursor(0,1)
+#                 lcd.printout(f'{param}: {new_working_value}')
+#         # else:
+#         #     print(f"GAK! Config parameter {param} not found in timer dictionary!")
+#         #     lcd.clear()
+#         #     lcd.setCursor(0,0)
+#         #     lcd.printout("No dict entry:  ")
+#         #     lcd.setCursor(0,1)
+#         #     lcd.printout(param)
+#     # print(f"{timer_dict=}")
+
+# def update_program_data()->None:
+# # This transfers run times from timer_dict to my programed water schedule, and also applies duty cycle to OFF
+
+# # First, update timer_dict
+#     update_timer_params()
+
+#     dc = timer_dict["Duty Cycle"]           # this is still getting data indirectly...
+#     adjusted_dc = max(min(dc, 95), 5)          # NORMALISE TO RANGE 5 - 95
+#     i = 1                                 # this feels wrong...
+#     for s in program_list:
+#         i += 1
+#         cyclename = s[0]
+#         # if cyclename in timer_dict.keys():
+#         #     on_time = timer_dict[cyclename]
+#         # else:
+#         #     on_time = s[1]["run"]
+#         menu_title = new_menu['items'][3]['items'][1]['items'][i]['title']
+#         if cyclename == menu_title:         # found correct menu item
+#             on_time = new_menu['items'][3]['items'][1]['items'][i]['value']['W_V']
+#             off_time = int(on_time * (100/adjusted_dc - 1) )
+#             # print(f"{cyclename=} {on_time=}  {off_time=}")
+#             s[1]["run"] = on_time
+#             s[1]["off"] = off_time
+#         else:                       # Oops... this doesn't look right...
+#             print(f"Found {menu_title}, expecting {cyclename}")
+
+# # now... fix start delay directly from menu
+#     program_list[0][1]["init"] = timer_dict["Start Delay"]      # another indirect data val...
+#     program_list[-1][1]["off"] = 1              # reset last cycle OFF time to 1
+
+#     lcd.setCursor(0,1)
+#     lcd.printout("program updated")
+#     # print(f"{program_list=}")
+
+def update_config() -> None:
+    """Update configuration dictionary from menu working values."""
+    
+    # Find path to config submenu
+    config_path = find_menu_path(new_menu, "Set Config->")
+    if not config_path:
+        print("Could not find config submenu!")
+        return
+
+    # Navigate to config items
+    current_menu = new_menu
+    for index in config_path:
+        current_menu = current_menu['items'][index]
+    
+    # Check each config item
+    config_items = current_menu.get('items', [])
+    for item in config_items:
+        param = item.get('title')
         if param in config_dict.keys():
+            new_working_value = item['value']['W_V']
             if new_working_value > 0 and config_dict[param] != new_working_value:
-  #              print(f'Updated config_dict {param} to {new_working_value}')
                 old_value = config_dict[param]
                 config_dict[param] = new_working_value
                 lcd.clear()
@@ -381,72 +482,77 @@ def update_config():
                 lcd.printout(f'to {new_working_value}')
                 ev_log.write(f"{now_time_long()} Updated {param} to {new_working_value}\n")
                 print(f"in update_config {param}: dict was {old_value} is now {new_working_value}")
-        else:
-            print(f"GAK! Config param {param} not found in dict!")
-            lcd.clear()
-            lcd.setCursor(0,0)
-            lcd.printout("No dict entry:  ")
-            lcd.setCursor(0,1)
-            lcd.printout(param)
 
-def update_timer_params():
+def update_timer_params() -> None:
+    """Update timer dictionary from menu working values."""
     
-    for param_index in range(len(timer_dict)):
-        param: str             = new_menu['items'][3]['items'][1]['items'][param_index]['title']    # GAK... more bad dependencies
-        new_working_value: int = new_menu['items'][3]['items'][1]['items'][param_index]['value']['W_V']
-        # print(f">> {param=}, {new_working_value}")
+    # Find path to timer submenu
+    timer_path = find_menu_path(new_menu, "Set Timers->")
+    if not timer_path:
+        print("Could not find timer submenu!")
+        return
+
+    # Navigate to timer items
+    current_menu = new_menu
+    for index in timer_path:
+        current_menu = current_menu['items'][index]
+    
+    # Check each timer item
+    timer_items = current_menu.get('items', [])
+    for item in timer_items:
+        param = item.get('title')
         if param in timer_dict.keys():
-            # print(f"in update_timers {param}: dict is {timer_dict[param]} nwv is {new_working_value}")
+            new_working_value = item['value']['W_V']
             if new_working_value > 0 and timer_dict[param] != new_working_value:
                 timer_dict[param] = new_working_value
-                # print(f'Updated timer_dict {param} to {new_working_value}')
                 lcd.clear()
                 lcd.setCursor(0,0)
                 lcd.printout('Updated param')
                 lcd.setCursor(0,1)
                 lcd.printout(f'{param}: {new_working_value}')
-        # else:
-        #     print(f"GAK! Config parameter {param} not found in timer dictionary!")
-        #     lcd.clear()
-        #     lcd.setCursor(0,0)
-        #     lcd.printout("No dict entry:  ")
-        #     lcd.setCursor(0,1)
-        #     lcd.printout(param)
-    # print(f"{timer_dict=}")
 
-def update_program_data()->None:
-# This transfers run times from timer_dict to my programed water schedule, and also applies duty cycle to OFF
+def update_program_data() -> None:
+    """Update program list from menu working values and apply duty cycle."""
+    
+    # Find path to timer submenu
+    timer_path = find_menu_path(new_menu, "Set Timers->")
+    if not timer_path:
+        print("Could not find timer submenu!")
+        return
 
-# First, update timer_dict
+    # First, update timer_dict
     update_timer_params()
 
-    dc = timer_dict["Duty Cycle"]           # this is still getting data indirectly...
-    adjusted_dc = max(min(dc, 95), 5)          # NORMALISE TO RANGE 5 - 95
-    i = 1                                 # this feels wrong...
+    dc = timer_dict["Duty Cycle"]
+    adjusted_dc = max(min(dc, 95), 5)  # NORMALISE TO RANGE 5 - 95
+    
+    # Navigate to timer items
+    current_menu = new_menu
+    for index in timer_path:
+        current_menu = current_menu['items'][index]
+    
+    timer_items = current_menu.get('items', [])
+    i = 1  # TODO Fix this static dependency...Skip first two items (Start Delay and Duty Cycle)
+    
     for s in program_list:
         i += 1
         cyclename = s[0]
-        # if cyclename in timer_dict.keys():
-        #     on_time = timer_dict[cyclename]
-        # else:
-        #     on_time = s[1]["run"]
-        menu_title = new_menu['items'][3]['items'][1]['items'][i]['title']
-        if cyclename == menu_title:         # found correct menu item
-            on_time = new_menu['items'][3]['items'][1]['items'][i]['value']['W_V']
-            off_time = int(on_time * (100/adjusted_dc - 1) )
-            # print(f"{cyclename=} {on_time=}  {off_time=}")
-            s[1]["run"] = on_time
-            s[1]["off"] = off_time
-        else:                       # Oops... this doesn't look right...
-            print(f"Found {menu_title}, expecting {cyclename}")
+        if i < len(timer_items):  # Protect against index out of range
+            menu_item = timer_items[i]
+            if cyclename == menu_item['title']:
+                on_time = menu_item['value']['W_V']
+                off_time = int(on_time * (100/adjusted_dc - 1))
+                s[1]["run"] = on_time
+                s[1]["off"] = off_time
+            else:
+                print(f"Found {menu_item['title']}, expecting {cyclename}")
 
-# now... fix start delay directly from menu
-    program_list[0][1]["init"] = timer_dict["Start Delay"]      # another indirect data val...
-    program_list[-1][1]["off"] = 1              # reset last cycle OFF time to 1
+    # Set start delay and fix last cycle
+    program_list[0][1]["init"] = timer_dict["Start Delay"]
+    program_list[-1][1]["off"] = 1  # reset last cycle OFF time to 1
 
     lcd.setCursor(0,1)
     lcd.printout("program updated")
-    # print(f"{program_list=}")
 
 # Pressure to Zone mapping... names of zones
 P0 = "00"
@@ -465,7 +571,7 @@ P8 = "XP"
 zone_list:list[tuple[str, int, int, int, float, float, int, int]] = [
     (P0, 0,   0,   5,    2E-5, -0.1021, 0,   0),     # ZERO 
     (P1, 6,   15,  20,   2E-5, -0.1021, 2,   0),     # AIR
-    (P2, 10,  20,  40,   8E-7, -0.004,  30,  5),     # HT: don't make this min higher... I want to resume from a cancelled cycle, not abort in HT mode
+    (P2, 10,  20,  40,   8E-7, -0.0042, 30,  5),     # HT: don't make this min higher... I want to resume from a cancelled cycle, not abort in HT mode
     (P3, 200, 35,  350,  1E-5, -0.1021, 340, 20),    # Z45
     (P4, 300, 350, 450,  2E-5, -0.1021, 445, 20),    # Z3
     (P5, 350, 420, 580,  2E-5, -0.1021, 575, 20),    # Z2
@@ -1154,48 +1260,48 @@ Step_Str   = "Step"
 
 # added new admin menu section...
 new_menu = {
-    Title_Str: "L0 Main Menu",
+    Title_Str: "Main Menu",
     "items": [              # items[0]
       {
-        Title_Str: "1 Display->",         # items[0]
+        Title_Str: "Display->",         # items[0]
         "items": [
-          { Title_Str: "1.1 Pressure",      ActionStr: display_pressure},
-          { Title_Str: "1.2 Depth",         ActionStr: display_depth},
-          { Title_Str: "1.3 Files",         ActionStr: show_dir},
-          { Title_Str: "1.4 Space",         ActionStr: show_space},
-          { Title_Str: "1.5 Uptime",        ActionStr: show_uptime},
-          { Title_Str: "1.6 Version",       ActionStr: show_version},
-          { Title_Str: "1.7 Go Back",       ActionStr: my_go_back}
+          { Title_Str: "Pressure",      ActionStr: display_pressure},
+          { Title_Str: "Depth",         ActionStr: display_depth},
+          { Title_Str: "Files",         ActionStr: show_dir},
+          { Title_Str: "Space",         ActionStr: show_space},
+          { Title_Str: "Uptime",        ActionStr: show_uptime},
+          { Title_Str: "Version",       ActionStr: show_version},
+          { Title_Str: "Go Back",       ActionStr: my_go_back}
         ]
       },
       {
-        Title_Str: "2 History->",         # items[1]
+        Title_Str: "History->",         # items[1]
         "items": [
-          { Title_Str: "2.1 Events",        ActionStr: show_events},
-          { Title_Str: "2.2 Switch",        ActionStr: show_switch},
-          { Title_Str: "2.3 Pressure",      ActionStr: show_pressure},
-          { Title_Str: "2.4 Errors",        ActionStr: show_errors},
-          { Title_Str: "2.5 Program",       ActionStr: show_program},
-          { Title_Str: "2.6 Stats",         ActionStr: show_duty_cycle},
-          { Title_Str: "2.7 Go back",       ActionStr: my_go_back}
+          { Title_Str: "Events",        ActionStr: show_events},
+          { Title_Str: "Switch",        ActionStr: show_switch},
+          { Title_Str: "Pressure",      ActionStr: show_pressure},
+          { Title_Str: "Errors",        ActionStr: show_errors},
+          { Title_Str: "Program",       ActionStr: show_program},
+          { Title_Str: "Stats",         ActionStr: show_duty_cycle},
+          { Title_Str: "Go Back",       ActionStr: my_go_back}
         ]
       },
       {
-        Title_Str: "3 Actions->",         # items[2]
+        Title_Str: "Actions->",         # items[2]
         "items": [
-          { Title_Str: "3.1 Timed Water",   ActionStr: start_irrigation_schedule},
-          { Title_Str: "3.2 Cancel Prog",   ActionStr: cancel_program},
-          { Title_Str: "3.3 Flush",         ActionStr: flush_data},
-          { Title_Str: "3.4 Email evlog",   ActionStr: send_log},
-          { Title_Str: "3.5 Email tank",    ActionStr: send_tank_logs},
-          { Title_Str: "3.6 Email HFlog",   ActionStr: send_last_HF_data},
-          { Title_Str: "3.7 Go back",       ActionStr: my_go_back}
+          { Title_Str: "Timed Water",   ActionStr: start_irrigation_schedule},
+          { Title_Str: "Cancel Prog",   ActionStr: cancel_program},
+          { Title_Str: "Flush",         ActionStr: flush_data},
+          { Title_Str: "Email evlog",   ActionStr: send_log},
+          { Title_Str: "Email tank",    ActionStr: send_tank_logs},
+          { Title_Str: "Email HFlog",   ActionStr: send_last_HF_data},
+          { Title_Str: "Go Back",       ActionStr: my_go_back}
         ]
       },
       {
-        Title_Str: "4 Config->",         # items[3]
+        Title_Str: "Config->",         # items[3]
         "items": [
-          { Title_Str: "4.1 Set Config->",
+          { Title_Str: "Set Config->",
             "items": [                  # items[3][0]
                 { Title_Str : DELAY,         Value_Str: {"D_V": 15,   "W_V" : mydelay,              Step_Str : 5}},
                 { Title_Str : LCD,           Value_Str: {"D_V": 5,    "W_V" : LCD_ON_TIME,          Step_Str : 2}},
@@ -1207,11 +1313,12 @@ new_menu = {
                 # { Title_Str : MAXDROP,       Value_Str: {"D_V": 15,   "W_V" : MAX_KPA_DROP,         Step_Str : 1}},
                 { Title_Str : MAXRUNMINS,    Value_Str: {"D_V": 60,   "W_V" : MAX_CONTIN_RUNMINS,   Step_Str : 10}},
                 { Title_Str : LOGHFDATA,     Value_Str: {"D_V": 0,    "W_V" : LOG_HF_PRESSURE,      Step_Str : 1}},
+                { Title_Str : KPASTDEVMULT,  Value_Str: {"D_V": 3,    "W_V" : kPa_stdev_mult,       Step_Str : 1}},
                 { Title_Str: "Save config",  ActionStr: update_config},
-                { Title_Str: "Go back",      ActionStr: my_go_back}
+                { Title_Str: "Go Back",      ActionStr: my_go_back}
             ]
           },
-           { Title_Str: "4.2 Set Timers->",
+           { Title_Str: "Set Timers->", # TODO Cycle timer values start out NOT in sync with program list
             "items": [                  # items[3][1]
                 { Title_Str: "Start Delay",     Value_Str: {"D_V": 5,   "W_V" : 0,                     Step_Str : 15}},
                 { Title_Str: "Duty Cycle",      Value_Str: {"D_V": 50,  "W_V" : DEFAULT_DUTY_CYCLE,    Step_Str : 5}},
@@ -1221,22 +1328,25 @@ new_menu = {
                 { Title_Str: "Add cycle",       ActionStr: add_cycle},
                 { Title_Str: "Delete cycle",    ActionStr: remove_cycle},
                 { Title_Str: "Update program",  ActionStr: update_program_data},
-                { Title_Str: "Go back",         ActionStr: my_go_back}
+                { Title_Str: "Go Back",         ActionStr: my_go_back}
             ]
           },
+          {
+            Title_Str: "Go Back",           ActionStr: my_go_back
+          }
         ]
       },
-        { Title_Str: "5 Admin->",
+        { Title_Str: "Admin->",
          "items": [
-          { Title_Str: "5.1 Flush",             ActionStr: flush_data},
-        #   { Title_Str: "4.3 Save Config",       ActionStr: update_config},
-          { Title_Str: "5.2 Make Space",        ActionStr: make_more_space},
-          { Title_Str: "5.3 Test Beep",         ActionStr: beepx3},
-          { Title_Str: "5.4 Enter MAINT",       ActionStr: enter_maint_mode},
-          { Title_Str: "5.5 Exit  MAINT",       ActionStr: exit_maint_mode},         
-          { Title_Str: "5.6 Reset",             ActionStr: my_reset},
-        #   { Title_Str: "4.4 Load Config",       ActionStr: "Load Config"},
-          { Title_Str: "5.7 Go back",           ActionStr: my_go_back}
+          { Title_Str: "Flush",             ActionStr: flush_data},
+        #   { Title_Str: "Save Config",       ActionStr: update_config},
+          { Title_Str: "Make Space",        ActionStr: make_more_space},
+          { Title_Str: "Test Beep",         ActionStr: beepx3},
+          { Title_Str: "Enter MAINT",       ActionStr: enter_maint_mode},
+          { Title_Str: "Exit  MAINT",       ActionStr: exit_maint_mode},         
+          { Title_Str: "Reset",             ActionStr: my_reset},
+        #   { Title_Str: "Load Config",       ActionStr: "Load Config"},
+          { Title_Str: "Go Back",           ActionStr: my_go_back}
          ]
       },
     {
@@ -1560,25 +1670,6 @@ def calc_average_HFpressure(start:int, length:int)->float:
         p += tmp
     return p/length
 
-def mean_stddev(buff, buffidx:int, buflen:int, count:int)->tuple:
-    if count < 2:
-        return 0, 0
-    s = 0.0
-    for i in range(count):
-        mod_index = (buffidx - i - 1) % buflen  # change to average hi_freq_kpa readings
-        s += buff[mod_index]    
-    mean: float = s / count
-
-    ss = 0.0
-    for i in range(count):
-        mod_index = (buffidx - i - 1) % buflen  # change to average hi_freq_kpa readings
-        x = buff[mod_index]
-        d = (x - mean)
-        ss += d * d
-    v = ss / (count - 1)
-    sd = sqrt(v)
-    return mean, sd
-
 def get_tank_depth():
     global depth, tank_is
 
@@ -1684,8 +1775,8 @@ def updateData():
     temp = 27 - (temp_sensor.read_u16() * TEMP_CONV_FACTOR - 0.706)/0.001721
 
 def get_pressure():
-    adc_val = bp_pressure.read_u16()
-    measured_volts = 3.3 * float(adc_val) / 65535
+    adc_val = bp_pressure.read_u16() >> 4
+    measured_volts = 3.3 * float(adc_val) / 4095    # 65535
     sensor_volts = measured_volts / VDIV_Ratio
     kpa = max(0, round(sensor_volts * 200 - 100))     # 200 is 800 / delta v, ie 4.5 - 0.5  Changed int to round 13/5/25
     # print(f"ADC value: {adc_val=}")
@@ -1884,33 +1975,66 @@ def kpadrop_cb(timer:Timer)->None:
     #     change_logging(False)
     #     abort_pumping("kPa drop - sucking air?")    # STOP pumping, and enter maintenance mode
 
-def find_menu_index(param_name:str)->int:
-    # menu_list:dict = new_menu['items'][3]['items'][0]
-    # print(menu_list)
-    # i = 0
-    for param_index in range(len(config_dict)):
-        param: str             = new_menu['items'][3]['items'][0]['items'][param_index]['title']
-        # new_working_value: int = new_menu['items'][3]['items'][0]['items'][param_index]['value']['W_V']
-        # print(f'{d=}, type is {type(d)}')
-        if param_name in config_dict.keys():
-            if param == param_name:          # special case... we need to map 1 to 0 for False
-                # print(f"Found {param_name} at index {param_index}")
-                return param_index
-            else:
-                continue
-        else:
-            print(f"{param_name} not in keys!")
-    print(f"Did not find {param_name} in menu list config_dict")
+def find_menu_path(menu: dict, target_title: str) -> list[int]:
+    """Find the path to a menu item by its title.
+    Returns a list of indices to reach the target, or empty list if not found."""
+    
+    def search_menu(menu_item: dict, path: list[int]) -> list[int]:
+        if menu_item.get('title') == target_title:
+            return path
+        
+        items = menu_item.get('items', [])
+        for i, item in enumerate(items):
+            new_path = search_menu(item, path + [i])
+            if new_path:
+                return new_path
+        return []
+
+    return search_menu(menu, [])
+
+def find_menu_index(param_name: str) -> int:
+    """Find index of a parameter in the config submenu.
+    Returns -1 if not found."""
+    
+    # First find path to "Set Config->" submenu
+    config_path = find_menu_path(new_menu, "Set Config->")
+    if not config_path:
+        print("Could not find config submenu!")
+        return -1
+        
+    # Navigate to config items
+    current_menu = new_menu
+    for index in config_path:
+        current_menu = current_menu['items'][index]
+    
+    # Search for parameter in config items
+    config_items = current_menu.get('items', [])
+    for i, item in enumerate(config_items):
+        if item.get('title') == param_name:
+            return i
+            
+    print(f"Did not find {param_name} in config menu")
     return -1
 
-def change_logging(bv:bool)->None:
+def change_logging(bv: bool) -> None:
+    """Update logging configuration in both dict and menu."""
     val = 2 if bv else 1
     config_dict[LOGHFDATA] = val
+    
     param_index = find_menu_index(LOGHFDATA)
     if param_index >= 0:
-        print(f"Setting {new_menu['items'][3]['items'][0]['items'][param_index]['title']} to {val}")
-        new_menu['items'][3]['items'][0]['items'][param_index]['value']['W_V'] = val
-
+        # Find config submenu path
+        config_path = find_menu_path(new_menu, "Set Config->")
+        if config_path:
+            # Navigate to parameter and update it
+            current_menu = new_menu
+            for index in config_path:
+                current_menu = current_menu['items'][index]
+            
+            param_item = current_menu['items'][param_index]
+            print(f"Setting {param_item['title']} to {val}")
+            param_item['value']['W_V'] = val
+            
 def quad(a: float, b: float, c: int, x: int) -> int:
     """Calculate the pressure at a given point using a quadratic equation"""
     return int(a * x*x + b * x + c)
@@ -1976,12 +2100,17 @@ def checkForAnomalies()->None:
             actual_pressure_drop = int(av_p_prior - av_p_now)       # Important!  Avoid rounding errors.. avg drop of 0.3 on HT triggered alarm without this!
             # if isRapidDrop(LOOKBACKCOUNT, expected_drop):   # check for rapid drop... if so, then set alarm and turn off pump
                                     # WARNING: this looks back 120 records ... hence ref to hf_kpa_hiwater above
-            if actual_pressure_drop > zone_max_drop:     # This needs to be zone-specific - even if I don't use quad
+# TODO fix hf_xvalues to match y values
+            k_slope, k_intercept, stdev_Press, r2 = linear_regression(hf_xvalues, hi_freq_kpa_ring, P_STD_DEV_COUNT, 0, HI_FREQ_RINGSIZE)
+            allowed_drop = abs(k_slope * LOOKBACKCOUNT) + stdev_Press * float(config_dict[KPASTDEVMULT])
+            # if actual_pressure_drop > zone_max_drop:     # This needs to be zone-specific - even if I don't use quad
+# TODO remove zone_max_drop from zone dict... assuming linreg thing works out
+            if actual_pressure_drop > allowed_drop:         # replaced zone=specific const with calculated value from linreg
                 runtime = (time.time() - last_ON_time)
                 _, H, M, S = secs_to_DHMS(runtime)
                 run_str = f'{H}:{M:02}:{S:02}'
                 # raiseAlarm(f"Pressure DROP after {runmins}:{runseconds:02}. Expected:{expected_drop}", actual_pressure_drop)
-                raiseAlarm(f"kPa DROP {run_str} after ON  Exceeds zone max drop:{zone_max_drop}", actual_pressure_drop)
+                raiseAlarm(f"kPa DROP {run_str} after ON  Exceeds calculated max drop:{allowed_drop}", actual_pressure_drop)
                 error_ring.add(TankError.PRESSUREDROP)
                 alarm.value(1)                              # this might change... to ONLY if not in TWM/IRRIGATE    
                 kpa_drop_timer = Timer(period=ALARMTIME * 1000, mode=Timer.ONE_SHOT, callback=kpadrop_cb)
@@ -2016,7 +2145,8 @@ def checkForAnomalies()->None:
                 error_ring.add(TankError.HI_VAR_Dist)
 
             if kpa_sensor_found and avg_kpa_set:
-                mean_P, stdev_Press = mean_stddev(hi_freq_kpa_ring, hi_freq_kpa_index, HI_FREQ_RINGSIZE,P_STD_DEV_COUNT)
+                mean_P, stdev_Press = mean_stddev(hi_freq_kpa_ring, hi_freq_kpa_index, HI_FREQ_RINGSIZE, P_STD_DEV_COUNT)
+                k_slope, k_intercept, stdev_Press, r2 = linear_regression(hi_freq_kpa_ring, hi_freq_kpa_ring, P_STD_DEV_COUNT, 0, HI_FREQ_RINGSIZE)
                 if stdev_Press > PRESS_SD_MAX:
                     raiseAlarm("XS P SDEV", stdev_Press)
                     error_ring.add(TankError.HI_VAR_Pres)
@@ -2571,7 +2701,6 @@ def init_all():
     
     stdev_Press         = 0
     stdev_Depth         = 0
-    change_logging(True)
     if not kpa_sensor_found:
         lcd4x20.move_to(0, 3)
         lcd4x20.putstr(f'NO PS: kPa:{startup_calibrated_pressure:2}')
@@ -2580,6 +2709,7 @@ def init_all():
         change_logging(False)
     else:
         print(f"Pressure sensor detected - {startup_raw_ADC=} {startup_calibrated_pressure=}")
+        change_logging(True)
         ev_log.write(f"{now_time_long()} Pressure sensor detected - logging enabled\n")
 
     enable_controls()               # enable rotary encoder, LCD B/L button etc
@@ -2735,6 +2865,7 @@ async def read_pressure()->None:
             if bpp < kpa_low:
                 kpa_low = bpp
             hi_freq_kpa_ring[hi_freq_kpa_index] = bpp
+    # TODO enter actual time in hf_values buffer
             hi_freq_avg = calc_average_HFpressure(0, HI_FREQ_AVG_COUNT)           # short average count... last few readings
             hi_freq_kpa_index = (hi_freq_kpa_index + 1) % HI_FREQ_RINGSIZE
             if hi_freq_kpa_index > hf_kpa_hiwater:
