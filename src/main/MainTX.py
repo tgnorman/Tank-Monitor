@@ -2,42 +2,42 @@
 
 # region IMPORTS
 
+import time
+# import sys
+# import micropython
+import random
+import gc
+from secrets import MyWiFi
+from utime import sleep, ticks_us, ticks_diff, ticks_ms
 import RGB1602
 import umail # type: ignore
-import time
 import uos
-import utime
+# import utime
 import uasyncio as asyncio
 import ntptime
-import gc
-import micropython
 import network
-import sys
-import random
-from utime import sleep, ticks_us, ticks_diff
 from PiicoDev_Unified import sleep_ms
 from PiicoDev_VL53L1X import PiicoDev_VL53L1X
 from PiicoDev_Transceiver import PiicoDev_Transceiver
 from umachine import Timer, Pin, ADC, soft_reset, I2C
-from secrets import MyWiFi
 from MenuNavigator import MenuNavigator
 from encoder import Encoder
 from ubinascii import b2a_base64 as b64
 from SM_SimpleFSM import SimpleDevice
-from lcd_api import LcdApi
+# from lcd_api import LcdApi
 from i2c_lcd import I2cLcd
 from Pump import Pump
 from Tank import Tank
 from TMErrors import TankError
-from utils import now_time_short, now_time_long, format_secs_short, format_secs_long, now_time_tuple
+from TimerManager import TimerManager
 from stats import mean_stddev, linear_regression
 from ringbuffer import RingBuffer, DuplicateDetectingBuffer
-from TimerManager import TimerManager
+from utils import now_time_short, now_time_long, format_secs_short, format_secs_long, now_time_tuple
 # from math import sqrt  # MicroPython does include math
 
 # endregion
 # region INITIALISE
-SW_VERSION          = "12/6/25"      # for display
+SW_VERSION          = "13/6/25"      # for display
 PRODUCTION_MODE     = False         # change to True when no longer in development cycle
 CALIBRATE_MODE      = False
 
@@ -535,16 +535,16 @@ def update_program_data() -> None:
     
     for s in program_list:
         i += 1
-        cyclename = s[0]
+        cycle_name = s[0]
         if i < len(timer_items):  # Protect against index out of range
             menu_item = timer_items[i]
-            if cyclename == menu_item['title']:
+            if cycle_name == menu_item['title']:
                 on_time = menu_item['value']['W_V']
                 off_time = int(on_time * (100/adjusted_dc - 1))
                 s[1]["run"] = on_time
                 s[1]["off"] = off_time
             else:
-                print(f"Found {menu_item['title']}, expecting {cyclename}")
+                print(f"Found {menu_item['title']}, expecting {cycle_name}")
 
     # Set start delay and fix last cycle
     program_list[0][1]["init"] = timer_dict["Start Delay"]
@@ -625,7 +625,7 @@ def toggle_borepump(x:Timer):
     x_str = f'{x}'
     period: int = int(int(x_str.split(',')[2].split('=')[1][0:-1]) / 1000)
     milisecs = period
-    secs = int(milisecs / 1000)
+    # secs = int(milisecs / 1000)
     # mins = int(secs / 60)
     mem = gc.mem_free()
     # need to use tuples to get this... cant index dictionary, as unordered.  D'oh...
@@ -809,7 +809,7 @@ def exit_menu():                      # exit from MENU mode
     # ui_mode = UI_MODE_NORM
     # print(f"Exiting menu...lcd_off in {config_dict['LCD']} seconds")
     if not lcd_timer is None:
-        lcd_timer.deinit
+        lcd_timer.deinit()
     lcd_timer = Timer(period=config_dict[LCD] * 1000, mode=Timer.ONE_SHOT, callback=lcd_off)
 
 def cancel_program()->None:
@@ -945,18 +945,18 @@ def flush_data():
 
 def housekeeping(close_files: bool)->None:
     print("Flushing data...")
-    start_time = time.ticks_us()
+    start_time = ticks_us()
     tank_log.flush()
     ev_log.flush()
     pp_log.flush()
     hf_log.flush()
-    end_time = time.ticks_us()
+    end_time = ticks_us()
     if close_files:
         tank_log.close()
         ev_log.close()
         pp_log.close()
         hf_log.close()
-    print(f"Cleanup completed in {int(time.ticks_diff(end_time, start_time) / 1000)} ms")
+    print(f"Cleanup completed in {int(ticks_diff(end_time, start_time) / 1000)} ms")
 
 def shutdown()->None:
     if op_mode == OP_MODE_IRRIGATE:
@@ -1377,7 +1377,7 @@ new_menu = {
 # def encoder_a_IRQ(pin):
 #     global enc_a_last_time, encoder_count
 
-#     new_time = utime.ticks_ms()
+#     new_time = ticks_ms()
 #     if (new_time - enc_a_last_time) > DEBOUNCE_ROTARY:
 #         if enc_a.value() == enc_b.value():
 #             encoder_count += 1
@@ -1394,7 +1394,7 @@ new_menu = {
 def encoder_btn_IRQ(pin):
     global enc_btn_last_time, encoder_btn_state
 
-    new_time = utime.ticks_ms()
+    new_time = ticks_ms()
     if (new_time - enc_btn_last_time) > DEBOUNCE_BUTTON:
         encoder_btn_state = True
         # print("*", end="")
@@ -1406,7 +1406,7 @@ def infobtn_cb(pin):
     global modebtn_last_time, info_display_mode
 
     # print("INFO", end="")
-    new_time = utime.ticks_ms()
+    new_time = ticks_ms()
     old_mode = info_display_mode
     if (new_time - modebtn_last_time) > DEBOUNCE_BUTTON:
         new_mode = (info_display_mode + 1) % NUM_DISPLAY_MODES
@@ -1451,7 +1451,7 @@ def enc_cb(pos, delta):
 def nav_up_cb(pin):
     global nav_btn_state, nav_btn_last_time
 
-    new_time = utime.ticks_ms()
+    new_time = ticks_ms()
     if (new_time - nav_btn_last_time) > DEBOUNCE_BUTTON:
         nav_btn_state = True
         print("U", end="")
@@ -1471,7 +1471,7 @@ def nav_up_cb(pin):
 def nav_dn_cb(pin):
     global nav_btn_state, nav_btn_last_time
 
-    new_time = utime.ticks_ms()
+    new_time = ticks_ms()
     if (new_time - nav_btn_last_time) > DEBOUNCE_BUTTON:
         nav_btn_state = True
         print("D", end="")
@@ -1490,7 +1490,7 @@ def nav_dn_cb(pin):
 def nav_OK_cb(pin):
     global nav_btn_state, nav_btn_last_time
 
-    new_time = utime.ticks_ms()
+    new_time = ticks_ms()
     if (new_time - nav_btn_last_time) > DEBOUNCE_BUTTON:
         nav_btn_state = True
         print("S", end="")
@@ -1519,7 +1519,7 @@ def nav_OK_cb(pin):
 def nav_L_cb(pin):
     global nav_btn_state, nav_btn_last_time
 
-    new_time = utime.ticks_ms()
+    new_time = ticks_ms()
     if (new_time - nav_btn_last_time) > DEBOUNCE_BUTTON:
         nav_btn_state = True
         print("L", end="")
@@ -1531,7 +1531,7 @@ def nav_L_cb(pin):
 def nav_R_cb(pin):
     global nav_btn_state, nav_btn_last_time
 
-    new_time = utime.ticks_ms()
+    new_time = ticks_ms()
     if (new_time - nav_btn_last_time) > DEBOUNCE_BUTTON:
         nav_btn_state = True
         print("R", end="")
@@ -1573,7 +1573,7 @@ def lcdbtn_new(pin):
 #     lcdbtnflag = True
 #     sleep_ms(300)
 
-def lcd_off(x):
+def lcd_off(pin):
     # print(f'in lcd_off {ui_mode=}, called from timer={x}')
     # print("Stack trace:")
     # try:
@@ -1655,14 +1655,14 @@ def get_fill_state(d):
     return tmp
 
 def calc_SMA_Depth()-> float:
-    sum = 0.0
+    dsum = 0.0
     n = 0
     for dval in depthringbuf:
         if dval > 0:
-            sum += dval
+            dsum += dval
             n += 1
     if n > 0:
-        return sum / n
+        return dsum / n
     else:
         return 0.0
     
@@ -1833,7 +1833,7 @@ def confirm_solenoid():
         return not solenoid_state
 
 def radio_time(local_time):
-    return(local_time + clock_adjust_ms)
+    return local_time + clock_adjust_ms
 
 def borepump_ON():
     global average_timer, baseline_timer, hf_kpa_hiwater, avg_kpa_set, baseline_set, last_ON_time, kpa_peak, kpa_low
@@ -1935,9 +1935,9 @@ def dump_zone_peak()->None:
     ev_log.write("\nZone Peak Pressures:")
     for z in peak_pressure_dict.keys():
         if peak_pressure_dict[z][1] > 0:
-            str = f"{format_secs_long(peak_pressure_dict[z][0])}  Zone {z:<3}: peak {peak_pressure_dict[z][1]}kPa {peak_pressure_dict[z][2]} seconds after ON"
-            print(str)
-            ev_log.write(str + "\n")
+            lstr = f"{format_secs_long(peak_pressure_dict[z][0])}  Zone {z:<3}: peak {peak_pressure_dict[z][1]}kPa {peak_pressure_dict[z][2]} seconds after ON"
+            print(lstr)
+            ev_log.write(lstr + "\n")
 
 def raiseAlarm(param, val):
 
@@ -1951,9 +1951,9 @@ def cancel_deadtime(timer:Timer)->None:
     global op_mode
 
     if previous_op_mode < OP_MODE_DISABLED:
-        str = f'{now_time_long()} Disabled mode cancelled, returning to {opmode_dict[previous_op_mode]}, switching pump back ON'
-        ev_log.write(f'{str}\n')
-        print(str)
+        logstr = f'{now_time_long()} Disabled mode cancelled, returning to {opmode_dict[previous_op_mode]}, switching pump back ON'
+        ev_log.write(f'{logstr}\n')
+        print(logstr)
         event_ring.add("Disabled mode cancelled")
         op_mode = previous_op_mode
         borepump_ON()       # this is really the critical bit !!
@@ -2107,7 +2107,7 @@ def checkForAnomalies()->None:
             # if actual_pressure_drop > zone_max_drop:     # This needs to be zone-specific - even if I don't use quad
 # TODO remove zone_max_drop from zone dict... assuming linreg thing works out
             if actual_pressure_drop > max_drop:         # replaced zone=specific const with calculated value from linreg
-                runtime = (time.time() - last_ON_time)
+                runtime = time.time() - last_ON_time
                 _, H, M, S = secs_to_DHMS(runtime)
                 run_str = f'{H}:{M:02}:{S:02}'
                 # raiseAlarm(f"Pressure DROP after {runmins}:{runseconds:02}. Expected:{expected_drop}", actual_pressure_drop)
@@ -2545,7 +2545,7 @@ def calibrate_clock():
 
     delay=500
 #   for i in range(1):
-    p = time.ticks_ms()
+    p = ticks_ms()
     s = "CLK"
     t=(s, p)
     transmit_and_pause(t, delay)
@@ -2556,7 +2556,7 @@ def init_ringbuffers():
 
     depthringbuf = [0.0]                 # start with a list containing zero...
     if DEPTHRINGSIZE > 1:             # expand it as needed...
-        for x in range(DEPTHRINGSIZE - 1):
+        for _ in range(DEPTHRINGSIZE - 1):
             depthringbuf.append(0.0)
     if DEBUGLVL > 0: print("Ringbuf is ", depthringbuf)
     depthringindex = 0
@@ -2619,7 +2619,7 @@ def init_all():
     PS_ND               = "Pressure sensor not detected"
     str_msg             = "At startup, BorePump is "
     encoder_count       = 0       # to track rotary next/prevs
-    now                 = utime.ticks_ms()
+    now                 = ticks_ms()
     enc_a_last_time     = now
     encoder_btn_state   = False
     enc_btn_last_time   = now
@@ -2883,9 +2883,9 @@ async def read_pressure()->None:
             if ui_mode == UI_MODE_NORM:
                 if op_mode ==  OP_MODE_AUTO: 
                     if display_mode == "pressure":
-                        str = f'{int(hi_freq_avg):3} {zone}'
+                        lstr = f'{int(hi_freq_avg):3} {zone}'
                         lcd.setCursor(9, 1)
-                        lcd.printout(str)
+                        lcd.printout(lstr)
 
             if hi_freq_avg > config_dict[MAXPRESSURE]:
                 raiseAlarm("XS H/F kPa", hi_freq_avg)
@@ -2911,7 +2911,7 @@ async def send_file_list(to: str, subj: str, filenames: list):
     # print(f"Sending files {filenames}...")
     chunk_size = 3 * 170  # Read file in 1K byte chunks... but MUST be a multiple of 3 for base64 encoding
 
-    t0 = time.ticks_ms()
+    t0 = ticks_ms()
 
         # Create MIME message
     hdrmsg = (
@@ -2929,17 +2929,17 @@ async def send_file_list(to: str, subj: str, filenames: list):
     )
     #hdrmsg = ('Some text to be sent as the body of the email\n')
 
-    t1 = time.ticks_ms()
+    t1 = ticks_ms()
     smtp=umail.SMTP(SMTP_SERVER, SMTP_PORT, ssl=True)
-    t2 = time.ticks_ms()
+    t2 = ticks_ms()
     # print("SMTP connection created")
     c, r = smtp.login(FROM_EMAIL, FROM_PASSWORD)
-    t3 = time.ticks_ms()
+    t3 = ticks_ms()
     # print(f"After SMTP Login {c=} {r=}")
     smtp.to(TO_EMAIL)
     smtp.write(hdrmsg)  # Write headers and message part
     
-    t4 = time.ticks_ms()
+    t4 = ticks_ms()
     # print("SMTP Headers written")
     await asyncio.sleep_ms(sleepms)
 
@@ -2994,13 +2994,13 @@ async def send_file_list(to: str, subj: str, filenames: list):
     # End the MIME message
     smtp.write("\r\n--BOUNDARY--\r\n")
 
-    t5 = time.ticks_ms()
+    t5 = ticks_ms()
     # f.close()
     # print(f"\r\nSMTP Files written in {total_chunks} chunks ")
     await asyncio.sleep_ms(sleepms)
 
     smtp.send()
-    t6 = time.ticks_ms()
+    t6 = ticks_ms()
     # print(f"Files sent!")
     # print(f"Times: {t1-t0}, {t2-t1}, {t3-t2}, {t4-t3}, {t5-t4}, {t6-t5}")
     smtp.quit()
@@ -3218,4 +3218,4 @@ def main() -> None:
         shutdown()
 
 if __name__ == '__main__':
-     main()
+    main()
