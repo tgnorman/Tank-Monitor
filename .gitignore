@@ -9,10 +9,10 @@ secrets.py
 Libraries/
 
 # Ignore output, docs and archive directories
+.chat/*
 logs/
 logData/*
 archive/
-Chats/*
 docs/*.txt
 docs/*.xlsx
 docs/*.pdf

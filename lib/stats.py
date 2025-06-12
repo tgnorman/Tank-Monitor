@@ -1,57 +1,70 @@
 import math     # type: ignore
 
-def mean_stddev(buff, buffidx:int, buflen:int, count:int)->tuple:
+def mean_stddev(buff:list, count:int, startidx:int, ringlen:int)->tuple[float, float]:
+    """
+        Args:
+            buff:   list of values, stored in a ring buffer
+            count:  number of values to use
+            startidx: position in rinng to begin at... and then...
+            look backwards from ABSOLUTE index startidx... NOT relative to hf_index
+
+        Returns:
+            tuple containg mean and sample std deviation
+    """
     if count < 2:
         return 0, 0
     s = 0.0
     for i in range(count):
-        mod_index = (buffidx - i - 1) % buflen  # change to average hi_freq_kpa readings
+        mod_index = (startidx - i - 1) % ringlen  # change to average hi_freq_kpa readings
         s += buff[mod_index]    
     mean: float = s / count
 
-    ss = 0.0
+    ss_diffs = 0.0
     for i in range(count):
-        mod_index = (buffidx - i - 1) % buflen  # change to average hi_freq_kpa readings
+        mod_index = (startidx - i - 1) % ringlen  # change to average hi_freq_kpa readings
         x = buff[mod_index]
-        d = (x - mean)
-        ss += d * d
-    v = ss / (count - 1)
+        diff = (x - mean)
+        ss_diffs += diff * diff
+    v = ss_diffs / (count - 1)
     sd = math.sqrt(v)
     return mean, sd
 
-def linear_regression(x: list, y: list, n:int, startidx:int, ringlen:int) -> tuple[float, float, float, float]:
-    """Calculate linear regression coefficients (slope, intercept).
+def linear_regression(x: list, y: list, count:int, startidx:int, ringlen:int) -> tuple[float, float, float, float]:
+    """
+    Calculate linear regression coefficients (slope, intercept) and other stats (std dev and r-squared).
     
     Args:
         x: List of x values
         y: List of y values
-        startidx: index of start of sample data in ring buffer
+        count: how many values to go BACKWARDS
+        startidx: absolute index of start of sample data in ring buffer.  NOT relative to buffer index !!
+        ringlen: length of ring buffer
         
     Returns:
         Tuple of (slope, intercept, std deviation, r-squared)
     """
-    n = len(x)
-    if n != len(y) or n < 2:
+    count = len(x)
+    if count != len(y) or count < 2:
         raise ValueError("x and y must have same length and length >= 2")
         
  # Now... make it work round a ring buffer, not a straight list
  # Also... look backwards, simulating previous n readings
     ring_xbar = ring_ybar = 0.0
 
-    for i in range(n):
+    for i in range(count):
         mod_idx = (startidx - i - 1) % ringlen
         # xi = x[mod_idx]
         # yi = y[mod_idx]
         ring_xbar += x[mod_idx]
         ring_ybar += y[mod_idx]
 
-    x_mean = ring_xbar / n
-    y_mean = ring_ybar / n
+    x_mean = ring_xbar / count
+    y_mean = ring_ybar / count
 
     sum_xy = sum_xx = sum_yy = 0.0
     ss_res = ss_tot = 0.0  # For R-squared calculation
 
-    for i in range(n):
+    for i in range(count):
         mod_idx = (startidx - i - 1) % ringlen
         # xi = x[mod_idx]
         # yi = y[mod_idx]
@@ -78,7 +91,7 @@ def linear_regression(x: list, y: list, n:int, startidx:int, ringlen:int) -> tup
     # std_dev = math.sqrt(sum((yi - y_mean) * (yi - y_mean) for i in range(n))) / (n-1)
     
     # Calculate R-squared
-    for i in range(n):
+    for i in range(count):
         mod_idx = (startidx - i - 1) % ringlen
         # xi = x[mod_idx]
         yi = y[mod_idx]
@@ -93,6 +106,6 @@ def linear_regression(x: list, y: list, n:int, startidx:int, ringlen:int) -> tup
         ss_tot += (yi - y_mean) ** 2
     
     r_squared = 1 - (ss_res / ss_tot) if ss_tot != 0 else 0
-    std_dev = math.sqrt(sum_yy / (n-1))  # Using sum_yy we calculated earlier
+    std_dev = math.sqrt(sum_yy / (count-1))  # Using sum_yy we calculated earlier
     
     return slope, intercept, std_dev, r_squared

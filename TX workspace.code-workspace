@@ -4,10 +4,6 @@
 			"path": "."
 		},
 		{
-			"path": "lib",
-			"name": "libs"
-		},
-		{
 			"path": "../Libraries",
 			"name": "PicoDev libs"
 		},

@@ -37,7 +37,7 @@ from TimerManager import TimerManager
 
 # endregion
 # region INITIALISE
-SW_VERSION          = "10/6/25"      # for display
+SW_VERSION          = "12/6/25"      # for display
 PRODUCTION_MODE     = False         # change to True when no longer in development cycle
 CALIBRATE_MODE      = False
 
@@ -85,9 +85,9 @@ MAX_OUTAGE          = 30            # seconds of no power
 ALARMTIME           = 10            # seconds of alarm on/off time
 
 D_STD_DEV_COUNT     = 10            # standard deviation calcs
-P_STD_DEV_COUNT     = 20
+P_STD_DEV_COUNT     = 60
 DEPTH_SD_MAX        = 2             # test...
-PRESS_SD_MAX        = 2
+PRESS_SD_MAX        = 2.5           # test this too
 hf_xvalues          = [i for i in range(HI_FREQ_RINGSIZE)]  # 
 BP_SENSOR_MIN       = 250           # raw ADC read... this will trigger sensor detect logic.  Changed for 12-bit range
 VDIV_R1             = 12000         # ohms
@@ -113,6 +113,7 @@ MAX_CONTIN_RUNMINS  = 360           # 3 hours max runtime.  More than this looks
 LOG_HF_PRESSURE     = 2             # log high frequency pressure data.  Need to use int, not bool, for menu
 kPa_stdev_mult      = 3             # 3 std devs ... a LOT of wiggle room
 
+LOGHFDATA           = True          # log 1 second interval kPa data
 SIMULATE_PUMP       = False         # debugging aid...replace pump switches with a PRINT
 SIMULATE_KPA        = False         # debugging aid...replace pressure sensor with a PRINT
 
@@ -321,7 +322,6 @@ MAXPRESSURE         = "Max Pressure"
 # MAXDROP             = "Max Drop"
 NOPRESSURE          = "No Pressure"
 MAXRUNMINS          = "Max RunMins"
-LOGHFDATA           = "Log HF Data"
 KPASTDEVMULT        = "P SD Mult"
 
 config_dict         = {
@@ -334,7 +334,6 @@ config_dict         = {
     # MAXDROP         : MAX_KPA_DROP,
     NOPRESSURE      : NO_LINE_PRESSURE,
     MAXRUNMINS      : MAX_CONTIN_RUNMINS,
-    LOGHFDATA       : LOG_HF_PRESSURE,
     KPASTDEVMULT    : kPa_stdev_mult
             }
 
@@ -1253,6 +1252,24 @@ def send_log()->None:
     lcd.printout(f'{"Log queued":<16}')
     # print(f"Log added to email queue")
 
+def toggle_prod_mode():
+    global PRODUCTION_MODE
+    PRODUCTION_MODE = not PRODUCTION_MODE
+    lcd.setCursor(0, 1)
+    lcd.printout(f'PRODMODE  {' ON' if PRODUCTION_MODE else 'OFF'}')
+
+def toggle_calibration_mode():
+    global CALIBRATE_MODE
+    CALIBRATE_MODE = not CALIBRATE_MODE
+    lcd.setCursor(0, 1)
+    lcd.printout(f'CALIBMODE {' ON' if CALIBRATE_MODE else 'OFF'}')
+
+def toggle_HFLOGGING():
+    global LOGHFDATA
+    LOGHFDATA = not LOGHFDATA
+    lcd.setCursor(0, 1)
+    lcd.printout(f'LOGHFDATA {' ON' if LOGHFDATA else 'OFF'}')
+
 Title_Str  = "title"
 Value_Str  = "value"
 ActionStr  = "action"
@@ -1312,7 +1329,6 @@ new_menu = {
                 { Title_Str : NOPRESSURE,    Value_Str: {"D_V": 15,   "W_V" : NO_LINE_PRESSURE,     Step_Str : 5}},
                 # { Title_Str : MAXDROP,       Value_Str: {"D_V": 15,   "W_V" : MAX_KPA_DROP,         Step_Str : 1}},
                 { Title_Str : MAXRUNMINS,    Value_Str: {"D_V": 60,   "W_V" : MAX_CONTIN_RUNMINS,   Step_Str : 10}},
-                { Title_Str : LOGHFDATA,     Value_Str: {"D_V": 0,    "W_V" : LOG_HF_PRESSURE,      Step_Str : 1}},
                 { Title_Str : KPASTDEVMULT,  Value_Str: {"D_V": 3,    "W_V" : kPa_stdev_mult,       Step_Str : 1}},
                 { Title_Str: "Save config",  ActionStr: update_config},
                 { Title_Str: "Go Back",      ActionStr: my_go_back}
@@ -1342,6 +1358,9 @@ new_menu = {
         #   { Title_Str: "Save Config",       ActionStr: update_config},
           { Title_Str: "Make Space",        ActionStr: make_more_space},
           { Title_Str: "Test Beep",         ActionStr: beepx3},
+          { Title_Str: "Toggle HFLOG",      ActionStr: toggle_HFLOGGING},
+          { Title_Str: "Toggle PROD",       ActionStr: toggle_prod_mode},
+          { Title_Str: "Toggle CALIB",      ActionStr: toggle_calibration_mode},
           { Title_Str: "Enter MAINT",       ActionStr: enter_maint_mode},
           { Title_Str: "Exit  MAINT",       ActionStr: exit_maint_mode},         
           { Title_Str: "Reset",             ActionStr: my_reset},
@@ -1543,7 +1562,7 @@ def enable_controls():
 # region LCD
 def lcdbtn_new(pin):
     global lcd_timer
-# so far, with no debounce logic...
+# so far, with no debounce logic... really not needed.  If we get a bounce... so what?
     lcd_on()
     if not lcd_timer is None:
         lcd_timer.deinit()
@@ -1647,19 +1666,19 @@ def calc_SMA_Depth()-> float:
     else:
         return 0.0
     
-def count_HFkpa_ring()-> int: 
-    count = 0
-    for i in range(HI_FREQ_RINGSIZE):
-        if hi_freq_kpa_ring[i] != 0:
-            count += 1
-    return count
+def calc_average_HFpressure(offset_back:int, length:int)->float:
+    """
+    This is a cut-down version of mean_stdev... and should probably be replaced.
+    It is also confusing, as it is NOT the same semantics... offset is RELATIVE to hi_freq_kpa_index !!!
+    And ringsize is built-in, not a param
 
-def calc_average_HFpressure(start:int, length:int)->float:
+    Finally, note it does some checking on mod_index not done elsewhere
+    """
     # if length > HI_FREQ_AVG_COUNT:
     #     print(f"***>>>calc_average_pressure: {start=} length {length} > {HI_FREQ_AVG_COUNT}")
     p = 0
     for i in range(length):
-        mod_index = (hi_freq_kpa_index - start - i - 1) % HI_FREQ_RINGSIZE  # change to average hi_freq_kpa readings
+        mod_index = (hi_freq_kpa_index - offset_back - i - 1) % HI_FREQ_RINGSIZE  # change to average hi_freq_kpa readings
         tmp = hi_freq_kpa_ring[mod_index]
         # print(f'  {mod_index=}, {tmp=}')
         # if tmp == 0 and hi_freq_kpa_index .... need to revisit thislogic   TODO
@@ -1691,7 +1710,6 @@ def set_baseline_kpa(timer: Timer):
             #     p += tmp
             baseline_pressure = round(calc_average_HFpressure(0, BASELINE_AVG_COUNT))  # get average of last BASELINE_AVG_COUNT readings.
             baseline_set = True
-            # bl_by_func = calc_average_HFpressure(0, BASELINE_AVG_COUNT)  # get average of last BASELINE_AVG_COUNT readings.
             bp_str = f"{now_time_long()} Baseline set to {baseline_pressure} kPa"
             print(bp_str)
             ev_log.write(bp_str + "\n")
@@ -1723,7 +1741,7 @@ def set_average_kpa(timer: Timer):
     global average_kpa, avg_kpa_set
 
     if hf_kpa_hiwater >= AVG_KPA_DELAY - 1:
-        tmp = int(calc_average_HFpressure(0, AVG_KPA_DELAY))  # get average of last AVG_KPA_DELAY readings
+        tmp = calc_average_HFpressure(0, AVG_KPA_DELAY)  # get average of last AVG_KPA_DELAY readings
         if tmp > 0:
             average_kpa = tmp
             # print("set_average_kpa callback: Average kPa set: ", average_kpa)
@@ -1760,7 +1778,6 @@ def updateData():
     # print(f"In updateData: ADC value: {pv}")
     # bp_kpa = kparing[kpaindex]        # get last kPa reading
     if hf_kpa_hiwater >= AVG_KPA_DELAY - 1:
-        # print(f'In updateData: hi_freq count = {count_HFkpa_ring()}')
         tmp = int(calc_average_HFpressure(0, AVG_KPA_DELAY))  # get average of last AVG_KPA_DELAY readings.
         if tmp > 0:
             average_kpa = tmp
@@ -1820,7 +1837,7 @@ def radio_time(local_time):
 
 def borepump_ON():
     global average_timer, baseline_timer, hf_kpa_hiwater, avg_kpa_set, baseline_set, last_ON_time, kpa_peak, kpa_low
-    global steady_state, rec_num, stable_pressure
+    global steady_state, rec_num, stable_pressure, LOGHFDATA
 
     if SIMULATE_PUMP:
         print(f"{now_time_long()} SIM Pump ON")
@@ -1855,7 +1872,8 @@ def borepump_ON():
                     kpa_low = 1000
                     average_timer  = Timer(period=AVG_KPA_DELAY  * 1000, mode=Timer.ONE_SHOT, callback=set_average_kpa)  # start timer to record average after 5 seconds
                     baseline_timer = Timer(period=BASELINE_DELAY * 1000, mode=Timer.ONE_SHOT, callback=set_baseline_kpa)  # start timer to record baseline after 30 seconds
-                    change_logging(True)
+                    # change_logging(True)
+                    LOGHFDATA = True
     # reset this to avoid spurious ALARMS as ROC average climbs to steady value... SMA issue
                 steady_state = False
                 rec_num = 0
@@ -1863,7 +1881,7 @@ def borepump_ON():
                 log_switch_error(new_state)
 
 def borepump_OFF():
-
+    global LOGHFDATA
     if SIMULATE_PUMP:
         print(f"{now_time_long()} SIM Pump OFF")
     else:
@@ -1881,7 +1899,8 @@ def borepump_OFF():
             if valid_response and not new_state:        # this means I received confirmation that pump is OFF...
                 borepump.switch_pump(False)
                 switch_ring.add("PUMP OFF")
-                change_logging(False)
+                # change_logging(False)
+                LOGHFDATA = False
                 ev_log.write(f"{now_time_long()} OFF\n")
                 system.on_event("OFF ACK")
                 if DEBUGLVL > 1: print("borepump_OFF: Closing valve")
@@ -2015,38 +2034,19 @@ def find_menu_index(param_name: str) -> int:
             
     print(f"Did not find {param_name} in config menu")
     return -1
-
-def change_logging(bv: bool) -> None:
-    """Update logging configuration in both dict and menu."""
-    val = 2 if bv else 1
-    config_dict[LOGHFDATA] = val
-    
-    param_index = find_menu_index(LOGHFDATA)
-    if param_index >= 0:
-        # Find config submenu path
-        config_path = find_menu_path(new_menu, "Set Config->")
-        if config_path:
-            # Navigate to parameter and update it
-            current_menu = new_menu
-            for index in config_path:
-                current_menu = current_menu['items'][index]
-            
-            param_item = current_menu['items'][param_index]
-            print(f"Setting {param_item['title']} to {val}")
-            param_item['value']['W_V'] = val
-            
+           
 def quad(a: float, b: float, c: int, x: int) -> int:
     """Calculate the pressure at a given point using a quadratic equation"""
     return int(a * x*x + b * x + c)
     
-def isRapidDrop(lookback:int, zone_max_drop: int)->bool:
-    """
-    Check if the pressure drop is rapid, or slow drift.  This is done by checking the average pressure over a lookback period.
-    """
-    global baseline_pressure, baseline_time
+# def isRapidDrop(lookback:int, zone_max_drop: int)->bool:
+#     """
+#     Check if the pressure drop is rapid, or slow drift.  This is done by checking the average pressure over a lookback period.
+#     """
+#     global baseline_pressure, baseline_time
 
-    prev_avg = calc_average_HFpressure(lookback, LO_FREQ_AVG_COUNT)     # only time I use lookback...
-    return prev_avg - average_kpa < zone_max_drop
+#     prev_avg = calc_average_HFpressure(lookback, LO_FREQ_AVG_COUNT)     # only time I use lookback...
+#     return prev_avg - average_kpa < zone_max_drop
     # if prev_avg - average_kpa < zone_max_drop:   # looks like a slow drift, not a rapid drop
         # if abs(average_kpa - zone_minimum) < 5:  # if we are close to the minimum pressure, then don't reset baseline]:
         #     near_min_str = f"{now_time_long()} Pressure near zone minimum, not resetting baseline: {zone_minimum=}, {average_kpa=}"
@@ -2068,7 +2068,6 @@ def isRapidDrop(lookback:int, zone_max_drop: int)->bool:
 def check_for_Baseline_Drift()->None:
     global baseline_pressure
     
-    # prev_avg = calc_average_HFpressure(lookback, LO_FREQ_AVG_COUNT)
     if average_kpa > 0 and baseline_pressure / average_kpa > 1.1:         # average_kpa has dropped of more than 10% from previous baseline
         if abs(average_kpa - zone_minimum) < 5:
             near_min_str = f"{now_time_long()} Pressure near zone minimum, not resetting baseline: {zone_minimum=}, {average_kpa=}"
@@ -2077,7 +2076,7 @@ def check_for_Baseline_Drift()->None:
         else:
             old_baseline = baseline_pressure
             baseline_pressure = average_kpa
-            bl_reset_str = f'{now_time_long()} Baseline reset in check_for_Drift from {old_baseline} to {baseline_pressure}'
+            bl_reset_str = f'{now_time_long()} Baseline reset in check_for_Baseline_Drift from {old_baseline} to {baseline_pressure}'
             print(bl_reset_str)
             ev_log.write(bl_reset_str + "\n")
             event_ring.add("Baseline reset")
@@ -2094,23 +2093,25 @@ def checkForAnomalies()->None:
             # samples_since_last_ON = int((time.time() - last_ON_time) / (PRESSURE_PERIOD_MS / 1000))
             # expected_pressure_just_now = quad(qa, qb, qc, samples_since_last_ON - LOOKBACKCOUNT)
             # expected_pressure_now      = quad(qa, qb, qc, samples_since_last_ON)  # calculate expected pressure using quadratic equation
-            # expected_drop = expected_pressure_just_now - expected_pressure_now    # TODO might need to look at cumulative runtime over say the last 12 hours
-            av_p_prior  = calc_average_HFpressure(LOOKBACKCOUNT, HI_FREQ_AVG_COUNT)  # get average of last HI_FREQ_AVG_COUNT readings.
-            av_p_now    = calc_average_HFpressure(0, HI_FREQ_AVG_COUNT)
-            actual_pressure_drop = int(av_p_prior - av_p_now)       # Important!  Avoid rounding errors.. avg drop of 0.3 on HT triggered alarm without this!
+            # expected_drop = expected_pressure_just_now - expected_pressure_now    # might need to look at cumulative runtime over say the last 12 hours
+# NOTE: calc_average_HFpressure behaves differently yo other stats methods line_reg and mean_stddev
+            av_p_prior  = calc_average_HFpressure(LOOKBACKCOUNT, HI_FREQ_AVG_COUNT) # get average of readings LOOKBACK seconds ago.
+            av_p_now    = calc_average_HFpressure(0, HI_FREQ_AVG_COUNT)             # zero offset == immediately prior values
+            actual_pressure_drop = av_p_prior - av_p_now      # Important!  Avoid rounding errors.. avg drop of 0.3 on HT triggered alarm without int()!
             # if isRapidDrop(LOOKBACKCOUNT, expected_drop):   # check for rapid drop... if so, then set alarm and turn off pump
                                     # WARNING: this looks back 120 records ... hence ref to hf_kpa_hiwater above
-# TODO fix hf_xvalues to match y values
-            k_slope, k_intercept, stdev_Press, r2 = linear_regression(hf_xvalues, hi_freq_kpa_ring, P_STD_DEV_COUNT, 0, HI_FREQ_RINGSIZE)
-            allowed_drop = abs(k_slope * LOOKBACKCOUNT) + stdev_Press * float(config_dict[KPASTDEVMULT])
+# TODO fix hf_xvalues to match y values... if it matters.  LR probably works regardless
+# NOTE: the startidx param is CRITICAL!!  we need to do LR on the data BEFORE pressure dropped...
+            k_slope, k_intercept, stdev_Press, r2 = linear_regression(hf_xvalues, hi_freq_kpa_ring, P_STD_DEV_COUNT, (hi_freq_kpa_index - LOOKBACKCOUNT) % HI_FREQ_RINGSIZE, HI_FREQ_RINGSIZE)
+            max_drop = abs(k_slope * LOOKBACKCOUNT) + stdev_Press * float(config_dict[KPASTDEVMULT])
             # if actual_pressure_drop > zone_max_drop:     # This needs to be zone-specific - even if I don't use quad
 # TODO remove zone_max_drop from zone dict... assuming linreg thing works out
-            if actual_pressure_drop > allowed_drop:         # replaced zone=specific const with calculated value from linreg
+            if actual_pressure_drop > max_drop:         # replaced zone=specific const with calculated value from linreg
                 runtime = (time.time() - last_ON_time)
                 _, H, M, S = secs_to_DHMS(runtime)
                 run_str = f'{H}:{M:02}:{S:02}'
                 # raiseAlarm(f"Pressure DROP after {runmins}:{runseconds:02}. Expected:{expected_drop}", actual_pressure_drop)
-                raiseAlarm(f"kPa DROP {run_str} after ON  Exceeds calculated max drop:{allowed_drop}", actual_pressure_drop)
+                raiseAlarm(f"kPa DROP {run_str} after ON  Exceeds calculated max drop:{max_drop}", actual_pressure_drop)
                 error_ring.add(TankError.PRESSUREDROP)
                 alarm.value(1)                              # this might change... to ONLY if not in TWM/IRRIGATE    
                 kpa_drop_timer = Timer(period=ALARMTIME * 1000, mode=Timer.ONE_SHOT, callback=kpadrop_cb)
@@ -2139,14 +2140,14 @@ def checkForAnomalies()->None:
                 error_ring.add(TankError.MAX_ROC_EXCEEDED)
 
         # now, check standard deviation for high values...    
-            mean_D, stdev_Depth = mean_stddev(depthringbuf, depthringindex, DEPTHRINGSIZE, D_STD_DEV_COUNT)
+            mean_D, stdev_Depth = mean_stddev(depthringbuf, D_STD_DEV_COUNT, depthringindex, DEPTHRINGSIZE)
             if stdev_Depth > DEPTH_SD_MAX:
                 raiseAlarm("XS D SDEV", stdev_Depth)
                 error_ring.add(TankError.HI_VAR_Dist)
 
             if kpa_sensor_found and avg_kpa_set:
-                mean_P, stdev_Press = mean_stddev(hi_freq_kpa_ring, hi_freq_kpa_index, HI_FREQ_RINGSIZE, P_STD_DEV_COUNT)
-                k_slope, k_intercept, stdev_Press, r2 = linear_regression(hi_freq_kpa_ring, hi_freq_kpa_ring, P_STD_DEV_COUNT, 0, HI_FREQ_RINGSIZE)
+                mean_P, stdev_Press = mean_stddev(hi_freq_kpa_ring, P_STD_DEV_COUNT , hi_freq_kpa_index, HI_FREQ_RINGSIZE)
+                # k_slope, k_intercept, stdev_Press, r2 = linear_regression(hi_freq_kpa_ring, hi_freq_kpa_ring, P_STD_DEV_COUNT,(hi_freq_kpa_index - LOOKBACKCOUNT) % HI_FREQ_RINGSIZE, HI_FREQ_RINGSIZE)
                 if stdev_Press > PRESS_SD_MAX:
                     raiseAlarm("XS P SDEV", stdev_Press)
                     error_ring.add(TankError.HI_VAR_Pres)
@@ -2247,7 +2248,7 @@ def DisplayInfo()->None:
             lcd4x20.putstr(f"S{1 if steady_state else 0}    ")  
 
             lcd4x20.move_to(14, 0)
-            lcd4x20.putstr(f"HF:{' ON' if config_dict[LOGHFDATA] > 1 else 'OFF'}")
+            lcd4x20.putstr(f"HF:{' ON' if LOGHFDATA else 'OFF'}")
 
             calc_uptime()
             lcd4x20.move_to(0, 1)
@@ -2301,13 +2302,13 @@ def DisplayInfo()->None:
             # lcd4x20.putstr(f"S{1 if steady_state else 0}")  
 
             # lcd4x20.move_to(14, 0)
-            # lcd4x20.putstr(f"HF:{' ON' if config_dict[LOGHFDATA] > 1 else 'OFF'}")
+            # lcd4x20.putstr(f"HF:{' ON' if LOGHFDATA else 'OFF'}")
 
             # lcd4x20.move_to(0, 0)                # move to top left corner of LCD
             ev_len = len(event_ring.buffer)
             er_len = len(error_ring.buffer)
             lcd4x20.move_to(0, 0)
-            lcd4x20.putstr(f'EV:{ev_len:2}/{er_len:2} SP:{stdev_Press:.1f} SD:{stdev_Depth:.1f}')
+            lcd4x20.putstr(f'EV:{ev_len:2}/{er_len:2} P:{stdev_Press:.1f} D:{stdev_Depth:.1f}')
 
             remain_str = f'{" ":^8}'
             opm_str = f'{opmode_dict[op_mode]:4}'
@@ -2613,6 +2614,7 @@ def init_all():
     global ONESECBLINK, lcd_timer
     global ut_long, ut_short
     global stdev_Depth, stdev_Press
+    global LOGHFDATA
 
     PS_ND               = "Pressure sensor not detected"
     str_msg             = "At startup, BorePump is "
@@ -2701,15 +2703,15 @@ def init_all():
     
     stdev_Press         = 0
     stdev_Depth         = 0
+    LOGHFDATA           = kpa_sensor_found
+
     if not kpa_sensor_found:
         lcd4x20.move_to(0, 3)
         lcd4x20.putstr(f'NO PS: kPa:{startup_calibrated_pressure:2}')
         print(f'{PS_ND} {startup_calibrated_pressure=}')
         ev_log.write(f"{now_time_long()}  {PS_ND} initial:{startup_calibrated_pressure:3} - HF kPa logging disabled\n")
-        change_logging(False)
     else:
         print(f"Pressure sensor detected - {startup_raw_ADC=} {startup_calibrated_pressure=}")
-        change_logging(True)
         ev_log.write(f"{now_time_long()} Pressure sensor detected - logging enabled\n")
 
     enable_controls()               # enable rotary encoder, LCD B/L button etc
@@ -2865,7 +2867,7 @@ async def read_pressure()->None:
             if bpp < kpa_low:
                 kpa_low = bpp
             hi_freq_kpa_ring[hi_freq_kpa_index] = bpp
-    # TODO enter actual time in hf_values buffer
+    # TODO enter actual time in hf_values buffer here if required
             hi_freq_avg = calc_average_HFpressure(0, HI_FREQ_AVG_COUNT)           # short average count... last few readings
             hi_freq_kpa_index = (hi_freq_kpa_index + 1) % HI_FREQ_RINGSIZE
             if hi_freq_kpa_index > hf_kpa_hiwater:
@@ -2875,8 +2877,8 @@ async def read_pressure()->None:
 
             lcd4x20.move_to(17, 3)
             lcd4x20.putstr(f"{bpp:>3}")
-            if config_dict[LOGHFDATA] > 1:      # conditionally, write to logfile... but note I ALWAYS add to the ring buffer
-                                            # This gets switched On/OFF depending on pump state... but NOTE: buffer updates happen ALWAYS!
+            if LOGHFDATA:       # conditionally, write to logfile... but note I ALWAYS add to the ring buffer
+                                # This gets switched On/OFF depending on pump state... but NOTE: buffer updates happen ALWAYS!
                 hf_log.write(f"{now_time_long()} {bpp:>3} {hi_freq_avg}\n")
             if ui_mode == UI_MODE_NORM:
                 if op_mode ==  OP_MODE_AUTO: 

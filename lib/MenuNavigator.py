@@ -6,8 +6,8 @@
 
 # Refactored 9/5/2025 to use structure advised by Claude
 
-import time
-from RGB1602 import RGB1602
+import time                         # type: ignore
+from RGB1602 import RGB1602         # type: ignore
 from utils import format_secs_short         # old methodsLCD_time, secs_to_localtime
 from TMErrors import TankError
 # from ringbuffer import RingBuffer, DuplicateDetectingBuffer
