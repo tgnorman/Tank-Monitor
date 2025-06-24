@@ -645,7 +645,7 @@ def toggle_borepump(x:Timer):
                     diff = -2           # there is no next on time...
                 next_ON_cycle_time = now + diff * TIMERSCALE
                 # nextcycle_ON_time = now + (slist[sl_index + 1] + slist[sl_index + 2] + slist[sl_index + 3]) * TIMERSCALE
-                borepump_ON()        #turn_on()
+                borepump_ON("Toggle op")        #turn_on()
             elif timer_state == 2:
                 # diff = slist[sl_index + 2] - slist[sl_index]
                 # nextcycle_ON_time = now + diff * TIMERSCALE
@@ -653,7 +653,7 @@ def toggle_borepump(x:Timer):
                 if not borepump.state:      # then it looks like a kpa test paused this cycle
                     print(f"{now_time_long()}: TOGGLE - cycle paused - did we detect pressure drop?")
 
-                borepump_OFF()       #turn_off()
+                borepump_OFF("Toggle op")       #turn_off()
             elif timer_state == 0:
                 pass
                 # diff = slist[sl_index + 1] - slist[sl_index]
@@ -682,7 +682,7 @@ def toggle_borepump(x:Timer):
 
             # print(f"{now_time_long()} in TOGGLE... END IRRIGATION mode !  Now in {op_mode}")
             if borepump.state:
-                borepump_OFF()       # to be sure, to be sure...
+                borepump_OFF("Timer END")       # to be sure, to be sure...
                 print(f"{now_time_long()} in toggle, at END turning bp OFF.  Should already be OFF...")
         if mem < 60000:
             print("Collecting garbage...")              # moved to AFTER timer created... might avoid the couple seconds discrepancy.  TBC
@@ -828,7 +828,7 @@ def cancel_program()->None:
             print(f'Timer {TWM_TIMER_NAME} cancelled in cancel_program')
 
         if borepump.state:
-            borepump_OFF()
+            borepump_OFF("Timer CANCEL")
 
         lcd.setCursor(0,1)
         lcd.printout("Prog CANCELLED")
@@ -963,7 +963,7 @@ def shutdown()->None:
         cancel_program()
     if borepump is not None:                # in case i bail before this is defined...
         if borepump.state:                  # to be sure...
-            borepump_OFF()
+            borepump_OFF("System SHUTDOWN")
     ev_log.write(f"{now_time_long()} STOP Monitor\n\n")
     if borepump is not None:
         if borepump.num_switch_events > 0:
@@ -1081,6 +1081,8 @@ def add_cycle()-> None:
     new_tuple: tuple[str, dict[str, int]] = (new_cycle_name, new_dict)
     # print(f"new cycle is: {new_tuple}")
     # program_list.append(new_tuple)
+
+    # update program list.. later, update menu.  Until I resolve the duplication
     program_list.insert(last_cycle_pos + 1, new_tuple)
     lcd.setCursor(0,1)
     lcd.printout(f'{new_cycle_name} added')
@@ -1272,8 +1274,10 @@ def toggle_HFLOGGING():
 
 Title_Str  = "title"
 Value_Str  = "value"
-ActionStr  = "action"
+Action_Str  = "action"
 Step_Str   = "Step"
+Default_str= "D_V"
+Working_str= "W_V"
 
 # added new admin menu section...
 new_menu = {
@@ -1282,37 +1286,37 @@ new_menu = {
       {
         Title_Str: "Display->",         # items[0]
         "items": [
-          { Title_Str: "Pressure",      ActionStr: display_pressure},
-          { Title_Str: "Depth",         ActionStr: display_depth},
-          { Title_Str: "Files",         ActionStr: show_dir},
-          { Title_Str: "Space",         ActionStr: show_space},
-          { Title_Str: "Uptime",        ActionStr: show_uptime},
-          { Title_Str: "Version",       ActionStr: show_version},
-          { Title_Str: "Go Back",       ActionStr: my_go_back}
+          { Title_Str: "Pressure",      Action_Str: display_pressure},
+          { Title_Str: "Depth",         Action_Str: display_depth},
+          { Title_Str: "Files",         Action_Str: show_dir},
+          { Title_Str: "Space",         Action_Str: show_space},
+          { Title_Str: "Uptime",        Action_Str: show_uptime},
+          { Title_Str: "Version",       Action_Str: show_version},
+          { Title_Str: "Go Back",       Action_Str: my_go_back}
         ]
       },
       {
         Title_Str: "History->",         # items[1]
         "items": [
-          { Title_Str: "Events",        ActionStr: show_events},
-          { Title_Str: "Switch",        ActionStr: show_switch},
-          { Title_Str: "Pressure",      ActionStr: show_pressure},
-          { Title_Str: "Errors",        ActionStr: show_errors},
-          { Title_Str: "Program",       ActionStr: show_program},
-          { Title_Str: "Stats",         ActionStr: show_duty_cycle},
-          { Title_Str: "Go Back",       ActionStr: my_go_back}
+          { Title_Str: "Events",        Action_Str: show_events},
+          { Title_Str: "Switch",        Action_Str: show_switch},
+          { Title_Str: "Pressure",      Action_Str: show_pressure},
+          { Title_Str: "Errors",        Action_Str: show_errors},
+          { Title_Str: "Program",       Action_Str: show_program},
+          { Title_Str: "Stats",         Action_Str: show_duty_cycle},
+          { Title_Str: "Go Back",       Action_Str: my_go_back}
         ]
       },
       {
         Title_Str: "Actions->",         # items[2]
         "items": [
-          { Title_Str: "Timed Water",   ActionStr: start_irrigation_schedule},
-          { Title_Str: "Cancel Prog",   ActionStr: cancel_program},
-          { Title_Str: "Flush",         ActionStr: flush_data},
-          { Title_Str: "Email evlog",   ActionStr: send_log},
-          { Title_Str: "Email tank",    ActionStr: send_tank_logs},
-          { Title_Str: "Email HFlog",   ActionStr: send_last_HF_data},
-          { Title_Str: "Go Back",       ActionStr: my_go_back}
+          { Title_Str: "Timed Water",   Action_Str: start_irrigation_schedule},
+          { Title_Str: "Cancel Prog",   Action_Str: cancel_program},
+          { Title_Str: "Flush",         Action_Str: flush_data},
+          { Title_Str: "Email evlog",   Action_Str: send_log},
+          { Title_Str: "Email tank",    Action_Str: send_tank_logs},
+          { Title_Str: "Email HFlog",   Action_Str: send_last_HF_data},
+          { Title_Str: "Go Back",       Action_Str: my_go_back}
         ]
       },
       {
@@ -1320,56 +1324,56 @@ new_menu = {
         "items": [
           { Title_Str: "Set Config->",
             "items": [                  # items[3][0]
-                { Title_Str : DELAY,         Value_Str: {"D_V": 15,   "W_V" : mydelay,              Step_Str : 5}},
-                { Title_Str : LCD,           Value_Str: {"D_V": 5,    "W_V" : LCD_ON_TIME,          Step_Str : 2}},
-                { Title_Str : MINDIST,       Value_Str: {"D_V": 500,  "W_V" : Min_Dist,             Step_Str : 100}},
-                { Title_Str : MAXDIST,       Value_Str: {"D_V": 1400, "W_V" : Max_Dist,             Step_Str : 100}},
-                { Title_Str : MAXPRESSURE,   Value_Str: {"D_V": 700,  "W_V" : MAX_LINE_PRESSURE,    Step_Str : 25}},                
-                # { Title_Str : MINPRESSURE,   Value_Str: {"D_V": 300,  "W_V" : MIN_LINE_PRESSURE,    Step_Str : 25}},
-                { Title_Str : NOPRESSURE,    Value_Str: {"D_V": 15,   "W_V" : NO_LINE_PRESSURE,     Step_Str : 5}},
-                # { Title_Str : MAXDROP,       Value_Str: {"D_V": 15,   "W_V" : MAX_KPA_DROP,         Step_Str : 1}},
-                { Title_Str : MAXRUNMINS,    Value_Str: {"D_V": 60,   "W_V" : MAX_CONTIN_RUNMINS,   Step_Str : 10}},
-                { Title_Str : KPASTDEVMULT,  Value_Str: {"D_V": 3,    "W_V" : kPa_stdev_mult,       Step_Str : 1}},
-                { Title_Str: "Save config",  ActionStr: update_config},
-                { Title_Str: "Go Back",      ActionStr: my_go_back}
+                { Title_Str : DELAY,         Value_Str: {Default_str: 15,   Working_str : mydelay,              Step_Str : 5}},
+                { Title_Str : LCD,           Value_Str: {Default_str: 5,    Working_str : LCD_ON_TIME,          Step_Str : 2}},
+                { Title_Str : MINDIST,       Value_Str: {Default_str: 500,  Working_str : Min_Dist,             Step_Str : 100}},
+                { Title_Str : MAXDIST,       Value_Str: {Default_str: 1400, Working_str : Max_Dist,             Step_Str : 100}},
+                { Title_Str : MAXPRESSURE,   Value_Str: {Default_str: 700,  Working_str : MAX_LINE_PRESSURE,    Step_Str : 25}},                
+                # { Title_Str : MINPRESSURE,   Value_Str: {Default_str: 300,  Working_str : MIN_LINE_PRESSURE,    Step_Str : 25}},
+                { Title_Str : NOPRESSURE,    Value_Str: {Default_str: 15,   Working_str : NO_LINE_PRESSURE,     Step_Str : 5}},
+                # { Title_Str : MAXDROP,       Value_Str: {Default_str: 15,   Working_str : MAX_KPA_DROP,         Step_Str : 1}},
+                { Title_Str : MAXRUNMINS,    Value_Str: {Default_str: 60,   Working_str : MAX_CONTIN_RUNMINS,   Step_Str : 10}},
+                { Title_Str : KPASTDEVMULT,  Value_Str: {Default_str: 3,    Working_str : kPa_stdev_mult,       Step_Str : 1}},
+                { Title_Str: "Save config",  Action_Str: update_config},
+                { Title_Str: "Go Back",      Action_Str: my_go_back}
             ]
           },
            { Title_Str: "Set Timers->", # TODO Cycle timer values start out NOT in sync with program list
             "items": [                  # items[3][1]
-                { Title_Str: "Start Delay",     Value_Str: {"D_V": 5,   "W_V" : 0,                     Step_Str : 15}},
-                { Title_Str: "Duty Cycle",      Value_Str: {"D_V": 50,  "W_V" : DEFAULT_DUTY_CYCLE,    Step_Str : 5}},
-                { Title_Str: "Cycle1",          Value_Str: {"D_V": 1,   "W_V" : DEFAULT_CYCLE,         Step_Str : 5}},
-                { Title_Str: "Cycle2",          Value_Str: {"D_V": 2,   "W_V" : DEFAULT_CYCLE,         Step_Str : 5}},
-                { Title_Str: "Cycle3",          Value_Str: {"D_V": 3,   "W_V" : DEFAULT_CYCLE,         Step_Str : 5}},
-                { Title_Str: "Add cycle",       ActionStr: add_cycle},
-                { Title_Str: "Delete cycle",    ActionStr: remove_cycle},
-                { Title_Str: "Update program",  ActionStr: update_program_data},
-                { Title_Str: "Go Back",         ActionStr: my_go_back}
+                { Title_Str: "Start Delay",     Value_Str: {Default_str: 5,   Working_str : 0,                     Step_Str : 15}},
+                { Title_Str: "Duty Cycle",      Value_Str: {Default_str: 50,  Working_str : DEFAULT_DUTY_CYCLE,    Step_Str : 5}},
+                { Title_Str: "Cycle1",          Value_Str: {Default_str: 1,   Working_str : DEFAULT_CYCLE,         Step_Str : 5}},
+                { Title_Str: "Cycle2",          Value_Str: {Default_str: 2,   Working_str : DEFAULT_CYCLE,         Step_Str : 5}},
+                { Title_Str: "Cycle3",          Value_Str: {Default_str: 3,   Working_str : DEFAULT_CYCLE,         Step_Str : 5}},
+                { Title_Str: "Add cycle",       Action_Str: add_cycle},
+                { Title_Str: "Delete cycle",    Action_Str: remove_cycle},
+                { Title_Str: "Update program",  Action_Str: update_program_data},
+                { Title_Str: "Go Back",         Action_Str: my_go_back}
             ]
           },
           {
-            Title_Str: "Go Back",           ActionStr: my_go_back
+            Title_Str: "Go Back",           Action_Str: my_go_back
           }
         ]
       },
         { Title_Str: "Admin->",
          "items": [
-          { Title_Str: "Flush",             ActionStr: flush_data},
+          { Title_Str: "Flush",             Action_Str: flush_data},
         #   { Title_Str: "Save Config",       ActionStr: update_config},
-          { Title_Str: "Make Space",        ActionStr: make_more_space},
-          { Title_Str: "Test Beep",         ActionStr: beepx3},
-          { Title_Str: "Toggle HFLOG",      ActionStr: toggle_HFLOGGING},
-          { Title_Str: "Toggle PROD",       ActionStr: toggle_prod_mode},
-          { Title_Str: "Toggle CALIB",      ActionStr: toggle_calibration_mode},
-          { Title_Str: "Enter MAINT",       ActionStr: enter_maint_mode},
-          { Title_Str: "Exit  MAINT",       ActionStr: exit_maint_mode},         
-          { Title_Str: "Reset",             ActionStr: my_reset},
+          { Title_Str: "Make Space",        Action_Str: make_more_space},
+          { Title_Str: "Test Beep",         Action_Str: beepx3},
+          { Title_Str: "Toggle HFLOG",      Action_Str: toggle_HFLOGGING},
+          { Title_Str: "Toggle PROD",       Action_Str: toggle_prod_mode},
+          { Title_Str: "Toggle CALIB",      Action_Str: toggle_calibration_mode},
+          { Title_Str: "Enter MAINT",       Action_Str: enter_maint_mode},
+          { Title_Str: "Exit  MAINT",       Action_Str: exit_maint_mode},         
+          { Title_Str: "Reset",             Action_Str: my_reset},
         #   { Title_Str: "Load Config",       ActionStr: "Load Config"},
-          { Title_Str: "Go Back",           ActionStr: my_go_back}
+          { Title_Str: "Go Back",           Action_Str: my_go_back}
          ]
       },
     {
-        Title_Str: "Exit", ActionStr: exit_menu
+        Title_Str: "Exit", Action_Str: exit_menu
     }
     ]
 }
@@ -1835,7 +1839,7 @@ def confirm_solenoid():
 def radio_time(local_time):
     return local_time + clock_adjust_ms
 
-def borepump_ON():
+def borepump_ON(reason:str):
     global average_timer, baseline_timer, hf_kpa_hiwater, avg_kpa_set, baseline_set, last_ON_time, kpa_peak, kpa_low
     global steady_state, rec_num, stable_pressure, LOGHFDATA
 
@@ -1860,7 +1864,7 @@ def borepump_ON():
                 last_ON_time = time.time()          # for easy calculation of runtime to DROP pressure OFF    
                 switch_ring.add("PUMP ON")
                 # print(f"***********Setting timer for average_kpa at {now_time_long()}")    
-                ev_log.write(f"{now_time_long()} ON\n")
+                ev_log.write(f"{now_time_long()} ON {reason}\n")
                 system.on_event("ON ACK")
                 # print(f"***********Setting timer for baseline_kpa at {now_time_long()}")
                 if kpa_sensor_found:
@@ -1880,7 +1884,7 @@ def borepump_ON():
             else:
                 log_switch_error(new_state)
 
-def borepump_OFF():
+def borepump_OFF(reason:str):
     global LOGHFDATA
     if SIMULATE_PUMP:
         print(f"{now_time_long()} SIM Pump OFF")
@@ -1901,7 +1905,7 @@ def borepump_OFF():
                 switch_ring.add("PUMP OFF")
                 # change_logging(False)
                 LOGHFDATA = False
-                ev_log.write(f"{now_time_long()} OFF\n")
+                ev_log.write(f"{now_time_long()} OFF {reason}\n")
                 system.on_event("OFF ACK")
                 if DEBUGLVL > 1: print("borepump_OFF: Closing valve")
                 solenoid.value(1)               # wait until pump OFF confirmed before closing valve !!!
@@ -1920,7 +1924,7 @@ def manage_tank_fill():
                 if DEBUGLVL > 1: print("cBP: Opening valve")
                 solenoid.value(0)
             if confirm_solenoid():
-                borepump_ON()
+                borepump_ON("Tank EMPTY")
             else:               # dang... want to turn pump on, but solenoid looks OFF
                 raiseAlarm("NOT turning pump on... valve is CLOSED!", tank_is)
                 error_ring.add(TankError.VALVE_CLOSED)                
@@ -1928,7 +1932,7 @@ def manage_tank_fill():
 #        bore_ctl.value(0)			# switch borepump OFF
         if borepump.state:			# pump is ON... need to turn OFF
             if DEBUGLVL > 0: print("in controlBorePump, switching pump OFF")
-            borepump_OFF()
+            borepump_OFF("Tank FULL")
 
 def dump_zone_peak()->None:
     print("\nZone Peak Pressures:")
@@ -1956,7 +1960,7 @@ def cancel_deadtime(timer:Timer)->None:
         print(logstr)
         event_ring.add("Disabled mode cancelled")
         op_mode = previous_op_mode
-        borepump_ON()       # this is really the critical bit !!
+        borepump_ON("Resuming after pause")       # this is really the critical bit !!
 
 def kpadrop_cb(timer:Timer)->None:
     global kpa_drop_timer, alarm, op_mode, previous_op_mode, last_ON_time
@@ -1971,7 +1975,7 @@ def kpadrop_cb(timer:Timer)->None:
     previous_op_mode = op_mode  # save to restore later
     op_mode = OP_MODE_DISABLED
 
-    borepump_OFF()              # turn off pump
+    borepump_OFF("kPA DROP")              # turn off pump
 
     last_runsecs = time.time() - last_ON_time
 #    recovery_time = int(last_runsecs * (100/timer_dict["Duty Cycle"] - 1))
@@ -2167,7 +2171,7 @@ def abort_pumping(reason:str)-> None:
         print(f'Timer {TWM_TIMER_NAME} cancelled in ABORT')
 
     if borepump.state:              # pump is ON
-        borepump_OFF()
+        borepump_OFF(f'Abort {reason}')
     logstr = f"{now_time_long()} ABORT invoked! {reason}"
     print(logstr)
     event_ring.add("ABORT!!")
@@ -2862,7 +2866,7 @@ async def read_pressure()->None:
                 raw_val, bpp = get_pressure()
             # print(f"Press: {bpp:>3} kPa, {hi_freq_kpa_index=}")
             if bpp > kpa_peak:
-                kpa_peak = bpp       # record peak value.  Will be rest on borepump_ON, and fixed in set_baseline
+                kpa_peak = bpp       # record peak value.  Will be reset on borepump_ON, and fixed in set_baseline
                 time_peak = time.time()
             if bpp < kpa_low:
                 kpa_low = bpp
@@ -3208,7 +3212,7 @@ def main() -> None:
     # turn everything OFF
         if borepump is not None:                # in case i bail before this is defined...
             if borepump.state:
-                borepump_OFF()
+                borepump_OFF("Kbd interupt")
 
     #    confirm_and_switch_solenoid(False)     #  *** DO NOT DO THIS ***  If live, this will close valve while pump.
     #           to be real sure, don't even test if pump is off... just leave it... for now.
