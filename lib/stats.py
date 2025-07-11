@@ -101,11 +101,12 @@ def linear_regression(x: list, y: list, count:int, startidx:int, ringlen:int) ->
         
         # print(f'{xi} {y_pred} {yi}')
         # Sum of squares of residuals
-        ss_res += (yi - y_pred) ** 2
+        ss_res += (y_pred - y_mean) ** 2
         # Total sum of squares
         ss_tot += (yi - y_mean) ** 2
     
-    r_squared = 1 - (ss_res / ss_tot) if ss_tot != 0 else 0
+    r_squared = (ss_res / ss_tot) if ss_tot != 0 else 0
     std_dev = math.sqrt(sum_yy / (count-1))  # Using sum_yy we calculated earlier
     
+    # print(f'{x_mean=} {y_mean=} {sum_xy=} {sum_xx=}')
     return slope, intercept, std_dev, r_squared

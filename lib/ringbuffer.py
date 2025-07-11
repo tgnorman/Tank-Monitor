@@ -10,21 +10,21 @@ class RingBuffer:
         self.value_formatter = value_formatter
         self.logger = logger  # Can be print function or file object's write method
     
-    def add(self, message):
+    def add(self, message, timestamp=None):
         """Basic add - no duplicate detection"""
+        ts = int(time.time()) if timestamp is None else timestamp
         if not self.buffer:
-            self.buffer.append((int(time.time()), message))
+            self.buffer.append((ts, message))
             self.index = 0
             return
             
         if len(self.buffer) < self.size:
-            self.buffer.append((int(time.time()), message))
+            self.buffer.append((ts, message))
+            self.index = len(self.buffer) - 1
         else:
             self.index = (self.index + 1) % self.size
-            self.buffer[self.index] = (int(time.time()), message)
-        
-        self.index = len(self.buffer) - 1
-    
+            self.buffer[self.index] = (ts, message)
+            
     def dump(self, short_time=False):
         if not self.buffer:
             self.logger("Buffer empty")
@@ -76,16 +76,17 @@ class DuplicateDetectingBuffer(RingBuffer):
         self.last_message_time = 0
         self.repeat_count = 1
         
-    def add(self, message):
+    def add(self, message, timestamp=None):
         """Add with duplicate detection"""
+        ts = int(time.time()) if timestamp is None else timestamp
         if not self.buffer:
-            super().add(message)
+            super().add(message, ts)
             self.last_message = message
-            self.last_message_time = int(time.time())
+            self.last_message_time = ts
             return
             
         if message == self.last_message:
-            if time.time() - self.last_message_time <= self.time_limit:
+            if ts - self.last_message_time <= self.time_limit:
                 self.repeat_count += 1
                 # Update existing entry with repeat count
                 self.buffer[self.index] = (self.last_message_time, 
@@ -94,6 +95,6 @@ class DuplicateDetectingBuffer(RingBuffer):
                 
         # Different message or time expired - add new entry
         self.repeat_count = 1
-        super().add(message)
+        super().add(message, ts)
         self.last_message = message
-        self.last_message_time = int(time.time())
+        self.last_message_time = ts

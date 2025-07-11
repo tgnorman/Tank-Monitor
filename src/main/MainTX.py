@@ -37,7 +37,7 @@ from utils import now_time_short, now_time_long, format_secs_short, format_secs_
 
 # endregion
 # region INITIALISE
-SW_VERSION          = "13/6/25"      # for display
+SW_VERSION          = "10/7/25"      # for display
 PRODUCTION_MODE     = False         # change to True when no longer in development cycle
 CALIBRATE_MODE      = False
 
@@ -77,10 +77,10 @@ HI_FREQ_RINGSIZE    = 120           # for high frequency pressure logging.  At 1
 DEPTHRINGSIZE       = 12            # since adding fast_average in critical_states, this no longer is a concern
                                     # make 1 for NO averaging... otherwise do an SMA of this period.  Need a ring buffer?
 HI_FREQ_AVG_COUNT   = 5             # for high frequency pressure alarm
-LO_FREQ_AVG_COUNT   = 30            # for low  frequency pressure alarm
+# LO_FREQ_AVG_COUNT   = 30            # for low  frequency pressure alarm
 BASELINE_AVG_COUNT  = 5             # for baseline pressure calculation
-LOOKBACKCOUNT       = 60            # for looking back at pressure history... to see if kPa drop is normal or not
-KPA_DROP_DC         = 2.2           # Ratio of OFF/ON time after kPa drop detected
+LOOKBACKCOUNT       = 75            # for looking back at pressure history... to see if kPa drop is normal or not
+KPA_DROP_DC         = 2.5           # Ratio of OFF/ON time after kPa drop detected
 MAX_OUTAGE          = 30            # seconds of no power
 ALARMTIME           = 10            # seconds of alarm on/off time
 
@@ -99,6 +99,7 @@ FAST_BLINK          = 300
 
 TWM_TIMER_NAME      = 'TWM_timer'   # for consistent ref
 DISABLE_TIMER_NAME  = 'Disable_timer'
+KPA_DROP_TIMER_NAME = "DROP_TIMER"
 
 # All menu-CONFIGURABLE parameters
 mydelay             = 5             # seconds, main loop period
@@ -111,7 +112,7 @@ NO_LINE_PRESSURE    = 8             # tweak this too... applies in ANY pump-on m
 # MAX_KPA_DROP        = 20             # replaced by per-zone number
 MAX_CONTIN_RUNMINS  = 360           # 3 hours max runtime.  More than this looks like trouble
 LOG_HF_PRESSURE     = 2             # log high frequency pressure data.  Need to use int, not bool, for menu
-kPa_stdev_mult      = 3             # 3 std devs ... a LOT of wiggle room
+kPa_stdev_mult      = 25             # 10X so that is 2.5 std devs ... a LOT of wiggle room.  Divide by 10 later...
 
 LOGHFDATA           = True          # log 1 second interval kPa data
 SIMULATE_PUMP       = False         # debugging aid...replace pump switches with a PRINT
@@ -157,7 +158,7 @@ sys_start_time      = 0             # for uptime report
 kpa_sensor_found    = True          # set to True if pressure sensor is detected  
 baseline_set        = False         # set to True if baseline pressure is set
 AVG_KPA_DELAY       = 15            # seconds to wait before taking average pressure
-BASELINE_DELAY      = 45            # seconds to wait before taking baseline pressure.  Needs to be large enough to ensure calc_average doesn't crap out
+ZONE_DELAY          = 45            # seconds to wait before taking baseline pressure.  Needs to be large enough to ensure calc_average doesn't crap out
 avg_kpa_set         = False         # set to True if kpa average is set
 FAST_AVG_COUNT      = 3             # for checking critical pressure states
 BlinkDelay          = SLOW_BLINK    # for blinking LED... 1 second, given LED is on for 150ms, off for 850ms
@@ -467,6 +468,7 @@ def update_config() -> None:
     
     # Check each config item
     config_items = current_menu.get('items', [])
+    update_fill_state = False
     for item in config_items:
         param = item.get('title')
         if param in config_dict.keys():
@@ -474,6 +476,8 @@ def update_config() -> None:
             if new_working_value > 0 and config_dict[param] != new_working_value:
                 old_value = config_dict[param]
                 config_dict[param] = new_working_value
+                if param in (MINDIST, MAXDIST):
+                    update_fill_state = True
                 lcd.clear()
                 lcd.setCursor(0,0)
                 lcd.printout(f'Updated {param}')
@@ -481,6 +485,8 @@ def update_config() -> None:
                 lcd.printout(f'to {new_working_value}')
                 ev_log.write(f"{now_time_long()} Updated {param} to {new_working_value}\n")
                 print(f"in update_config {param}: dict was {old_value} is now {new_working_value}")
+    if update_fill_state:
+        get_tank_depth()
 
 def update_timer_params() -> None:
     """Update timer dictionary from menu working values."""
@@ -914,7 +920,7 @@ def my_reset():
     lcd.setCursor(0,1)
     lcd.printout("Reset in 10 secs")     # well - this is DUMB!  Write msg, then turn off LCD !!
     sleep(10)
-    lcd.setRGB(0,0,0)           
+    lcd.setRGB(0,0,0)
     lcd4x20.display_off()
     lcd4x20.backlight_off()
     soft_reset()
@@ -1333,7 +1339,7 @@ new_menu = {
                 { Title_Str : NOPRESSURE,    Value_Str: {Default_str: 15,   Working_str : NO_LINE_PRESSURE,     Step_Str : 5}},
                 # { Title_Str : MAXDROP,       Value_Str: {Default_str: 15,   Working_str : MAX_KPA_DROP,         Step_Str : 1}},
                 { Title_Str : MAXRUNMINS,    Value_Str: {Default_str: 60,   Working_str : MAX_CONTIN_RUNMINS,   Step_Str : 10}},
-                { Title_Str : KPASTDEVMULT,  Value_Str: {Default_str: 3,    Working_str : kPa_stdev_mult,       Step_Str : 1}},
+                { Title_Str : KPASTDEVMULT,  Value_Str: {Default_str: 25,    Working_str : kPa_stdev_mult,       Step_Str : 1}},
                 { Title_Str: "Save config",  Action_Str: update_config},
                 { Title_Str: "Go Back",      Action_Str: my_go_back}
             ]
@@ -1875,7 +1881,7 @@ def borepump_ON(reason:str):
                     kpa_peak = 0
                     kpa_low = 1000
                     average_timer  = Timer(period=AVG_KPA_DELAY  * 1000, mode=Timer.ONE_SHOT, callback=set_average_kpa)  # start timer to record average after 5 seconds
-                    baseline_timer = Timer(period=BASELINE_DELAY * 1000, mode=Timer.ONE_SHOT, callback=set_baseline_kpa)  # start timer to record baseline after 30 seconds
+                    baseline_timer = Timer(period=ZONE_DELAY * 1000, mode=Timer.ONE_SHOT, callback=set_baseline_kpa)  # start timer to record baseline after 30 seconds
                     # change_logging(True)
                     LOGHFDATA = True
     # reset this to avoid spurious ALARMS as ROC average climbs to steady value... SMA issue
@@ -1963,13 +1969,20 @@ def cancel_deadtime(timer:Timer)->None:
         borepump_ON("Resuming after pause")       # this is really the critical bit !!
 
 def kpadrop_cb(timer:Timer)->None:
-    global kpa_drop_timer, alarm, op_mode, previous_op_mode, last_ON_time
+    global alarm, op_mode, previous_op_mode, last_ON_time
+
+    logstr = f'{now_time_long()} kpadrop_cb called'
+    ev_log.write(f'{logstr}\n')
 
     alarm.value(0)                  # turn off alarm
     
-    if kpa_drop_timer is not None:  # kill this timer
-        kpa_drop_timer.deinit()
-        kpa_drop_timer = None
+    # if kpa_drop_timer is not None:  # kill this timer
+    #     kpa_drop_timer.deinit()
+    #     kpa_drop_timer = None
+    if timer_mgr.is_pending(KPA_DROP_TIMER_NAME):
+        logstr = f'{now_time_long()} Cancelling pending timer {KPA_DROP_TIMER_NAME}'
+        ev_log.write(f'{logstr}\n')
+        timer_mgr.cancel_timer(KPA_DROP_TIMER_NAME)
 
     # if op_mode == OP_MODE_IRRIGATE: # don't abort... just turn off pump, but let cycle continue
     previous_op_mode = op_mode  # save to restore later
@@ -1988,6 +2001,7 @@ def kpadrop_cb(timer:Timer)->None:
     drop_str = f"{now_time_long()} kPa DROP detected in {opmode_dict[op_mode]} zone {zone}- disabling operation for {recovery_duration}"
     ev_log.write(drop_str + "\n")
     print(drop_str)
+
 # now... delay any pending TWM operations    
     if timer_mgr.is_pending(TWM_TIMER_NAME):
         timer_mgr.delay_timer(TWM_TIMER_NAME, recovery_seconds)
@@ -2107,18 +2121,23 @@ def checkForAnomalies()->None:
 # TODO fix hf_xvalues to match y values... if it matters.  LR probably works regardless
 # NOTE: the startidx param is CRITICAL!!  we need to do LR on the data BEFORE pressure dropped...
             k_slope, k_intercept, stdev_Press, r2 = linear_regression(hf_xvalues, hi_freq_kpa_ring, P_STD_DEV_COUNT, (hi_freq_kpa_index - LOOKBACKCOUNT) % HI_FREQ_RINGSIZE, HI_FREQ_RINGSIZE)
-            max_drop = abs(k_slope * LOOKBACKCOUNT) + stdev_Press * float(config_dict[KPASTDEVMULT])
+            slope_drop = abs(k_slope * LOOKBACKCOUNT)
+            SD_drop = stdev_Press * float(config_dict[KPASTDEVMULT] / 10)
+            max_drop = slope_drop + SD_drop
+            # max_drop = abs(k_slope * LOOKBACKCOUNT) + stdev_Press * float(config_dict[KPASTDEVMULT])
             # if actual_pressure_drop > zone_max_drop:     # This needs to be zone-specific - even if I don't use quad
 # TODO remove zone_max_drop from zone dict... assuming linreg thing works out
             if actual_pressure_drop > max_drop:         # replaced zone=specific const with calculated value from linreg
-                runtime = time.time() - last_ON_time
-                _, H, M, S = secs_to_DHMS(runtime)
-                run_str = f'{H}:{M:02}:{S:02}'
-                # raiseAlarm(f"Pressure DROP after {runmins}:{runseconds:02}. Expected:{expected_drop}", actual_pressure_drop)
-                raiseAlarm(f"kPa DROP {run_str} after ON  Exceeds calculated max drop:{max_drop}", actual_pressure_drop)
-                error_ring.add(TankError.PRESSUREDROP)
-                alarm.value(1)                              # this might change... to ONLY if not in TWM/IRRIGATE    
-                kpa_drop_timer = Timer(period=ALARMTIME * 1000, mode=Timer.ONE_SHOT, callback=kpadrop_cb)
+                if not timer_mgr.is_pending(KPA_DROP_TIMER_NAME):
+                    runtime = time.time() - last_ON_time
+                    _, H, M, S = secs_to_DHMS(runtime)
+                    run_str = f'{H}:{M:02}:{S:02}'
+                    # raiseAlarm(f"Pressure DROP after {runmins}:{runseconds:02}. Expected:{expected_drop}", actual_pressure_drop)
+                    raiseAlarm(f"kPa DROP {run_str} after ON  Exceeds calculated max drop:{max_drop} {k_slope=:.4g} {slope_drop=} {SD_drop=}", actual_pressure_drop)
+                    error_ring.add(TankError.PRESSUREDROP)
+                    alarm.value(1)                              # this might change... to ONLY if not in TWM/IRRIGATE    
+                    # kpa_drop_timer = Timer(period=ALARMTIME * 1000, mode=Timer.ONE_SHOT, callback=kpadrop_cb)
+                    timer_mgr.create_timer(KPA_DROP_TIMER_NAME, ALARMTIME * 1000, kpadrop_cb)
 
             # if op_mode == OP_MODE_IRRIGATE and  kpa_sensor_found and average_kpa < zone_minimum:
             if kpa_sensor_found and average_kpa < zone_minimum:   # this could happen in AUTO/HT tank-fill mode also...
@@ -2249,7 +2268,7 @@ def DisplayInfo()->None:
             lcd4x20.putstr(f'EC:{e_code:<4}')
 
             lcd4x20.move_to(8, 0)
-            lcd4x20.putstr(f"S{1 if steady_state else 0}    ")  
+            lcd4x20.putstr(f"S{1 if steady_state else 0}    ")
 
             lcd4x20.move_to(14, 0)
             lcd4x20.putstr(f"HF:{' ON' if LOGHFDATA else 'OFF'}")
