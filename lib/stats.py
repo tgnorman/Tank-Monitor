@@ -43,19 +43,20 @@ def linear_regression(x: list, y: list, count:int, startidx:int, ringlen:int) ->
     Returns:
         Tuple of (slope, intercept, std deviation, r-squared)
     """
-    count = len(x)
-    if count != len(y) or count < 2:
+    xcount = len(x)
+    if xcount != len(y) or xcount < 2:
         raise ValueError("x and y must have same length and length >= 2")
         
  # Now... make it work round a ring buffer, not a straight list
  # Also... look backwards, simulating previous n readings
     ring_xbar = ring_ybar = 0.0
-
+    my_x = count
     for i in range(count):
-        mod_idx = (startidx - i - 1) % ringlen
+        my_x -= 1
+        mod_idx = (startidx - i) % ringlen
         # xi = x[mod_idx]
         # yi = y[mod_idx]
-        ring_xbar += x[mod_idx]
+        ring_xbar += my_x
         ring_ybar += y[mod_idx]
 
     x_mean = ring_xbar / count
@@ -64,13 +65,15 @@ def linear_regression(x: list, y: list, count:int, startidx:int, ringlen:int) ->
     sum_xy = sum_xx = sum_yy = 0.0
     ss_res = ss_tot = 0.0  # For R-squared calculation
 
+    my_x = count
     for i in range(count):
-        mod_idx = (startidx - i - 1) % ringlen
+        my_x -= 1
+        mod_idx = (startidx - i) % ringlen
         # xi = x[mod_idx]
         # yi = y[mod_idx]
 
         # Differences from means
-        dx = x[mod_idx] - x_mean
+        dx = my_x - x_mean
         dy = y[mod_idx] - y_mean
         
         # Sums for regression
@@ -91,14 +94,18 @@ def linear_regression(x: list, y: list, count:int, startidx:int, ringlen:int) ->
     # std_dev = math.sqrt(sum((yi - y_mean) * (yi - y_mean) for i in range(n))) / (n-1)
     
     # Calculate R-squared
+    my_x = count
+
     for i in range(count):
-        mod_idx = (startidx - i - 1) % ringlen
+        my_x -= 1
+        mod_idx = (startidx - i) % ringlen
         # xi = x[mod_idx]
         yi = y[mod_idx]
         
         # Predicted y value
-        y_pred = slope * x[mod_idx] + intercept
-        
+        # y_pred = slope * x[mod_idx] + intercept
+        y_pred = slope * my_x + intercept
+        # 
         # print(f'{xi} {y_pred} {yi}')
         # Sum of squares of residuals
         ss_res += (y_pred - y_mean) ** 2

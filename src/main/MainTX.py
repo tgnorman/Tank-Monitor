@@ -1,7 +1,7 @@
 # Trev's super dooper Tank/Pump monitoring system
 
 # region IMPORTS
-
+import sys
 import time
 # import sys
 # import micropython
@@ -37,7 +37,7 @@ from utils import now_time_short, now_time_long, format_secs_short, format_secs_
 
 # endregion
 # region INITIALISE
-SW_VERSION          = "10/7/25"      # for display
+SW_VERSION          = "20/7/25"      # for display
 PRODUCTION_MODE     = False         # change to True when no longer in development cycle
 CALIBRATE_MODE      = False
 
@@ -69,25 +69,25 @@ DEBOUNCE_BUTTON     = 400           # 50 was still registering spurious presses.
 ROTARY_PERIOD_MS    = 200           # needs to be short... check rotary ISR variables
 PRESSURE_PERIOD_MS  = 1000
 
-EVENTRINGSIZE       = 20            # max log ringbuffer length
+EVENTRINGSIZE       = 30            # max log ringbuffer length
 SWITCHRINGSIZE      = 20
 KPARINGSIZE         = 20            # size of ring buffer for pressure logging... NOT for calculation of average
 ERRORRINGSIZE       = 20            # max error log ringbuffer length
 HI_FREQ_RINGSIZE    = 120           # for high frequency pressure logging.  At 1 Hz that's 2 minutes of data
-DEPTHRINGSIZE       = 12            # since adding fast_average in critical_states, this no longer is a concern
+DEPTHRINGSIZE       = 20            # since adding fast_average in critical_states, this no longer is a concern
                                     # make 1 for NO averaging... otherwise do an SMA of this period.  Need a ring buffer?
 HI_FREQ_AVG_COUNT   = 5             # for high frequency pressure alarm
-# LO_FREQ_AVG_COUNT   = 30            # for low  frequency pressure alarm
-BASELINE_AVG_COUNT  = 5             # for baseline pressure calculation
+ZONE_AVG_COUNT      = 10                # for zone pressure calculation
 LOOKBACKCOUNT       = 75            # for looking back at pressure history... to see if kPa drop is normal or not
 KPA_DROP_DC         = 2.5           # Ratio of OFF/ON time after kPa drop detected
 MAX_OUTAGE          = 30            # seconds of no power
 ALARMTIME           = 10            # seconds of alarm on/off time
+STABLE_KPA_COUNT    = 75            # time to allow kPa to settle
 
 D_STD_DEV_COUNT     = 10            # standard deviation calcs
 P_STD_DEV_COUNT     = 60
 DEPTH_SD_MAX        = 2             # test...
-PRESS_SD_MAX        = 2.5           # test this too
+PRESS_SD_MAX        = 3.6           # test this too
 hf_xvalues          = [i for i in range(HI_FREQ_RINGSIZE)]  # 
 BP_SENSOR_MIN       = 250           # raw ADC read... this will trigger sensor detect logic.  Changed for 12-bit range
 VDIV_R1             = 12000         # ohms
@@ -104,15 +104,15 @@ KPA_DROP_TIMER_NAME = "DROP_TIMER"
 # All menu-CONFIGURABLE parameters
 mydelay             = 5             # seconds, main loop period
 LCD_ON_TIME         = 90            # LCD time seconds
-Min_Dist            = 500           # full
-Max_Dist            = 1400          # empty
+Min_Dist            = 400           # full
+Max_Dist            = 1200          # empty
 MAX_LINE_PRESSURE   = 700           # sort of redundant... now zone-specific. Might keep this as absolute critical value
 # MIN_LINE_PRESSURE   = 280           # tweak after running... and this ONLY applies in OP_MODE_IRRIG.  Keep - may indicate a blown pipe
 NO_LINE_PRESSURE    = 8             # tweak this too... applies in ANY pump-on mode
 # MAX_KPA_DROP        = 20             # replaced by per-zone number
 MAX_CONTIN_RUNMINS  = 360           # 3 hours max runtime.  More than this looks like trouble
 LOG_HF_PRESSURE     = 2             # log high frequency pressure data.  Need to use int, not bool, for menu
-kPa_stdev_mult      = 25             # 10X so that is 2.5 std devs ... a LOT of wiggle room.  Divide by 10 later...
+kPa_stdev_mult      = 30             # 10X so that is 2.5 std devs ... a LOT of wiggle room.  Divide by 10 later...
 
 LOGHFDATA           = True          # log 1 second interval kPa data
 SIMULATE_PUMP       = False         # debugging aid...replace pump switches with a PRINT
@@ -150,15 +150,13 @@ kpaindex            = 0             # for scrolling through pressure logs on scr
 # lcdbtnflag          = True          # this should immediately trigger my asyncio timer on startup...
 
 # Misc stuff
-steady_state        = False         # if not, then don't check for anomalies
 stable_pressure     = False         # if not, then don't check for anomalies or critical states
 clock_adjust_ms     = 0             # will be set later... this just to ensure it is ALWAYS something
 report_outage       = True          # do I report next power outage?
 sys_start_time      = 0             # for uptime report
 kpa_sensor_found    = True          # set to True if pressure sensor is detected  
-baseline_set        = False         # set to True if baseline pressure is set
-AVG_KPA_DELAY       = 15            # seconds to wait before taking average pressure
-ZONE_DELAY          = 45            # seconds to wait before taking baseline pressure.  Needs to be large enough to ensure calc_average doesn't crap out
+AVG_KPA_DELAY       = 30            # seconds to wait before taking average pressure
+ZONE_DELAY          = 60            # seconds to wait before taking zone pressure.  Needs to be large enough to ensure calc_average doesn't crap out
 avg_kpa_set         = False         # set to True if kpa average is set
 FAST_AVG_COUNT      = 3             # for checking critical pressure states
 BlinkDelay          = SLOW_BLINK    # for blinking LED... 1 second, given LED is on for 150ms, off for 850ms
@@ -167,7 +165,7 @@ kpa_low             = 1000
 program_cancelled   = False         # to provide better reporting
 
 NUM_DISPLAY_MODES   = 3             # NOT counting MAINT mode!! for more flexible display of info data
-INFO_AUTO           = 0
+INFO_AUTO           = 0             # TODO make this more pythonic... use a list of tuples? Beware -1 for MAINT
 INFO_IRRIG          = 1
 INFO_DIAG           = 2
 INFO_MAINT          = -1            # special case... cannot cycle to here, only set explicitly as required
@@ -371,8 +369,8 @@ program_list = [
 # def update_config():
     
 #     for param_index in range(len(config_dict)):
-#         param: str             = new_menu['items'][3]['items'][0]['items'][param_index]['title']
-#         new_working_value: int = new_menu['items'][3]['items'][0]['items'][param_index]['value']['W_V']
+#         param: str             = new_menu[Item_Str][3][Item_Str][0][Item_Str][param_index]['title']
+#         new_working_value: int = new_menu[Item_Str][3][Item_Str][0][Item_Str][param_index]['value']['W_V']
 #         if param in config_dict.keys():
 #             if new_working_value > 0 and config_dict[param] != new_working_value:
 #   #              print(f'Updated config_dict {param} to {new_working_value}')
@@ -396,8 +394,8 @@ program_list = [
 # def update_timer_params():
     
 #     for param_index in range(len(timer_dict)):
-#         param: str             = new_menu['items'][3]['items'][1]['items'][param_index]['title']    # GAK... more bad dependencies
-#         new_working_value: int = new_menu['items'][3]['items'][1]['items'][param_index]['value']['W_V']
+#         param: str             = new_menu[Item_Str][3][Item_Str][1][Item_Str][param_index]['title']    # GAK... more bad dependencies
+#         new_working_value: int = new_menu[Item_Str][3][Item_Str][1][Item_Str][param_index]['value']['W_V']
 #         # print(f">> {param=}, {new_working_value}")
 #         if param in timer_dict.keys():
 #             # print(f"in update_timers {param}: dict is {timer_dict[param]} nwv is {new_working_value}")
@@ -434,9 +432,9 @@ program_list = [
 #         #     on_time = timer_dict[cyclename]
 #         # else:
 #         #     on_time = s[1]["run"]
-#         menu_title = new_menu['items'][3]['items'][1]['items'][i]['title']
+#         menu_title = new_menu[Item_Str][3][Item_Str][1][Item_Str][i]['title']
 #         if cyclename == menu_title:         # found correct menu item
-#             on_time = new_menu['items'][3]['items'][1]['items'][i]['value']['W_V']
+#             on_time = new_menu[Item_Str][3][Item_Str][1][Item_Str][i]['value']['W_V']
 #             off_time = int(on_time * (100/adjusted_dc - 1) )
 #             # print(f"{cyclename=} {on_time=}  {off_time=}")
 #             s[1]["run"] = on_time
@@ -464,15 +462,15 @@ def update_config() -> None:
     # Navigate to config items
     current_menu = new_menu
     for index in config_path:
-        current_menu = current_menu['items'][index]
+        current_menu = current_menu[Item_Str][index]
     
     # Check each config item
-    config_items = current_menu.get('items', [])
+    config_items = current_menu.get(Item_Str, [])
     update_fill_state = False
     for item in config_items:
-        param = item.get('title')
+        param = item.get(Title_Str)
         if param in config_dict.keys():
-            new_working_value = item['value']['W_V']
+            new_working_value = item[Value_Str][Working_Str]
             if new_working_value > 0 and config_dict[param] != new_working_value:
                 old_value = config_dict[param]
                 config_dict[param] = new_working_value
@@ -500,14 +498,14 @@ def update_timer_params() -> None:
     # Navigate to timer items
     current_menu = new_menu
     for index in timer_path:
-        current_menu = current_menu['items'][index]
+        current_menu = current_menu[Item_Str][index]
     
     # Check each timer item
-    timer_items = current_menu.get('items', [])
+    timer_items = current_menu.get(Item_Str, [])
     for item in timer_items:
-        param = item.get('title')
+        param = item.get(Title_Str)
         if param in timer_dict.keys():
-            new_working_value = item['value']['W_V']
+            new_working_value = item[Value_Str][Working_Str]
             if new_working_value > 0 and timer_dict[param] != new_working_value:
                 timer_dict[param] = new_working_value
                 lcd.clear()
@@ -516,7 +514,7 @@ def update_timer_params() -> None:
                 lcd.setCursor(0,1)
                 lcd.printout(f'{param}: {new_working_value}')
 
-def update_program_data() -> None:
+def update_program_list_from_menu() -> None:
     """Update program list from menu working values and apply duty cycle."""
     
     # Find path to timer submenu
@@ -534,28 +532,32 @@ def update_program_data() -> None:
     # Navigate to timer items
     current_menu = new_menu
     for index in timer_path:
-        current_menu = current_menu['items'][index]
+        current_menu = current_menu[Item_Str][index]
     
-    timer_items = current_menu.get('items', [])
-    i = 1  # TODO Fix this static dependency...Skip first two items (Start Delay and Duty Cycle)
-    
-    for s in program_list:
+    timer_items = current_menu.get(Item_Str, [])
+
+    i = 0  # find first Cycle in menu.  Assumption: Title looks like "Cycle[N]"
+    while not timer_items[i][Title_Str].startswith("Cycle"):
         i += 1
+
+    for s in program_list:
         cycle_name = s[0]
         if i < len(timer_items):  # Protect against index out of range
             menu_item = timer_items[i]
-            if cycle_name == menu_item['title']:
-                on_time = menu_item['value']['W_V']
+            if cycle_name == menu_item[Title_Str]:
+                on_time = menu_item[Value_Str][Working_Str]
                 off_time = int(on_time * (100/adjusted_dc - 1))
                 s[1]["run"] = on_time
                 s[1]["off"] = off_time
             else:
-                print(f"Found {menu_item['title']}, expecting {cycle_name}")
+                print(f"Found {menu_item[Title_Str]}, expecting {cycle_name}")
+        i += 1
 
     # Set start delay and fix last cycle
     program_list[0][1]["init"] = timer_dict["Start Delay"]
     program_list[-1][1]["off"] = 1  # reset last cycle OFF time to 1
 
+    # navigator.set_program_list(program_list)
     lcd.setCursor(0,1)
     lcd.printout("program updated")
 
@@ -570,24 +572,25 @@ P6 = "Z1"
 P7 = "Z4"
 P8 = "XP"
 
-# zone_list... zone ID, min, start-up, max pressures, quadratic eq  a,b,c coefficients, and zone_max_drop
+# zone_list... zone ID, min, start-up, max pressures, SD multiplier, quadratic eq  a,b,c coefficients, and zone_max_drop
 # TODO ... need to test each zone's starting pressure...from full bore state, and adjust the min/max values accordingly.
+# TODO revisit SD multiplier lookups
 # Then... when we have no water shortage, run for extended period to get quadratic profile of each zone.
-zone_list:list[tuple[str, int, int, int, float, float, int, int]] = [
-    (P0, 0,   0,   5,    2E-5, -0.1021, 0,   0),     # ZERO 
-    (P1, 6,   15,  20,   2E-5, -0.1021, 2,   0),     # AIR
-    (P2, 10,  20,  40,   8E-7, -0.0042, 30,  5),     # HT: don't make this min higher... I want to resume from a cancelled cycle, not abort in HT mode
-    (P3, 200, 35,  350,  1E-5, -0.1021, 340, 20),    # Z45
-    (P4, 300, 350, 450,  2E-5, -0.1021, 445, 20),    # Z3
-    (P5, 350, 420, 580,  2E-5, -0.1021, 575, 20),    # Z2
-    (P6, 390, 550, 580,  2E-5, -0.1021, 585, 20),    # Z1
-    (P7, 450, 650, 680,  2E-5, -0.1021, 620, 20),    # Z4
-    (P8, 600, 700, 800,  2E-5, -0.1021, 650, 20)     # XP
+zone_list:list[tuple[str, int, int, int, float, float, float, int, int]] = [
+    (P0, 0,   0,   5,    2.8, 2E-5, -0.1021, 0,   0),     # ZERO 
+    (P1, 6,   15,  20,   2.8, 2E-5, -0.1021, 2,   0),     # AIR
+    (P2, 10,  20,  40,   2.8, 8E-7, -0.0042, 30,  5),     # HT: don't make this min higher... I want to resume from a cancelled cycle, not abort in HT mode
+    (P3, 70, 35,  350,   3.5, 1E-5, -0.1021, 340, 20),    # Z45
+    (P4, 300, 350, 450,  3.5, 2E-5, -0.1021, 445, 20),    # Z3
+    (P5, 350, 420, 580,  3.5, 2E-5, -0.1021, 575, 20),    # Z2
+    (P6, 390, 550, 580,  3.5, 2E-5, -0.1021, 585, 20),    # Z1
+    (P7, 450, 650, 680,  3.5, 2E-5, -0.1021, 620, 20),    # Z4
+    (P8, 600, 700, 800,  3.5, 2E-5, -0.1021, 650, 20)     # XP
 ]
 # list needs to be reverse order for get_zone_from_list to work correctly
 rev_sorted_zone_list = sorted(zone_list, key=lambda x: x[2], reverse=True)  # Sort by startup pressure in descending order
 
-# this dict needed to store individual zone peak pressure on setting baseline.  Can't do it in immutable zone_list tuple...
+# this dict needed to store individual zone peak pressure. Can't do it in immutable zone_list tuple...
 peak_pressure_dict = {
     P0: (0, 0, 0),
     P1: (0, 0, 0),
@@ -606,16 +609,16 @@ def get_zone_from_list(pressure: int):
     i = len(zone_list)
     szl = sorted(zone_list, key=lambda x: x[2], reverse=True)  # Sort by average pressure in descending order
     # print(szl)
-    for _, _, avg_pressure, _, _, _, _, _ in szl:
+    for _, _, avg_pressure, _, _, _, _, _, _ in szl:
         # print(avg_pressure)
         if pressure >= avg_pressure:
             # print(f'{pressure=} is >= {avg_pressure}')
-            return zone_list[i-1][0], zone_list[i-1][1], zone_list[i-1][2], zone_list[i-1][3], zone_list[i-1][4], zone_list[i-1][5], zone_list[i-1][6], zone_list[i-1][7]
+            return zone_list[i-1][0], zone_list[i-1][1], zone_list[i-1][2], zone_list[i-1][3], zone_list[i-1][4], zone_list[i-1][5], zone_list[i-1][6], zone_list[i-1][7], zone_list[i-1][8]
         else:
             # print(f'{pressure=} is <= {avg_pressure}')
             i -= 1
             # print(f'Index {i}')
-    return "???", 0, 0, 0, 0, 0, 0, 0  # Return None if no zone found
+    return "???", 0, 0, 0, 0, 0, 0, 0, 0  # Return None if no zone found
 
 # endregion
 # region TIMED IRRIGATION
@@ -944,7 +947,7 @@ def hardreset():
 def flush_data():
     tank_log.flush()
     ev_log.flush()
-    pp_log.flush()
+    # pp_log.flush()
     hf_log.flush()
     lcd.setCursor(0,1)
     lcd.printout(f'{"Logs flushed":<16}')
@@ -954,13 +957,13 @@ def housekeeping(close_files: bool)->None:
     start_time = ticks_us()
     tank_log.flush()
     ev_log.flush()
-    pp_log.flush()
+    # pp_log.flush()
     hf_log.flush()
     end_time = ticks_us()
     if close_files:
         tank_log.close()
         ev_log.close()
-        pp_log.close()
+        # pp_log.close()
         hf_log.close()
     print(f"Cleanup completed in {int(ticks_diff(end_time, start_time) / 1000)} ms")
 
@@ -994,8 +997,8 @@ def shutdown()->None:
     tank_log.close()
     ev_log.flush()
     ev_log.close()
-    pp_log.flush()
-    pp_log.close()
+    # pp_log.flush()
+    # pp_log.close()
     hf_log.flush()
     hf_log.close()
 
@@ -1073,6 +1076,44 @@ def find_last_cycle()-> int:
     # print(f"find_last_cycle: {pos=}")
     return pos
 
+def sync_programlist_to_menu()->None:
+    # First remove all existing timer menu items with title "cycle[n]
+
+    # Find path to timer submenu
+    timer_path = find_menu_path(new_menu, "Set Timers->")
+    if not timer_path:
+        print("Could not find timer submenu!")
+        return
+
+    # Navigate to timer items
+    current_menu = new_menu
+    for index in timer_path:
+        current_menu = current_menu[Item_Str][index]
+    
+    timer_items = current_menu.get(Item_Str, [])
+    for item in timer_items[:]:                 # iterate over a shallow copy
+        if item[Title_Str].startswith("Cycle"):
+            timer_items.remove(item)
+    
+    # Then, create menu items for all programs in program_list
+
+# Find the index of "Duty Cycle"
+    duty_cycle_index = next(
+        (i for i, item in enumerate(timer_items) if item.get('title', '').startswith("Duty Cycle"))
+        )
+  
+    # Insert each new cycle after "Duty Cycle"
+    insert_pos = duty_cycle_index + 1
+    for prog in program_list:
+        cycle_name = prog[0]
+        run_time = prog[1]["run"]
+        new_menu_item = {
+            Title_Str: cycle_name,
+            Value_Str: {Default_Str: 1, Working_Str: run_time, Step_Str: 5}
+        }
+        timer_items.insert(insert_pos, new_menu_item)
+        insert_pos += 1  # So cycles are inserted in order
+
 def add_cycle()-> None:
 # This inserts a new row into program_list... and also updates the menu.  Can I do better??
 # Need to check creation of the list of time intervals in start_timed_watering thing...
@@ -1093,15 +1134,15 @@ def add_cycle()-> None:
     lcd.setCursor(0,1)
     lcd.printout(f'{new_cycle_name} added')
     # print("Now... try to update the menu itself!!")
-    sub_menu_list: list = navigator.current_level[-1]['submenu']["items"]          # this is a stack... get last entry
+    sub_menu_list: list = navigator.current_level[-1]['submenu'][Item_Str]          # this is a stack... get last entry
     # print(f'{navigator.current_index=}')
     # print(f'{sub_menu_list}')
     # print(f'sub_menu_list is type {type(sub_menu_list)}')
     old_menu_item:dict = sub_menu_list[navigator.current_menuindex - 1]     # YUK WARNING: bad dependency here !!!
     new_menu_item = old_menu_item.copy()
-    new_menu_value: dict = old_menu_item["value"].copy()
-    new_menu_item["title"] = new_cycle_name
-    new_menu_item["value"] = new_menu_value                             # be very careful to NOT use ref to old dict
+    new_menu_value: dict = old_menu_item[Value_Str].copy()
+    new_menu_item[Title_Str] = new_cycle_name
+    new_menu_item[Value_Str] = new_menu_value                             # be very careful to NOT use ref to old dict
     # print(f'{new_menu_item=}')
     sub_menu_list.insert(navigator.current_menuindex, new_menu_item)        # only go back 1 slot
     navigator.current_menuindex += 1        # is this needed ?
@@ -1119,14 +1160,14 @@ def remove_cycle()-> None:
         lcd.setCursor(0,1)
         lcd.printout(f'{cycle_name} deleted')
         # print("Now... try to update the menu itself!!")
-        sub_menu_list: list = navigator.current_level[-1]['submenu']["items"]         # this is a stack... get last entry
+        sub_menu_list: list = navigator.current_level[-1]['submenu'][Item_Str]         # this is a stack... get last entry
         # print(f'{navigator.current_index=}')
         # print(f'{sub_menu_list}')
         # print(f'sub_menu_list is type {type(sub_menu_list)}')
         # new_menu_item = sub_menu_list[navigator.current_index - 2]
-        # new_menu_item["title"] = new_cycle_name
+        # new_menu_item[Title_Str] = new_cycle_name
         # print(f'{new_menu_item=}')
-        if "Cycle" in sub_menu_list[navigator.current_menuindex - 2]["title"]:
+        if "Cycle" in sub_menu_list[navigator.current_menuindex - 2][Title_Str]:
             del sub_menu_list[navigator.current_menuindex - 2]      # check the 2...
             navigator.current_menuindex -= 1        # is this needed ?
         # print(f'{sub_menu_list=}')
@@ -1173,7 +1214,7 @@ def make_more_space()->None:
 
     hitList: list[tuple] = []
     device_files = uos.listdir()
-    tank_files = [x for x in device_files if ("tank " in x or "pressure " in x) and ".txt" in x]
+    tank_files = [x for x in device_files if x.endswith('.txt') and (x.startswith('tank') or x.startswith('HF'))]
     for f in tank_files:
         ftuple = uos.stat(f)
         kb = int(ftuple[6] / 1024)
@@ -1182,15 +1223,15 @@ def make_more_space()->None:
         file_entry = tuple((f, kb, ts, tstr))
         hitList.append(file_entry)
 
-    sorted_by_date = sorted(hitList, key=lambda x: x[2])
+    sorted_by_date = sorted(hitList, key=lambda x: x[2], reverse=True)
     print(f"Files by date:\n{sorted_by_date}")
     if free_space() < FREE_SPACE_LOWATER:
         ev_log.write(f"{now_time_long()} Deleting files\n")
-        while free_space() < FREE_SPACE_HIWATER:
-            df = sorted_by_date[0][0]
-            print(f"removing file {df}")
-            uos.remove(df)
-            ev_log.write(f"{now_time_long()} Removed file {df} size{sorted_by_date[0][1]} Kb")
+        while free_space() < FREE_SPACE_HIWATER and len(sorted_by_date) > 0:
+            datafile = sorted_by_date[0][0]
+            print(f"removing file {datafile}")
+            uos.remove(datafile)
+            ev_log.write(f"{now_time_long()} Removed file {datafile} size {sorted_by_date[0][1]} Kb\n")
             sorted_by_date.pop(0)
 
         fs = free_space()
@@ -1232,9 +1273,9 @@ def roll_logs()-> None:
     if tank_log is not None:
         tank_log.flush()
         tank_log.close()
-    if pp_log is not None:
-        pp_log.flush()
-        pp_log.close()
+    # if pp_log is not None:
+    #     pp_log.flush()
+    #     pp_log.close()
     if ev_log is not None:
         ev_log.flush()
         ev_log.close()
@@ -1278,20 +1319,21 @@ def toggle_HFLOGGING():
     lcd.setCursor(0, 1)
     lcd.printout(f'LOGHFDATA {' ON' if LOGHFDATA else 'OFF'}')
 
+Item_Str    = "items"
 Title_Str  = "title"
 Value_Str  = "value"
 Action_Str  = "action"
 Step_Str   = "Step"
-Default_str= "D_V"
-Working_str= "W_V"
+Default_Str= "D_V"
+Working_Str= "W_V"
 
 # added new admin menu section...
 new_menu = {
     Title_Str: "Main Menu",
-    "items": [              # items[0]
+    Item_Str: [              # items[0]
       {
         Title_Str: "Display->",         # items[0]
-        "items": [
+        Item_Str: [
           { Title_Str: "Pressure",      Action_Str: display_pressure},
           { Title_Str: "Depth",         Action_Str: display_depth},
           { Title_Str: "Files",         Action_Str: show_dir},
@@ -1303,7 +1345,7 @@ new_menu = {
       },
       {
         Title_Str: "History->",         # items[1]
-        "items": [
+        Item_Str: [
           { Title_Str: "Events",        Action_Str: show_events},
           { Title_Str: "Switch",        Action_Str: show_switch},
           { Title_Str: "Pressure",      Action_Str: show_pressure},
@@ -1315,7 +1357,7 @@ new_menu = {
       },
       {
         Title_Str: "Actions->",         # items[2]
-        "items": [
+        Item_Str: [
           { Title_Str: "Timed Water",   Action_Str: start_irrigation_schedule},
           { Title_Str: "Cancel Prog",   Action_Str: cancel_program},
           { Title_Str: "Flush",         Action_Str: flush_data},
@@ -1327,33 +1369,33 @@ new_menu = {
       },
       {
         Title_Str: "Config->",         # items[3]
-        "items": [
+        Item_Str: [
           { Title_Str: "Set Config->",
-            "items": [                  # items[3][0]
-                { Title_Str : DELAY,         Value_Str: {Default_str: 15,   Working_str : mydelay,              Step_Str : 5}},
-                { Title_Str : LCD,           Value_Str: {Default_str: 5,    Working_str : LCD_ON_TIME,          Step_Str : 2}},
-                { Title_Str : MINDIST,       Value_Str: {Default_str: 500,  Working_str : Min_Dist,             Step_Str : 100}},
-                { Title_Str : MAXDIST,       Value_Str: {Default_str: 1400, Working_str : Max_Dist,             Step_Str : 100}},
-                { Title_Str : MAXPRESSURE,   Value_Str: {Default_str: 700,  Working_str : MAX_LINE_PRESSURE,    Step_Str : 25}},                
+            Item_Str: [                  # items[3][0]
+                { Title_Str : DELAY,         Value_Str: {Default_Str: 15,   Working_Str : mydelay,              Step_Str : 5}},
+                { Title_Str : LCD,           Value_Str: {Default_Str: 5,    Working_Str : LCD_ON_TIME,          Step_Str : 2}},
+                { Title_Str : MINDIST,       Value_Str: {Default_Str: 500,  Working_Str : Min_Dist,             Step_Str : 100}},
+                { Title_Str : MAXDIST,       Value_Str: {Default_Str: 1400, Working_Str : Max_Dist,             Step_Str : 100}},
+                { Title_Str : MAXPRESSURE,   Value_Str: {Default_Str: 700,  Working_Str : MAX_LINE_PRESSURE,    Step_Str : 25}},                
                 # { Title_Str : MINPRESSURE,   Value_Str: {Default_str: 300,  Working_str : MIN_LINE_PRESSURE,    Step_Str : 25}},
-                { Title_Str : NOPRESSURE,    Value_Str: {Default_str: 15,   Working_str : NO_LINE_PRESSURE,     Step_Str : 5}},
+                { Title_Str : NOPRESSURE,    Value_Str: {Default_Str: 15,   Working_Str : NO_LINE_PRESSURE,     Step_Str : 5}},
                 # { Title_Str : MAXDROP,       Value_Str: {Default_str: 15,   Working_str : MAX_KPA_DROP,         Step_Str : 1}},
-                { Title_Str : MAXRUNMINS,    Value_Str: {Default_str: 60,   Working_str : MAX_CONTIN_RUNMINS,   Step_Str : 10}},
-                { Title_Str : KPASTDEVMULT,  Value_Str: {Default_str: 25,    Working_str : kPa_stdev_mult,       Step_Str : 1}},
+                { Title_Str : MAXRUNMINS,    Value_Str: {Default_Str: 60,   Working_Str : MAX_CONTIN_RUNMINS,   Step_Str : 10}},
+                { Title_Str : KPASTDEVMULT,  Value_Str: {Default_Str: 25,    Working_Str : kPa_stdev_mult,       Step_Str : 1}},
                 { Title_Str: "Save config",  Action_Str: update_config},
                 { Title_Str: "Go Back",      Action_Str: my_go_back}
             ]
           },
-           { Title_Str: "Set Timers->", # TODO Cycle timer values start out NOT in sync with program list
-            "items": [                  # items[3][1]
-                { Title_Str: "Start Delay",     Value_Str: {Default_str: 5,   Working_str : 0,                     Step_Str : 15}},
-                { Title_Str: "Duty Cycle",      Value_Str: {Default_str: 50,  Working_str : DEFAULT_DUTY_CYCLE,    Step_Str : 5}},
-                { Title_Str: "Cycle1",          Value_Str: {Default_str: 1,   Working_str : DEFAULT_CYCLE,         Step_Str : 5}},
-                { Title_Str: "Cycle2",          Value_Str: {Default_str: 2,   Working_str : DEFAULT_CYCLE,         Step_Str : 5}},
-                { Title_Str: "Cycle3",          Value_Str: {Default_str: 3,   Working_str : DEFAULT_CYCLE,         Step_Str : 5}},
+           { Title_Str: "Set Timers->",
+            Item_Str: [                  # items[3][1]
+                { Title_Str: "Start Delay",     Value_Str: {Default_Str: 5,   Working_Str : 0,                     Step_Str : 15}},
+                { Title_Str: "Duty Cycle",      Value_Str: {Default_Str: 50,  Working_Str : DEFAULT_DUTY_CYCLE,    Step_Str : 5}},
+                { Title_Str: "Cycle1",          Value_Str: {Default_Str: 1,   Working_Str : DEFAULT_CYCLE,         Step_Str : 5}},
+                { Title_Str: "Cycle2",          Value_Str: {Default_Str: 2,   Working_Str : DEFAULT_CYCLE,         Step_Str : 5}},
+                { Title_Str: "Cycle3",          Value_Str: {Default_Str: 3,   Working_Str : DEFAULT_CYCLE,         Step_Str : 5}},
                 { Title_Str: "Add cycle",       Action_Str: add_cycle},
                 { Title_Str: "Delete cycle",    Action_Str: remove_cycle},
-                { Title_Str: "Update program",  Action_Str: update_program_data},
+                { Title_Str: "Update program",  Action_Str: update_program_list_from_menu},
                 { Title_Str: "Go Back",         Action_Str: my_go_back}
             ]
           },
@@ -1363,7 +1405,7 @@ new_menu = {
         ]
       },
         { Title_Str: "Admin->",
-         "items": [
+         Item_Str: [
           { Title_Str: "Flush",             Action_Str: flush_data},
         #   { Title_Str: "Save Config",       ActionStr: update_config},
           { Title_Str: "Make Space",        Action_Str: make_more_space},
@@ -1421,7 +1463,7 @@ def infobtn_cb(pin):
     if (new_time - modebtn_last_time) > DEBOUNCE_BUTTON:
         new_mode = (info_display_mode + 1) % NUM_DISPLAY_MODES
         if new_mode == INFO_IRRIG :             # TODO Review changes to info mode, maybe do a state diag, B4 it gets out of control
-            if op_mode != OP_MODE_IRRIGATE:
+            if op_mode != OP_MODE_IRRIGATE:     # so if NOT in OP_IRRIGATe, just toggle between AUTO and DIAG
                 new_mode = INFO_DIAG
         if new_mode != old_mode:
             info_display_mode = new_mode
@@ -1641,13 +1683,17 @@ def init_logging():
     shortyear       = str(year)[2:]
     datestr         = f"{shortyear}{month:02}{day:02}"
     tanklogname     = f'tank {datestr}.txt'
-    pplogname       = f'pres {datestr}.txt'
+    # pplogname       = f'pres {datestr}.txt'
     eventlogname    = 'borepump_events.txt'
     hfkpaname       = f'HF {datestr}.txt'
-    tank_log        = open(tanklogname, "a")
-    ev_log          = open(eventlogname, "a")
-    pp_log          = open(pplogname, "a")
-    hf_log          = open(hfkpaname, "a")
+    try:
+        tank_log        = open(tanklogname, "a")
+        ev_log          = open(eventlogname, "a")
+        # pp_log          = open(pplogname, "a")
+        hf_log          = open(hfkpaname, "a")
+    except Exception as e:
+        print(f'Init_logging: file open exception - {e}')
+        sys.exit()
 
 def get_fill_state(d):
     if d > config_dict[MAXDIST]:                                                    # empty
@@ -1684,19 +1730,14 @@ def calc_average_HFpressure(offset_back:int, length:int)->float:
 
     Finally, note it does some checking on mod_index not done elsewhere
     """
-    # if length > HI_FREQ_AVG_COUNT:
-    #     print(f"***>>>calc_average_pressure: {start=} length {length} > {HI_FREQ_AVG_COUNT}")
+
+    if offset_back + length > HI_FREQ_RINGSIZE:     # then we will wrap back over previously used values
+        event_ring.add(f'WARNING: Invalid params {offset_back + length} in calc_average_HFpressure')
+
     p = 0
     for i in range(length):
         mod_index = (hi_freq_kpa_index - offset_back - i - 1) % HI_FREQ_RINGSIZE  # change to average hi_freq_kpa readings
-        tmp = hi_freq_kpa_ring[mod_index]
-        # print(f'  {mod_index=}, {tmp=}')
-        # if tmp == 0 and hi_freq_kpa_index .... need to revisit thislogic   TODO
-        # if tmp == 0 and hf_kpa_hiwater > 0 and (length - 1) >= hf_kpa_hiwater:
-        if tmp == 0 and hf_kpa_hiwater >= mod_index and mod_index >= (hf_kpa_hiwater - length):
-            print(f"***>>>ZERO hi_freq_kpa ring buffer at index {mod_index}, {hf_kpa_hiwater=}, {length=}")
-
-        p += tmp
+        p += hi_freq_kpa_ring[mod_index]
     return p/length
 
 def get_tank_depth():
@@ -1706,62 +1747,46 @@ def get_tank_depth():
     depth = (Tank_Height - d) / 1000
     tank_is = get_fill_state(d)
 
-def set_baseline_kpa(timer: Timer):
-    try:
-        global baseline_pressure, baseline_set, zone, zone_minimum, zone_maximum, qa, qb, qc, zone_max_drop, kpa_peak, time_peak
+def set_zone(timer: Timer):
+    global zone, zone_minimum, zone_maximum, qa, qb, qc, zone_max_drop, kpa_peak, time_peak, kPa_stdev_mult
 
-        if avg_kpa_set:             # only do this if we have a valid average
-# calculate WITHOUT making a function call...
-            # p = 0
-            # for i in range(BASELINE_AVG_COUNT):
-            #     idx = (hi_freq_kpa_index - i - 1) % HI_FREQ_RINGSIZE    # need to -1 as index is the next write location
-            #     tmp = hi_freq_kpa_ring[idx]  # change to average hi_freq_kpa readings
-            #     # ev_log.write(f"set_baseline:{idx=} {tmp=}\n")
-            #     p += tmp
-            baseline_pressure = round(calc_average_HFpressure(0, BASELINE_AVG_COUNT))  # get average of last BASELINE_AVG_COUNT readings.
-            baseline_set = True
-            bp_str = f"{now_time_long()} Baseline set to {baseline_pressure} kPa"
-            print(bp_str)
-            ev_log.write(bp_str + "\n")
+    if avg_kpa_set:             # only do this if we have a valid average
+        zone_pressure = round(calc_average_HFpressure(0, ZONE_AVG_COUNT))  # get average of last several readings.
 
-            new_zone, zone_minimum, _, zone_maximum, qa, qb, qc, zone_max_drop  = get_zone_from_list(baseline_pressure)
-            if new_zone != zone:
-                if new_zone in peak_pressure_dict.keys():
-                    peak_pressure_dict[new_zone] = (time_peak, kpa_peak, time_peak - last_ON_time)     # set in read_pressure
-                else:
-                    error_ring.add(TankError.ZONE_NOTFOUND)
-                z_str = f"{now_time_long()} Zone changed from {zone} to {new_zone}"
-                zone = new_zone
-                print(z_str)
-                ev_log.write(z_str + "\n")
+        new_zone, zone_minimum, _, zone_maximum, zsdm, qa, qb, qc, zone_max_drop  = get_zone_from_list(zone_pressure)
+        if new_zone != zone:
+            if new_zone in peak_pressure_dict.keys():
+                peak_pressure_dict[new_zone] = (time_peak, kpa_peak, time_peak - last_ON_time)     # set in read_pressure
+            else:
+                error_ring.add(TankError.ZONE_NOTFOUND)
+            kPa_stdev_mult = zsdm
+            z_str = f"{now_time_long()} Zone changed from {zone} to {new_zone}. Peak Pressure: {kpa_peak} SDM: {kPa_stdev_mult}"
+            zone = new_zone
+            print(z_str)
+            ev_log.write(z_str + "\n")
 
-            if kpa_peak > 0:
-                peak_str = f"{now_time_long()} Peak Pressure: {kpa_peak}"
-                print(peak_str)
-                ev_log.write(peak_str + "\n")
-        else:                       # reset timer for another try
-            print("No valid average kPa reading to set baseline.  Resetting timer...")
-            ev_log.write(f"{now_time_long()} set_baseline_kpa: resetting timer for extra 15 seconds\n")
-            timer.init(period=15 * 1000, mode=Timer.ONE_SHOT, callback=set_baseline_kpa)   # type: ignore
-
-    except Exception as e:
-        print(f"Error in set_baseline_kpa: {e}")
+    else:                       # reset timer for another try
+        print("No valid average kPa reading to set zone.")
+        ev_log.write(f"{now_time_long()} set_zone: resetting timer for extra 15 seconds\n")
+        timer.start(15, set_zone)   # type: ignore
 
 def set_average_kpa(timer: Timer):
     global average_kpa, avg_kpa_set
 
-    if hf_kpa_hiwater >= AVG_KPA_DELAY - 1:
+    if read_count_since_ON >= AVG_KPA_DELAY:
         tmp = calc_average_HFpressure(0, AVG_KPA_DELAY)  # get average of last AVG_KPA_DELAY readings
         if tmp > 0:
-            average_kpa = tmp
+            average_kpa = round(tmp, 2)
             # print("set_average_kpa callback: Average kPa set: ", average_kpa)
             avg_kpa_set = True
             kpa_ring.add(average_kpa)         # add to ring buffer for later use
+            event_ring.add(f'Avg kpa set: {average_kpa}')
         else:
             print("set_average_kpa: Yikes!! Buffer has data, but average_kpa is 0")
-            for i in range(5): print(f"{hi_freq_kpa_ring[i]} ", end=" ")  
+            for i in range(5): print(f"{hi_freq_kpa_ring[hi_freq_kpa_index - i - 1]} ", end=" ")
     else:
-        timer.init(period=AVG_KPA_DELAY * 1000, mode=Timer.ONE_SHOT, callback=set_average_kpa)   # type: ignore
+        event_ring.add('set_average_kpa: rcso <= AVG_KPA_DELAY.  Should not happen')
+        timer.init(period=15 * 1000, mode=Timer.ONE_SHOT, callback=set_average_kpa)   # type: ignore
 
 def updateData():
     global tank_is
@@ -1787,18 +1812,20 @@ def updateData():
     depth_str = f"{depth:.2f}m " + tank_is
     # print(f"In updateData: ADC value: {pv}")
     # bp_kpa = kparing[kpaindex]        # get last kPa reading
-    if hf_kpa_hiwater >= AVG_KPA_DELAY - 1:
+    if read_count_since_ON >= AVG_KPA_DELAY:
         tmp = int(calc_average_HFpressure(0, AVG_KPA_DELAY))  # get average of last AVG_KPA_DELAY readings.
         if tmp > 0:
             average_kpa = tmp
             avg_kpa_set = True
-            kpa_ring.add(average_kpa)         # add to ring buffer for later use
+            kpa_ring.add(average_kpa)         # kpa_ring values are ONLY used to view history vua menu... no other function
             # print(f"Average kPa set in UpdateData to: {average_kpa}")
         else:
             print("Yikes!! HF_B full, but average_kpa is 0")
-            for i in range(5): print(f"{hi_freq_kpa_ring[i]} ", end=" ")  
+            for i in range(5): print(f"{hi_freq_kpa_ring[hi_freq_kpa_index - i - 1]} ", end=" ")
 
-    pressure_str = f'B {baseline_pressure:>3} Av {int(average_kpa):>3} {zone:3}'    # might change this to be updated more frequently in a dedicated asyncio loop...
+    prev_index = (hi_freq_kpa_index - 1) % HI_FREQ_RINGSIZE     # because hi_freq_kpa_index refers to pos to write next value
+    pressure_str = f'LP {hi_freq_kpa_ring[prev_index]} Av {int(average_kpa):>3} {zone:3}'
+      
     temp = 27 - (temp_sensor.read_u16() * TEMP_CONV_FACTOR - 0.706)/0.001721
 
 def get_pressure():
@@ -1846,8 +1873,7 @@ def radio_time(local_time):
     return local_time + clock_adjust_ms
 
 def borepump_ON(reason:str):
-    global average_timer, baseline_timer, hf_kpa_hiwater, avg_kpa_set, baseline_set, last_ON_time, kpa_peak, kpa_low
-    global steady_state, rec_num, stable_pressure, LOGHFDATA
+    global last_ON_time, LOGHFDATA
 
     if SIMULATE_PUMP:
         print(f"{now_time_long()} SIM Pump ON")
@@ -1872,23 +1898,24 @@ def borepump_ON(reason:str):
                 # print(f"***********Setting timer for average_kpa at {now_time_long()}")    
                 ev_log.write(f"{now_time_long()} ON {reason}\n")
                 system.on_event("ON ACK")
-                # print(f"***********Setting timer for baseline_kpa at {now_time_long()}")
+                # print(f"***********Setting timer for avg & set_zone at {now_time_long()}")
                 if kpa_sensor_found:
-                    hf_kpa_hiwater = 0              # reset this to zero... for calc average_pressure
-                    stable_pressure = False
-                    avg_kpa_set = False             # ? Should I also set hf_kpa_index to 0 ??
-                    baseline_set = False
-                    kpa_peak = 0
-                    kpa_low = 1000
+                    reset_state()
                     average_timer  = Timer(period=AVG_KPA_DELAY  * 1000, mode=Timer.ONE_SHOT, callback=set_average_kpa)  # start timer to record average after 5 seconds
-                    baseline_timer = Timer(period=ZONE_DELAY * 1000, mode=Timer.ONE_SHOT, callback=set_baseline_kpa)  # start timer to record baseline after 30 seconds
+                    zone_timer = Timer(period=ZONE_DELAY * 1000, mode=Timer.ONE_SHOT, callback=set_zone)  # start timer to record zone after 30 seconds
                     # change_logging(True)
                     LOGHFDATA = True
-    # reset this to avoid spurious ALARMS as ROC average climbs to steady value... SMA issue
-                steady_state = False
-                rec_num = 0
             else:
                 log_switch_error(new_state)
+
+def reset_state():
+    global read_count_since_ON, stable_pressure, avg_kpa_set, kpa_peak, kpa_low
+
+    read_count_since_ON = 0
+    stable_pressure = False
+    avg_kpa_set = False             # ? Should I also set hf_kpa_index to 0 ??
+    kpa_peak = 0
+    kpa_low = 1000
 
 def borepump_OFF(reason:str):
     global LOGHFDATA
@@ -1945,14 +1972,14 @@ def dump_zone_peak()->None:
     ev_log.write("\nZone Peak Pressures:")
     for z in peak_pressure_dict.keys():
         if peak_pressure_dict[z][1] > 0:
-            lstr = f"{format_secs_long(peak_pressure_dict[z][0])}  Zone {z:<3}: peak {peak_pressure_dict[z][1]}kPa {peak_pressure_dict[z][2]} seconds after ON"
+            lstr = f"{format_secs_long(peak_pressure_dict[z][0])}  Zone {z:<3}: peak {peak_pressure_dict[z][1]} kPa {peak_pressure_dict[z][2]:.1f} seconds after ON"
             print(lstr)
             ev_log.write(lstr + "\n")
 
 def raiseAlarm(param, val):
 
     logstr = f"{now_time_long()} ALARM {param}, value {val:.3g}"
-    ev_str = f"ALARM {param}, value {val:.3g}"
+    ev_str = f"ALARM {param}, value {val:.4g}"
     print(logstr)
     ev_log.write(f"{logstr}\n")
     event_ring.add(ev_str)
@@ -1963,7 +1990,7 @@ def cancel_deadtime(timer:Timer)->None:
     if previous_op_mode < OP_MODE_DISABLED:
         logstr = f'{now_time_long()} Disabled mode cancelled, returning to {opmode_dict[previous_op_mode]}, switching pump back ON'
         ev_log.write(f'{logstr}\n')
-        print(logstr)
+        # print(logstr)
         event_ring.add("Disabled mode cancelled")
         op_mode = previous_op_mode
         borepump_ON("Resuming after pause")       # this is really the critical bit !!
@@ -1971,8 +1998,8 @@ def cancel_deadtime(timer:Timer)->None:
 def kpadrop_cb(timer:Timer)->None:
     global alarm, op_mode, previous_op_mode, last_ON_time
 
-    logstr = f'{now_time_long()} kpadrop_cb called'
-    ev_log.write(f'{logstr}\n')
+    # logstr = f'{now_time_long()} kpadrop_cb called'
+    # ev_log.write(f'{logstr}\n')
 
     alarm.value(0)                  # turn off alarm
     
@@ -1983,7 +2010,7 @@ def kpadrop_cb(timer:Timer)->None:
         logstr = f'{now_time_long()} Cancelling pending timer {KPA_DROP_TIMER_NAME}'
         ev_log.write(f'{logstr}\n')
         timer_mgr.cancel_timer(KPA_DROP_TIMER_NAME)
-
+        
     # if op_mode == OP_MODE_IRRIGATE: # don't abort... just turn off pump, but let cycle continue
     previous_op_mode = op_mode  # save to restore later
     op_mode = OP_MODE_DISABLED
@@ -1997,8 +2024,9 @@ def kpadrop_cb(timer:Timer)->None:
     _, recovery_hrs, recovery_mins, recovery_secs = secs_to_DHMS(recovery_seconds)
     recovery_duration = f'{recovery_hrs}:{recovery_mins:02}:{recovery_secs:02}'
     # disable_timer = Timer(period=recovery_time*1000, mode=Timer.ONE_SHOT, callback=cancel_deadtime)
+    
     timer_mgr.create_timer(DISABLE_TIMER_NAME, recovery_seconds * 1000, cancel_deadtime)
-    drop_str = f"{now_time_long()} kPa DROP detected in {opmode_dict[op_mode]} zone {zone}- disabling operation for {recovery_duration}"
+    drop_str = f"{now_time_long()} kPa DROP detected in {opmode_dict[previous_op_mode]} zone {zone}- disabling operation for {recovery_duration}"
     ev_log.write(drop_str + "\n")
     print(drop_str)
 
@@ -2017,10 +2045,10 @@ def find_menu_path(menu: dict, target_title: str) -> list[int]:
     Returns a list of indices to reach the target, or empty list if not found."""
     
     def search_menu(menu_item: dict, path: list[int]) -> list[int]:
-        if menu_item.get('title') == target_title:
+        if menu_item.get(Title_Str) == target_title:
             return path
         
-        items = menu_item.get('items', [])
+        items = menu_item.get(Item_Str, [])
         for i, item in enumerate(items):
             new_path = search_menu(item, path + [i])
             if new_path:
@@ -2042,12 +2070,12 @@ def find_menu_index(param_name: str) -> int:
     # Navigate to config items
     current_menu = new_menu
     for index in config_path:
-        current_menu = current_menu['items'][index]
+        current_menu = current_menu[Item_Str][index]
     
     # Search for parameter in config items
-    config_items = current_menu.get('items', [])
+    config_items = current_menu.get(Item_Str, [])
     for i, item in enumerate(config_items):
-        if item.get('title') == param_name:
+        if item.get(Title_Str) == param_name:
             return i
             
     print(f"Did not find {param_name} in config menu")
@@ -2057,72 +2085,22 @@ def quad(a: float, b: float, c: int, x: int) -> int:
     """Calculate the pressure at a given point using a quadratic equation"""
     return int(a * x*x + b * x + c)
     
-# def isRapidDrop(lookback:int, zone_max_drop: int)->bool:
-#     """
-#     Check if the pressure drop is rapid, or slow drift.  This is done by checking the average pressure over a lookback period.
-#     """
-#     global baseline_pressure, baseline_time
-
-#     prev_avg = calc_average_HFpressure(lookback, LO_FREQ_AVG_COUNT)     # only time I use lookback...
-#     return prev_avg - average_kpa < zone_max_drop
-    # if prev_avg - average_kpa < zone_max_drop:   # looks like a slow drift, not a rapid drop
-        # if abs(average_kpa - zone_minimum) < 5:  # if we are close to the minimum pressure, then don't reset baseline]:
-        #     near_min_str = f"{now_time_long()} Pressure near zone minimum, not resetting baseline: {zone_minimum=}, {average_kpa=}"
-        #     print(near_min_str)
-        #     ev_log.write(near_min_str + "\n")
-        #     return True
-        # else:               # reset baseline pressure
-        #     if DEBUGLVL > 1: print(f"prev_avg: {prev_avg}, average_kpa: {average_kpa}")
-        #     old_baseline = baseline_pressure
-        #     baseline_pressure = average_kpa
-        #     bl_reset_str = f'{now_time_long()} Baseline reset from {old_baseline} to {baseline_pressure}'
-        #     print(bl_reset_str)
-        #     ev_log.write(bl_reset_str + "\n")
-        #     event_ring.add("Baseline reset")
-    #     return False
-    # else:                   # looks like a rapid drop
-    #     return True
-
-def check_for_Baseline_Drift()->None:
-    global baseline_pressure
-    
-    if average_kpa > 0 and baseline_pressure / average_kpa > 1.1:         # average_kpa has dropped of more than 10% from previous baseline
-        if abs(average_kpa - zone_minimum) < 5:
-            near_min_str = f"{now_time_long()} Pressure near zone minimum, not resetting baseline: {zone_minimum=}, {average_kpa=}"
-            print(near_min_str)
-            ev_log.write(near_min_str + "\n")
-        else:
-            old_baseline = baseline_pressure
-            baseline_pressure = average_kpa
-            bl_reset_str = f'{now_time_long()} Baseline reset in check_for_Baseline_Drift from {old_baseline} to {baseline_pressure}'
-            print(bl_reset_str)
-            ev_log.write(bl_reset_str + "\n")
-            event_ring.add("Baseline reset")
-
 def checkForAnomalies()->None:
-    global borepump, depth_ROC, tank_is, average_kpa, kpa_drop_timer, stdev_Depth, stdev_Press
+    global borepump, depth_ROC, tank_is, average_kpa, stdev_Depth, stdev_Press
 
     if borepump.state:                          # pump is ON
-        if baseline_set and baseline_pressure > 0 and avg_kpa_set and hf_kpa_hiwater > (LOOKBACKCOUNT + HI_FREQ_AVG_COUNT):   # == HI_FREQ_RINGSIZE - 1: # this ensures we get a valid average kPa reading
-            if baseline_set and baseline_pressure > 0 and average_kpa / baseline_pressure > 1.1:
-                raiseAlarm(f"Baseline {baseline_pressure } lower than avg_kpa", average_kpa)
-                error_ring.add(TankError.BASELINE_LOW)
+        if avg_kpa_set and read_count_since_ON > (LOOKBACKCOUNT + HI_FREQ_AVG_COUNT):   # == HI_FREQ_RINGSIZE - 1: # this ensures we get a valid average kPa reading
 
-            # samples_since_last_ON = int((time.time() - last_ON_time) / (PRESSURE_PERIOD_MS / 1000))
-            # expected_pressure_just_now = quad(qa, qb, qc, samples_since_last_ON - LOOKBACKCOUNT)
-            # expected_pressure_now      = quad(qa, qb, qc, samples_since_last_ON)  # calculate expected pressure using quadratic equation
-            # expected_drop = expected_pressure_just_now - expected_pressure_now    # might need to look at cumulative runtime over say the last 12 hours
-# NOTE: calc_average_HFpressure behaves differently yo other stats methods line_reg and mean_stddev
+# NOTE: calc_average_HFpressure behaves differently to other stats methods lin_reg and mean_stddev
             av_p_prior  = calc_average_HFpressure(LOOKBACKCOUNT, HI_FREQ_AVG_COUNT) # get average of readings LOOKBACK seconds ago.
             av_p_now    = calc_average_HFpressure(0, HI_FREQ_AVG_COUNT)             # zero offset == immediately prior values
-            actual_pressure_drop = av_p_prior - av_p_now      # Important!  Avoid rounding errors.. avg drop of 0.3 on HT triggered alarm without int()!
+            actual_pressure_drop = round(av_p_prior - av_p_now, 2)     # Important!  Avoid rounding errors.. avg drop of 0.3 on HT triggered alarm without int()!
             # if isRapidDrop(LOOKBACKCOUNT, expected_drop):   # check for rapid drop... if so, then set alarm and turn off pump
-                                    # WARNING: this looks back 120 records ... hence ref to hf_kpa_hiwater above
-# TODO fix hf_xvalues to match y values... if it matters.  LR probably works regardless
 # NOTE: the startidx param is CRITICAL!!  we need to do LR on the data BEFORE pressure dropped...
-            k_slope, k_intercept, stdev_Press, r2 = linear_regression(hf_xvalues, hi_freq_kpa_ring, P_STD_DEV_COUNT, (hi_freq_kpa_index - LOOKBACKCOUNT) % HI_FREQ_RINGSIZE, HI_FREQ_RINGSIZE)
-            slope_drop = abs(k_slope * LOOKBACKCOUNT)
-            SD_drop = stdev_Press * float(config_dict[KPASTDEVMULT] / 10)
+            idx =  (hi_freq_kpa_index - 1 - (LOOKBACKCOUNT - P_STD_DEV_COUNT)) % HI_FREQ_RINGSIZE
+            k_slope, k_intercept, prio_stdev_Press, r2 = linear_regression(hf_xvalues, hi_freq_kpa_ring, P_STD_DEV_COUNT, idx, HI_FREQ_RINGSIZE)
+            slope_drop = round(abs(k_slope) * LOOKBACKCOUNT, 2)     # changed from incorrect P_STD_DEV_COUNT 19/7/25
+            SD_drop = round(prio_stdev_Press * kPa_stdev_mult)
             max_drop = slope_drop + SD_drop
             # max_drop = abs(k_slope * LOOKBACKCOUNT) + stdev_Press * float(config_dict[KPASTDEVMULT])
             # if actual_pressure_drop > zone_max_drop:     # This needs to be zone-specific - even if I don't use quad
@@ -2133,7 +2111,7 @@ def checkForAnomalies()->None:
                     _, H, M, S = secs_to_DHMS(runtime)
                     run_str = f'{H}:{M:02}:{S:02}'
                     # raiseAlarm(f"Pressure DROP after {runmins}:{runseconds:02}. Expected:{expected_drop}", actual_pressure_drop)
-                    raiseAlarm(f"kPa DROP {run_str} after ON  Exceeds calculated max drop:{max_drop} {k_slope=:.4g} {slope_drop=} {SD_drop=}", actual_pressure_drop)
+                    raiseAlarm(f"kPa DROP {run_str} after ON  Exceeds max drop:{max_drop:.1f} {k_slope=:.4f} {r2=:.3f} {slope_drop=:.1f} {SD_drop=:.1f}", actual_pressure_drop)
                     error_ring.add(TankError.PRESSUREDROP)
                     alarm.value(1)                              # this might change... to ONLY if not in TWM/IRRIGATE    
                     # kpa_drop_timer = Timer(period=ALARMTIME * 1000, mode=Timer.ONE_SHOT, callback=kpadrop_cb)
@@ -2167,9 +2145,9 @@ def checkForAnomalies()->None:
             if stdev_Depth > DEPTH_SD_MAX:
                 raiseAlarm("XS D SDEV", stdev_Depth)
                 error_ring.add(TankError.HI_VAR_Dist)
-
-            if kpa_sensor_found and avg_kpa_set:
-                mean_P, stdev_Press = mean_stddev(hi_freq_kpa_ring, P_STD_DEV_COUNT , hi_freq_kpa_index, HI_FREQ_RINGSIZE)
+        # this records the CURRENT stdev_Press... which will go higher on kpadrop.
+            if kpa_sensor_found and read_count_since_ON > P_STD_DEV_COUNT:
+                mean_P, stdev_Press = mean_stddev(hi_freq_kpa_ring, P_STD_DEV_COUNT, hi_freq_kpa_index, HI_FREQ_RINGSIZE)
                 # k_slope, k_intercept, stdev_Press, r2 = linear_regression(hi_freq_kpa_ring, hi_freq_kpa_ring, P_STD_DEV_COUNT,(hi_freq_kpa_index - LOOKBACKCOUNT) % HI_FREQ_RINGSIZE, HI_FREQ_RINGSIZE)
                 if stdev_Press > PRESS_SD_MAX:
                     raiseAlarm("XS P SDEV", stdev_Press)
@@ -2201,11 +2179,10 @@ def abort_pumping(reason:str)-> None:
 
 def check_for_critical_states() -> None:
     if borepump.state:              # pump is ON
-        run_minutes = (time.time() - borepump.last_time_switched) / 60
 
 # This test needs to be done more frequently... after calculating high frequency kpa
-        fast_average = calc_average_HFpressure(0, FAST_AVG_COUNT)     
         if kpa_sensor_found:        # if we have a pressure sensor, check for critical values
+            fast_average = calc_average_HFpressure(0, FAST_AVG_COUNT)
             if fast_average > 0:         # if we have a valid average kPa reading... but MUST be delayed until we have a few readings
                 if fast_average > config_dict[MAXPRESSURE]:
                     raiseAlarm("XS kPa", fast_average)
@@ -2217,6 +2194,7 @@ def check_for_critical_states() -> None:
                     error_ring.add(TankError.NO_PRESSURE)
                     abort_pumping("check_for_critical_states: No pressure")
 
+        run_minutes = (time.time() - borepump.last_time_switched) / 60
         if run_minutes > config_dict[MAXRUNMINS]:               # if pump is on, and has been on for more than max... do stuff!
             raiseAlarm("RUNTIME EXCEEDED", run_minutes)
             error_ring.add(TankError.RUNTIME_EXCEEDED)
@@ -2238,7 +2216,7 @@ def DisplayInfo()->None:
             lcd4x20.move_to(0, 0)
             lcd4x20.putstr(str_0)
             str_0 = f'Idx: {navigator.current_menuindex:3}'
-            lcd4x20.move_to(14, 0)
+            lcd4x20.move_to(12, 0)
             lcd4x20.putstr(str_0)
 
             str_1 = f'{" ":^20}'
@@ -2246,7 +2224,7 @@ def DisplayInfo()->None:
                 it = navigator.get_current_item()
                 par = it[Title_Str]
                 st = it[Value_Str][Step_Str]
-                wv = it[Value_Str]["W_V"]
+                wv = it[Value_Str][Working_Str]
                 str_1 = f'P:{par[0:4]} S:{st:2} V:{wv:4}'
             lcd4x20.move_to(0, 1)
             lcd4x20.putstr(str_1)
@@ -2268,7 +2246,7 @@ def DisplayInfo()->None:
             lcd4x20.putstr(f'EC:{e_code:<4}')
 
             lcd4x20.move_to(8, 0)
-            lcd4x20.putstr(f"S{1 if steady_state else 0}    ")
+            lcd4x20.putstr(f"S{1 if stable_pressure else 0}    ")
 
             lcd4x20.move_to(14, 0)
             lcd4x20.putstr(f"HF:{' ON' if LOGHFDATA else 'OFF'}")
@@ -2278,10 +2256,11 @@ def DisplayInfo()->None:
             lcd4x20.putstr(f'{ut_short} {calc_pump_runtime(borepump)}')        # runtime calcs
 
             lcd4x20.move_to(0, 2)
-            lcd4x20.putstr(f'D {depth:<.2f} R{depth_ROC:>5.2f} ZP {peak_pressure_dict[zone][1]:>3}')                # print depth & state in third line of LCD
+            lcd4x20.putstr(f'D {depth:<.2f} R{depth_ROC:>4.1f} SD {stdev_Depth:>4.1f}')
 
             lcd4x20.move_to(0, 3)
-            lcd4x20.putstr(f'BL:{baseline_pressure:>3} Av:{average_kpa:>3} IP:{hi_freq_kpa_ring[hi_freq_kpa_index]:>3}')        # print depth_ROC in third line of LCD
+            prev_index = (hi_freq_kpa_index - 1) % HI_FREQ_RINGSIZE
+            lcd4x20.putstr(f'ZP {peak_pressure_dict[zone][1]:>3} Av:{average_kpa:>3.0f} IP:{hi_freq_kpa_ring[prev_index]:>3.0f}')
         
         elif info_display_mode == INFO_IRRIG:
         # elif op_mode == OP_MODE_IRRIGATE:
@@ -2307,10 +2286,7 @@ def DisplayInfo()->None:
             lcd4x20.putstr(f'Z:{zone:<3} Min {zone_minimum:<3} ZP {peak_pressure_dict[zone][1]:<3}')
 
     # can ONLY transition here from AUTO... no need to update row 3
-
-            # lcd4x20.move_to(0, 3)
-            # lcd4x20.putstr(f'BL:{baseline_pressure:3} Av:{average_kpa:3} IP:{hi_freq_kpa_ring[hi_freq_kpa_index]:3}')        # print depth_ROC in third line of LCD
-        
+       
         elif info_display_mode == INFO_DIAG:
         # can ONLY transition here from IRRIG-1... only need to update row 0
             # e_code = ""
@@ -2322,7 +2298,7 @@ def DisplayInfo()->None:
             # lcd4x20.putstr(f'EC:{e_code:<4}')
 
             # lcd4x20.move_to(8, 0)
-            # lcd4x20.putstr(f"S{1 if steady_state else 0}")  
+            # lcd4x20.putstr(f"S{1 if stable_pressure else 0}")  
 
             # lcd4x20.move_to(14, 0)
             # lcd4x20.putstr(f"HF:{' ON' if LOGHFDATA else 'OFF'}")
@@ -2340,12 +2316,11 @@ def DisplayInfo()->None:
                     secs_remaining = timer_mgr.get_time_remaining(DISABLE_TIMER_NAME)
                     _, remain_hrs, remain_mins, remain_secs = secs_to_DHMS(secs_remaining)
                     remain_str = f'{remain_hrs:02}:{remain_mins:02}:{remain_secs:02}'
-                # print(f'Updated disable remain time: {remain_str}')
             lcd4x20.move_to(0, 1)
             lcd4x20.putstr(f'M:{opm_str} R: {remain_str}')
 
             lcd4x20.move_to(0, 2)
-            lcd4x20.putstr(f'R#:{rec_num:>6}')
+            lcd4x20.putstr(f'R#:{rec_num:>6} C#:{read_count_since_ON:>6}')
         
         elif info_display_mode == INFO_MAINT:       # MAINTENANCE mode
             lcd4x20.move_to(0, 0)
@@ -2365,9 +2340,9 @@ def DisplayInfo()->None:
             lcd4x20.move_to(0, 1)
             lcd4x20.putstr(f'{"I_D_M Invalid":^20}')
  
-    # lcd4x20.putstr(f'lvl:{len(navigator.current_level)} {navigator.current_index} {baseline_pressure:3}')        # print op_mode in third line of LCD
     # lcd4x20.move_to(0, 4)                # move to fourth line of LCD
     # lcd4x20.putstr(f'nav mode: {navigator.mode:<10}')        # print navigator.mode in fourth line of LCD
+
 
 def DisplayData()->None:
     if ui_mode != UI_MODE_MENU:             # suspend overwriting LCD whist in MENU
@@ -2421,7 +2396,10 @@ def DisplayData()->None:
             else:
                 display_str = "IRRIG MODE...??"
         elif op_mode == OP_MODE_DISABLED:
-            display_str = pressure_str          # just show pressure
+            if display_mode == "depth":
+                display_str = depth_str
+            elif display_mode == "pressure":
+                display_str = pressure_str
         elif op_mode == OP_MODE_MAINT:
             display_str = "MAINT MODE"
         else:
@@ -2629,15 +2607,15 @@ def init_ringbuffers():
     hi_freq_kpa_index = 0
 
 def init_all():
-    global borepump, steady_state, free_space_KB, presspump, vbus_status, vbus_on_time, report_outage
+    global borepump, free_space_KB, presspump, vbus_status, vbus_on_time, report_outage
     global display_mode, navigator, encoder_count, encoder_btn_state, enc_a_last_time, enc_btn_last_time, modebtn_last_time
     global slist, program_pending, sys_start_time, rotary_btn_pressed, kpa_sensor_found
     global nav_btn_state, nav_btn_last_time
-    global baseline_pressure, baseline_set, zone, zone_max_drop, zone_minimum, zone_maximum, hf_kpa_hiwater, stable_pressure, average_kpa, last_ON_time
+    global zone, zone_max_drop, zone_minimum, zone_maximum, stable_pressure, average_kpa, last_ON_time, kPa_stdev_mult
     global ONESECBLINK, lcd_timer
     global ut_long, ut_short
     global stdev_Depth, stdev_Press
-    global LOGHFDATA
+    global LOGHFDATA, read_count_since_ON
 
     PS_ND               = "Pressure sensor not detected"
     str_msg             = "At startup, BorePump is "
@@ -2652,7 +2630,7 @@ def init_all():
     nav_btn_state       = False
 
     ev_log.write(f"\n{now_time_long()} Pump Monitor starting - SW ver:{SW_VERSION}  ")      # no \n...
-    ev_log.write(f'params ({config_dict[DELAY]}s, {int(PRESSURE_PERIOD_MS/1000)}ms, {DEPTHRINGSIZE})\n')
+    ev_log.write(f'params ({config_dict[DELAY]}s, {int(PRESSURE_PERIOD_MS/1000)}ms, {DEPTHRINGSIZE=})\n')
     
     slist=[]
 
@@ -2687,15 +2665,18 @@ def init_all():
     navigator.set_program_list(program_list)
     #  Note: filelist is set in show_dir
 
+    sync_programlist_to_menu()
+
     free_space_KB = free_space()
     if free_space_KB < FREE_SPACE_LOWATER:
+        print(f'Low free-space: {free_space_KB} Calling make_more_space')
         raiseAlarm("Free space", free_space_KB)
         error_ring.add(TankError.NOFREESPACE)                    
         make_more_space()
 
 # ensure we start out right...
-    steady_state        = False
     stable_pressure     = False
+    read_count_since_ON = 0
     now                 = time.time()
     if vbus_sense.value():
         vbus_status     = True
@@ -2711,13 +2692,11 @@ def init_all():
     sys_start_time      = now            # must be AFTER we set clock ...
     
     average_kpa         = 0
-    hf_kpa_hiwater      = 0              # this is in effect a count of seconds(samples) since the borepump was turned ON, modulo the size of the ring buffer
-    baseline_set        = False
-    baseline_pressure   = 0
     zone                = "???"
     zone_minimum        = 0
     zone_maximum        = 0
     zone_max_drop       = 15            # check after more tests
+    kPa_stdev_mult      = float(config_dict[KPASTDEVMULT])      # this is now just default starting value... overwritten in set_zone
     last_ON_time        = 0
     ut_short            = ""
     ut_long             = ""
@@ -2816,9 +2795,6 @@ def do_enter_process():
     else:
         print(f'Huh? {ui_mode=}')
 
-    # if ui_mode == UI_MODE_NORM:
-    #     Change_Mode(UI_MODE_MENU)
-
 # def sim_pressure_pump_detect(x)->bool:            # to be hacked when I connect the CT circuit
 #     p = random.random()
 
@@ -2875,8 +2851,8 @@ async def read_pressure()->None:
 
     Also, rapid check for excess pressure... if so, turn off pump and solenoid.
     """
-    global hi_freq_kpa_ring, hi_freq_kpa_index, hf_kpa_hiwater, kpa_peak, time_peak, kpa_low, stable_pressure
-
+    global hi_freq_kpa_ring, hi_freq_kpa_index, kpa_peak, time_peak, kpa_low, stable_pressure
+    global read_count_since_ON
     try:
         while True:
             if SIMULATE_KPA:
@@ -2885,24 +2861,23 @@ async def read_pressure()->None:
                 raw_val, bpp = get_pressure()
             # print(f"Press: {bpp:>3} kPa, {hi_freq_kpa_index=}")
             if bpp > kpa_peak:
-                kpa_peak = bpp       # record peak value.  Will be reset on borepump_ON, and fixed in set_baseline
+                kpa_peak = bpp       # record peak value.  Will be reset on borepump_ON, and fixed in set_zone
                 time_peak = time.time()
             if bpp < kpa_low:
                 kpa_low = bpp
             hi_freq_kpa_ring[hi_freq_kpa_index] = bpp
-    # TODO enter actual time in hf_values buffer here if required
             hi_freq_avg = calc_average_HFpressure(0, HI_FREQ_AVG_COUNT)           # short average count... last few readings
             hi_freq_kpa_index = (hi_freq_kpa_index + 1) % HI_FREQ_RINGSIZE
-            if hi_freq_kpa_index > hf_kpa_hiwater:
-                hf_kpa_hiwater = hi_freq_kpa_index      # for testing if calc average is valid
-            if hf_kpa_hiwater > HI_FREQ_AVG_COUNT:      # 
+            read_count_since_ON += 1
+            if read_count_since_ON > STABLE_KPA_COUNT: 
                 stable_pressure = True                  # need to reset in pump_ON
 
             lcd4x20.move_to(17, 3)
             lcd4x20.putstr(f"{bpp:>3}")
             if LOGHFDATA:       # conditionally, write to logfile... but note I ALWAYS add to the ring buffer
                                 # This gets switched On/OFF depending on pump state... but NOTE: buffer updates happen ALWAYS!
-                hf_log.write(f"{now_time_long()} {bpp:>3} {hi_freq_avg}\n")
+                error_bar = bpp - round(stdev_Press * float(config_dict[KPASTDEVMULT] / 10 ), 2)
+                hf_log.write(f"{now_time_long()} {bpp:>3} {hi_freq_avg} {error_bar}\n")
             if ui_mode == UI_MODE_NORM:
                 if op_mode ==  OP_MODE_AUTO: 
                     if display_mode == "pressure":
@@ -2910,7 +2885,7 @@ async def read_pressure()->None:
                         lcd.setCursor(9, 1)
                         lcd.printout(lstr)
 
-            if hi_freq_avg > config_dict[MAXPRESSURE]:
+            if hi_freq_avg > float(config_dict[MAXPRESSURE]):
                 raiseAlarm("XS H/F kPa", hi_freq_avg)
                 error_ring.add(TankError.EXCESS_KPA)                        
                 # borepump_OFF()
@@ -2925,7 +2900,7 @@ async def read_pressure()->None:
 async def regular_flush(flush_seconds)->None:
     while True:
         tank_log.flush()
-        pp_log.flush()
+        # pp_log.flush()
         ev_log.flush()
         hf_log.flush()
         await asyncio.sleep(flush_seconds)
@@ -3107,7 +3082,7 @@ async def blinkx2():
         await asyncio.sleep_ms(BlinkDelay)     # adjust so I get a 1 second blink... or faster in maintenacne mode
 
 async def do_main_loop():
-    global ev_log, steady_state, rec_num, housetank, system, op_mode
+    global ev_log, rec_num, housetank, system, op_mode
 
     # start doing stuff
     buzzer.value(0)			    # turn buzzer off
@@ -3180,26 +3155,24 @@ async def do_main_loop():
     while True:
         if op_mode != OP_MODE_MAINT:
             updateData()			                # monitor water depth
-            if borepump.state and steady_state:     # stable_pressure set when we have required number of readings to get average_kpa
-                check_for_Baseline_Drift()          # reset baseline pressure if pump is ON.  Don't care if delayed a bit...
-            check_for_critical_states()             # do this regardless of steady_state
+            if borepump.state and read_count_since_ON > FAST_AVG_COUNT:     # stable_pressure set when we have required number of readings to get average_kpa
+                check_for_critical_states()         # fast acting check - mainly for XS KPA
             if op_mode == OP_MODE_AUTO:             # changed, do nothing if OP_MODE_DISABLED or IRRIGATE
-                # if DEBUGLVL > 0: print(f"in DML, op_mode is {op_mode} controlBP() starting")
                 manage_tank_fill()		            # do nothing if in IRRIGATE mode
     #        listen_to_radio()		                # check for badness
             DisplayData()
             DisplayInfo()		                    # info display... one of several views
     # experimental...
             # if op_mode != OP_MODE_IRRIGATE and rec_num % LOG_FREQ == 0:
+            if stable_pressure:
+                checkForAnomalies()	                # test for weirdness
             if rec_num % LOG_FREQ == 0:           
                 LogData()			                # record it
-            if steady_state: checkForAnomalies()	# test for weirdness
             rec_num += 1
-            if rec_num > DEPTHRINGSIZE and not steady_state: steady_state = True    # just ignore data until ringbuf is fully populated
             delay_ms = config_dict[DELAY] * 1000
             if heartbeat():                         # send heartbeat if ON... not if OFF.  For now, anyway
                 delay_ms -= RADIO_PAUSE
-            # print(f"{now_time_long()} main loop: {rec_num=}, {opmode_dict[op_mode]}, {steady_state=}, {delay_ms=}")
+            # print(f"{now_time_long()} main loop: {rec_num=}, {opmode_dict[op_mode]}, {delay_ms=}")
         else:   # we are in OP_MODE_MAINT ... don't do much at all.  Respond to interupts... show stuff on LCD.  Permits examination of buffers etc
             DisplayData()
             DisplayInfo()            
