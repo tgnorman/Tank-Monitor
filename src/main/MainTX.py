@@ -19,6 +19,7 @@ import network
 from PiicoDev_Unified import sleep_ms
 from PiicoDev_VL53L1X import PiicoDev_VL53L1X
 from PiicoDev_Transceiver import PiicoDev_Transceiver
+from PiicoDev_SSD1306 import *
 from umachine import Timer, Pin, ADC, soft_reset, I2C
 from MenuNavigator import MenuNavigator
 from encoder import Encoder
@@ -37,7 +38,7 @@ from utils import now_time_short, now_time_long, format_secs_short, format_secs_
 
 # endregion
 # region INITIALISE
-SW_VERSION          = "20/7/25"      # for display
+SW_VERSION          = "22/7/25"      # for display
 PRODUCTION_MODE     = False         # change to True when no longer in development cycle
 CALIBRATE_MODE      = False
 
@@ -75,9 +76,8 @@ KPARINGSIZE         = 20            # size of ring buffer for pressure logging..
 ERRORRINGSIZE       = 20            # max error log ringbuffer length
 HI_FREQ_RINGSIZE    = 120           # for high frequency pressure logging.  At 1 Hz that's 2 minutes of data
 DEPTHRINGSIZE       = 20            # since adding fast_average in critical_states, this no longer is a concern
-                                    # make 1 for NO averaging... otherwise do an SMA of this period.  Need a ring buffer?
 HI_FREQ_AVG_COUNT   = 5             # for high frequency pressure alarm
-ZONE_AVG_COUNT      = 10                # for zone pressure calculation
+ZONE_AVG_COUNT      = 10            # for zone pressure calculation
 LOOKBACKCOUNT       = 75            # for looking back at pressure history... to see if kPa drop is normal or not
 KPA_DROP_DC         = 2.5           # Ratio of OFF/ON time after kPa drop detected
 MAX_OUTAGE          = 30            # seconds of no power
@@ -171,6 +171,7 @@ INFO_DIAG           = 2
 INFO_MAINT          = -1            # special case... cannot cycle to here, only set explicitly as required
 
 info_display_mode   = INFO_AUTO             # start somewhere
+BAR_THICKNESS       = 15
 
 # Gather all tank-related stuff with a view to making a class...
 housetank           = Tank("Empty")                     # make my tank object
@@ -217,6 +218,7 @@ I2C_NUM_ROWS        = 4
 I2C_NUM_COLS        = 20
 i2c                 = I2C(0, sda=Pin(8), scl=Pin(9), freq=400000)
 lcd4x20             = I2cLcd(i2c, I2C_ADDR, I2C_NUM_ROWS, I2C_NUM_COLS)
+display             = create_PiicoDev_SSD1306()
 
 system              = SimpleDevice()                    # initialise my FSM.
 wf                  = MyWiFi()
@@ -1225,18 +1227,27 @@ def make_more_space()->None:
 
     sorted_by_date = sorted(hitList, key=lambda x: x[2], reverse=True)
     print(f"Files by date:\n{sorted_by_date}")
-    if free_space() < FREE_SPACE_LOWATER:
+    starting_free = free_space()
+    if starting_free < FREE_SPACE_LOWATER:
+        count = 0
         ev_log.write(f"{now_time_long()} Deleting files\n")
-        while free_space() < FREE_SPACE_HIWATER and len(sorted_by_date) > 0:
+        while len(sorted_by_date) > 0 and free_space() < FREE_SPACE_HIWATER:
             datafile = sorted_by_date[0][0]
             print(f"removing file {datafile}")
-            uos.remove(datafile)
-            ev_log.write(f"{now_time_long()} Removed file {datafile} size {sorted_by_date[0][1]} Kb\n")
+            try:
+                uos.remove(datafile)
+                ev_log.write(f"{now_time_long()} Removed file {datafile} size {sorted_by_date[0][1]} Kb\n")
+                count += 1
+            except Exception as e:
+                print(f'Dang... {e}')   # probably looking at current/open file... just move on
             sorted_by_date.pop(0)
 
-        fs = free_space()
-        print(f"After cleanup: {fs} Kb")
-        ev_log.write(f"{now_time_long()} free space {fs}")
+        ending_free = free_space()
+        reclaimed = ending_free - starting_free
+        print(f"After cleanup: {ending_free} Kb")
+        ev_log.write(f"{now_time_long()} free space {ending_free}.  Reclaimed {reclaimed} Kb in {count} files\n")
+        lcd.setCursor(0, 1)
+        lcd.printout(f'Saved {reclaimed} Kb')
 
 def enter_maint_mode_reason(reason:str)->None:
     global op_mode, info_display_mode, BlinkDelay, maint_mode_time
@@ -1320,12 +1331,12 @@ def toggle_HFLOGGING():
     lcd.printout(f'LOGHFDATA {' ON' if LOGHFDATA else 'OFF'}')
 
 Item_Str    = "items"
-Title_Str  = "title"
-Value_Str  = "value"
+Title_Str   = "title"
+Value_Str   = "value"
 Action_Str  = "action"
-Step_Str   = "Step"
-Default_Str= "D_V"
-Working_Str= "W_V"
+Step_Str    = "Step"
+Default_Str = "D_V"
+Working_Str = "W_V"
 
 # added new admin menu section...
 new_menu = {
@@ -1635,6 +1646,7 @@ def lcd_off(pin):
     if ui_mode != UI_MODE_MENU:
         lcd.setRGB(0,0,0)
         lcd4x20.backlight_off()
+        display.poweroff()
 
 def lcd_on():
     if ui_mode == UI_MODE_MENU:
@@ -1642,6 +1654,7 @@ def lcd_on():
     else:
         lcd.setRGB(170,170,138)
     lcd4x20.backlight_on()
+    display.poweron()
 
 # async def check_lcd_btn():
 #     global lcdbtnflag
@@ -2407,6 +2420,17 @@ def DisplayData()->None:
         lcd.setCursor(0, 1)
         lcd.printout(f"{display_str:<16}")
 
+def DisplayGraph():
+    scaled_bar   = int(depth * 1000 * WIDTH / Tank_Height)
+    # print(f'{scaled_bar=}')
+    percent      = int(100*depth*1000/Tank_Height)
+    display.fill(0)
+    display.text(f"Depth/kPa  {percent:>2}%", 0, 0, 1)
+
+    # display.updateGraph2D(graphkPa, scaled_press)
+    display.fill_rect(0, HEIGHT-BAR_THICKNESS, scaled_bar, BAR_THICKNESS, 1)
+    display.show()
+
 def LogData()->None:
     global level_init
     global last_logged_depth
@@ -2639,6 +2663,8 @@ def init_all():
     lcd4x20.clear()
     lcd4x20.display_on()
     lcd4x20.backlight_on()
+    display.fill(0)
+    display.show()   
 
 # Get the current pump state and init my object    
     borepump            = Pump("BorePump", get_initial_pump_state())
@@ -3160,8 +3186,11 @@ async def do_main_loop():
             if op_mode == OP_MODE_AUTO:             # changed, do nothing if OP_MODE_DISABLED or IRRIGATE
                 manage_tank_fill()		            # do nothing if in IRRIGATE mode
     #        listen_to_radio()		                # check for badness
+            # display.text(pressure_str, 0, 20)
+            # display.show()  
             DisplayData()
             DisplayInfo()		                    # info display... one of several views
+            DisplayGraph()
     # experimental...
             # if op_mode != OP_MODE_IRRIGATE and rec_num % LOG_FREQ == 0:
             if stable_pressure:
@@ -3175,7 +3204,9 @@ async def do_main_loop():
             # print(f"{now_time_long()} main loop: {rec_num=}, {opmode_dict[op_mode]}, {delay_ms=}")
         else:   # we are in OP_MODE_MAINT ... don't do much at all.  Respond to interupts... show stuff on LCD.  Permits examination of buffers etc
             DisplayData()
-            DisplayInfo()            
+            DisplayInfo()  
+            DisplayGraph()
+        
         await asyncio.sleep_ms(delay_ms)
 
 # endregion
