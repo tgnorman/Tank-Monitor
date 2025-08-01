@@ -16,8 +16,8 @@ class TankError:
     HFKPA_ZONEMAX       = 13
     ZONE_NOTFOUND       = 14
     AVG_KPA_ZERO        = 15
-    HI_VAR_Pres         = 16
-    HI_VAR_Dist         = 17,
+    HI_VAR_PRES         = 16
+    HI_VAR_DIST         = 17
     MAX_REPEAT_EVENT    = 100
 
     def __init__(self):
@@ -39,8 +39,8 @@ class TankError:
             self.HFKPA_ZONEMAX:     ("ZMXX", "Zone MAX exceeded"),
             self.ZONE_NOTFOUND:     ("ZNF",  "Zone not found"),
             self.AVG_KPA_ZERO:      ("AKP0", "Avg kPa zero"),
-            self.HI_VAR_Pres:       ("XVP",  "Hi P Variance"),
-            self.HI_VAR_Dist:       ("XVD",  "Hi D Variance"),
+            self.HI_VAR_PRES:       ("XVP",  "Hi P Variance"),
+            self.HI_VAR_DIST:       ("XVD",  "Hi D Variance"),
             self.MAX_REPEAT_EVENT:  ("XREP", "Max repeated events")
         }
     
