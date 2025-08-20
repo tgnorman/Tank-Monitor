@@ -38,7 +38,7 @@ from utils import now_time_short, now_time_long, format_secs_short, format_secs_
 
 # endregion
 # region INITIALISE
-SW_VERSION          = "1/8/25 22:07"      # for display
+SW_VERSION          = "16/8/25 23:00"      # for display
 DEBUGLVL            = 0
 
 # micropython.mem_info()
@@ -96,17 +96,18 @@ kpaindex            = 0             # for scrolling through pressure logs on scr
 # endregion
 # region COUNTERS
 # Counters... for averaging or event timing
-HI_FREQ_AVG_COUNT   = 5             # for high frequency pressure alarm
+HI_FREQ_AVG_COUNT   = 5             # for high frequency pressure check
 ZONE_AVG_COUNT      = 10            # for zone pressure calculation
+AVG_KPA_COUNT       = 30
 LOOKBACKCOUNT       = 75            # for looking back at pressure history... to see if kPa drop is normal or not
 MAX_OUTAGE          = 30            # seconds of no power
-ALARMTIME           = 10            # seconds of alarm on/off time
+ALARMTIME           = 10            # seconds of beep on/off time
 STABLE_KPA_COUNT    = 75            # time to allow kPa to settle
-AVG_KPA_DELAY       = 30            # seconds to wait before taking average pressure
-ZONE_DELAY          = 60            # seconds to wait before taking zone pressure.  Needs to be large enough to ensure calc_average doesn't crap out
 FAST_AVG_COUNT      = 3             # for checking critical pressure states
 D_STD_DEV_COUNT     = 10            # standard deviation calcs
 P_STD_DEV_COUNT     = 60
+ZONE_DELAY          = 60            # seconds to wait before taking zone pressure.  Needs to be large enough to ensure calc_average doesn't crap out
+AVG_KPA_DELAY       = AVG_KPA_COUNT + 5   # seconds to wait before taking average pressure, ensures enough values recorded
 # endregion
 # region PRESSURE
 # Pressure related things
@@ -153,11 +154,10 @@ level_init          = False 		# to get started
 # Pins
 #vsys                = ADC(3)                            # one day I'll monitor this for over/under...
 temp_sensor         = ADC(4)			                # Internal temperature sensor is connected to ADC channel 4
-lcdbtn 	            = Pin(6, Pin.IN, Pin.PULL_UP)		# check if IN is correct!
-buzzer 		        = Pin(16, Pin.OUT)
-presspmp            = Pin(15, Pin.IN, Pin.PULL_UP)      # prep for pressure pump monitor.  Needs output from opamp circuit
-prsspmp_led         = Pin(14, Pin.OUT)
 solenoid            = Pin(2, Pin.OUT, value=0)          # MUST ensure we don't close solenoid on startup... pump may already be running !!!  Note: Low == Open
+lcdbtn 	            = Pin(6, Pin.IN, Pin.PULL_UP)		# check if IN is correct!
+presspmp            = Pin(15, Pin.IN, Pin.PULL_UP)      # prep for pressure pump monitor.  Needs output from opamp circuit
+alarm 		        = Pin(16, Pin.OUT)                  # emergency situation !! Needs action taken...
 vbus_sense          = Pin('WL_GPIO2', Pin.IN)           # external power monitoring of VBUS
 led                 = Pin('LED', Pin.OUT)
 bp_pressure         = ADC(0)                            # read line pressure
@@ -165,9 +165,9 @@ bp_pressure         = ADC(0)                            # read line pressure
 # add buttons for 5-way nav control
 nav_up 	            = Pin(10, Pin.IN, Pin.PULL_UP)		# UP button
 nav_dn 	            = Pin(11, Pin.IN, Pin.PULL_UP)		# DOWN button  
-nav_OK              = Pin(7,  Pin.IN, Pin.PULL_UP)		# SELECT button
 nav_L               = Pin(12, Pin.IN, Pin.PULL_UP)		# LEFT button
 nav_R               = Pin(13, Pin.IN, Pin.PULL_UP)		# RIGHT button  
+nav_OK              = Pin(14, Pin.IN, Pin.PULL_UP)		# SELECT button
 
 # Create pins for encoder lines and the onboard button
 
@@ -178,7 +178,7 @@ px                  = Pin(20, Pin.IN)
 py                  = Pin(19, Pin.IN)
 last_time           = 0
 
-alarm               = Pin(21, Pin.OUT)                  # for testing alarm buzzer
+beeper              = Pin(21, Pin.OUT)                  # for audible feedback
 infomode            = Pin(27, Pin.IN, Pin.PULL_UP)      # for changing display mode
 
 TEMP_CONV_FACTOR 	= 3.3 / 65535   # looks like 3.3V / max res of 16-bit ADC ??
@@ -438,7 +438,6 @@ def toggle_borepump(x:Timer):
             print(f"Creating timer for index {sl_index}, {slist[sl_index]}, {diff=}")
             timer_mgr.create_timer(TWM_TIMER_NAME, period=diff*TIMERSCALE*1000, callback=toggle_borepump)
 
-            # toggle_timer = Timer(period=diff*TIMERSCALE*1000, mode=Timer.ONE_SHOT, callback=toggle_borepump)
             # print(f"{timer_state=}")
         else:
             prog_str = f"{now_time_long()} Ending timed watering..."
@@ -799,18 +798,22 @@ def my_reset():
     lcd4x20.backlight_off()
     soft_reset()
 
+def cancel_alarm()->None:
+    ev_log.write(f"{now_time_long()} ALARM CANCELLED!\n")
+    alarm.value(0)
+
 def beepx3()->None:
-    alarm.value(1)
+    beeper.value(1)
     sleep_ms(100)
-    alarm.value(0)
+    beeper.value(0)
     sleep_ms(100)
-    alarm.value(1)
+    beeper.value(1)
     sleep_ms(100)
-    alarm.value(0)
+    beeper.value(0)
     sleep_ms(100)
-    alarm.value(1)
+    beeper.value(1)
     sleep_ms(100)
-    alarm.value(0)
+    beeper.value(0)
 
 def hardreset():
     pass
@@ -818,7 +821,7 @@ def hardreset():
 def flush_data():
     tank_log.flush()
     ev_log.flush()
-    # pp_log.flush()
+    pp_log.flush()
     hf_log.flush()
     lcd.setCursor(0,1)
     lcd.printout(f'{"Logs flushed":<16}')
@@ -828,13 +831,13 @@ def housekeeping(close_files: bool)->None:
     start_time = ticks_us()
     tank_log.flush()
     ev_log.flush()
-    # pp_log.flush()
+    pp_log.flush()
     hf_log.flush()
     end_time = ticks_us()
     if close_files:
         tank_log.close()
         ev_log.close()
-        # pp_log.close()
+        pp_log.close()
         hf_log.close()
     print(f"Cleanup completed in {int(ticks_diff(end_time, start_time) / 1000)} ms")
 
@@ -872,8 +875,8 @@ def shutdown()->None:
     tank_log.close()
     ev_log.flush()
     ev_log.close()
-    # pp_log.flush()
-    # pp_log.close()
+    pp_log.flush()
+    pp_log.close()
     hf_log.flush()
     hf_log.close()
 
@@ -1159,9 +1162,9 @@ def roll_logs()-> None:
     if tank_log is not None:
         tank_log.flush()
         tank_log.close()
-    # if pp_log is not None:
-    #     pp_log.flush()
-    #     pp_log.close()
+    if pp_log is not None:
+        pp_log.flush()
+        pp_log.close()
     if ev_log is not None:
         ev_log.flush()
         ev_log.close()
@@ -1251,6 +1254,7 @@ new_menu = {
           { Title_Str: "Email evlog",   Action_Str: send_log},
           { Title_Str: "Email tank",    Action_Str: send_tank_logs},
           { Title_Str: "Email HFlog",   Action_Str: send_last_HF_data},
+          { Title_Str: "CANCEL ALARM",  Action_Str: cancel_alarm},
           { Title_Str: "Go Back",       Action_Str: my_go_back}
         ]
       },
@@ -1584,13 +1588,13 @@ def init_logging():
     shortyear       = str(year)[2:]
     datestr         = f"{shortyear}{month:02}{day:02}"
     tanklogname     = f'tank {datestr}.txt'
-    # pplogname       = f'pres {datestr}.txt'
+    pplogname       = f'pres {datestr}.txt'
     eventlogname    = f'BPEV {datestr}.txt'
     hfkpaname       = f'HF {datestr}.txt'
     try:
         tank_log        = open(tanklogname, "a")
         ev_log          = open(eventlogname, "a")
-        # pp_log          = open(pplogname, "a")
+        pp_log          = open(pplogname, "a")
         hf_log          = open(hfkpaname, "a")
     except Exception as e:
         print(f'Init_logging: file open exception - {e}')
@@ -1674,8 +1678,8 @@ def set_zone(timer: Timer):
 def set_average_kpa(timer: Timer):
     global average_kpa, avg_kpa_set
 
-    if read_count_since_ON >= AVG_KPA_DELAY:
-        tmp = calc_average_HFpressure(0, AVG_KPA_DELAY)  # get average of last AVG_KPA_DELAY readings
+    if read_count_since_ON > AVG_KPA_COUNT:
+        tmp = calc_average_HFpressure(0, AVG_KPA_COUNT)  # get average of last AVG_KPA_COUNT readings
         if tmp > 0:
             average_kpa = round(tmp, 2)
             print("set_average_kpa callback: Average kPa set: ", average_kpa)
@@ -1686,8 +1690,8 @@ def set_average_kpa(timer: Timer):
             print("set_average_kpa: Yikes!! Buffer has data, but average_kpa is 0")
             for i in range(5): print(f"{hi_freq_kpa_ring[hi_freq_kpa_index - i - 1]} ", end=" ")
     else:
-        print('set_average_kpa: rcso <= AVG_KPA_DELAY.  Should not happen')
-        event_ring.add('set_average_kpa: rcso <= AVG_KPA_DELAY.  Should not happen')
+        print('set_average_kpa: rcso <= AVG_KPA_COUNT.  Should not happen')
+        event_ring.add('set_average_kpa: rcso <= AVG_KPA_COUNT.  Should not happen')
         timer.init(period=15 * 1000, mode=Timer.ONE_SHOT, callback=set_average_kpa)   # type: ignore
 
 def updateData():
@@ -1709,8 +1713,8 @@ def updateData():
     depth_str = f"{housetank.depth/1000:.2f}m " + tank_is
     # print(f"In updateData: ADC value: {pv}")
     # bp_kpa = kparing[kpaindex]        # get last kPa reading
-    if read_count_since_ON >= AVG_KPA_DELAY:
-        tmp = int(calc_average_HFpressure(0, AVG_KPA_DELAY))  # get average of last AVG_KPA_DELAY readings.
+    if read_count_since_ON >= AVG_KPA_COUNT:
+        tmp = int(calc_average_HFpressure(0, AVG_KPA_COUNT))  # get average of last AVG_KPA_COUNT readings.
         if tmp > 0:
             average_kpa = tmp
             avg_kpa_set = True
@@ -1847,9 +1851,9 @@ def borepump_OFF(reason:str):
 def manage_tank_fill():
     global tank_is
     if tank_is == housetank.fill_states[0]:		# Overfull
-        buzzer.value(1)			        # raise alarm
+        alarm.value(1)			        # raise alarm
     else:
-        buzzer.value(0)
+        alarm.value(0)
     if tank_is == housetank.fill_states[len(housetank.fill_states) - 1]:		# Empty
         if not borepump.state:		# pump is off, we need to switch on
             if op_mode == OP_MODE_AUTO:
@@ -1895,12 +1899,12 @@ def cancel_deadtime(timer:Timer)->None:
         borepump_ON("Resuming after pause")       # this is really the critical bit !!
 
 def kpadrop_cb(timer:Timer)->None:
-    global alarm, op_mode, previous_op_mode, last_ON_time
+    global beeper, op_mode, previous_op_mode, last_ON_time
 
     # logstr = f'{now_time_long()} kpadrop_cb called'
     # ev_log.write(f'{logstr}\n')
 
-    alarm.value(0)                  # turn off alarm
+    beeper.value(0)                  # turn off alarm
     
     # if kpa_drop_timer is not None:  # kill this timer
     #     kpa_drop_timer.deinit()
@@ -1923,7 +1927,7 @@ def kpadrop_cb(timer:Timer)->None:
     _, recovery_hrs, recovery_mins, recovery_secs = secs_to_DHMS(recovery_seconds)
     recovery_duration = f'{recovery_hrs}:{recovery_mins:02}:{recovery_secs:02}'
     # disable_timer = Timer(period=recovery_time*1000, mode=Timer.ONE_SHOT, callback=cancel_deadtime)
-    
+
     timer_mgr.create_timer(DISABLE_TIMER_NAME, recovery_seconds * 1000, cancel_deadtime)
     drop_str = f"{now_time_long()} kPa DROP detected in {opmode_dict[previous_op_mode]} zone {zone}- disabling operation for {recovery_duration}"
     ev_log.write(drop_str + "\n")
@@ -2012,7 +2016,7 @@ def checkForAnomalies()->None:
                     # raiseAlarm(f"Pressure DROP after {runmins}:{runseconds:02}. Expected:{expected_drop}", actual_pressure_drop)
                     raiseAlarm(f"kPa DROP {run_str} after ON  Exceeds max drop:{max_drop:.1f} {k_slope=:.4f} {r2=:.3f} {slope_drop=:.1f} {SD_drop=:.1f}", actual_pressure_drop)
                     error_ring.add(TankError.PRESSUREDROP)
-                    alarm.value(1)                              # this might change... to ONLY if not in TWM/IRRIGATE    
+                    beeper.value(1)                              # this might change... to ONLY if not in TWM/IRRIGATE    
                     # kpa_drop_timer = Timer(period=ALARMTIME * 1000, mode=Timer.ONE_SHOT, callback=kpadrop_cb)
                     timer_mgr.create_timer(KPA_DROP_TIMER_NAME, ALARMTIME * 1000, kpadrop_cb)
 
@@ -2820,7 +2824,7 @@ async def read_pressure()->None:
 async def regular_flush(flush_seconds)->None:
     while True:
         tank_log.flush()
-        # pp_log.flush()
+        pp_log.flush()
         ev_log.flush()
         hf_log.flush()
         await asyncio.sleep(flush_seconds)
@@ -3005,8 +3009,8 @@ async def do_main_loop():
     global ev_log, rec_num, housetank, system, op_mode
 
     # start doing stuff
-    buzzer.value(0)			    # turn buzzer off
     alarm.value(0)			    # turn alarm off
+    beeper.value(0)			    # turn beeper off
     lcd.clear()
     lcd_on()
     #radio.rfm69_reset
