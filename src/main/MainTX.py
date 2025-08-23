@@ -34,11 +34,14 @@ from TimerManager import TimerManager
 from stats import mean_stddev, linear_regression
 from ringbuffer import RingBuffer, DuplicateDetectingBuffer
 from utils import now_time_short, now_time_long, format_secs_short, format_secs_long, now_time_tuple
+from Pushbutton import Pushbutton
+#import aioprof
+
 # from math import sqrt  # MicroPython does include math
 
 # endregion
 # region INITIALISE
-SW_VERSION          = "16/8/25 23:00"      # for display
+SW_VERSION          = "23/8/25 18:00"      # for display
 DEBUGLVL            = 0
 
 # micropython.mem_info()
@@ -163,10 +166,10 @@ led                 = Pin('LED', Pin.OUT)
 bp_pressure         = ADC(0)                            # read line pressure
 
 # add buttons for 5-way nav control
-nav_up 	            = Pin(10, Pin.IN, Pin.PULL_UP)		# UP button
-nav_dn 	            = Pin(11, Pin.IN, Pin.PULL_UP)		# DOWN button  
-nav_L               = Pin(12, Pin.IN, Pin.PULL_UP)		# LEFT button
-nav_R               = Pin(13, Pin.IN, Pin.PULL_UP)		# RIGHT button  
+nav_UP 	            = Pin(10, Pin.IN, Pin.PULL_UP)		# UP button
+nav_DN 	            = Pin(11, Pin.IN, Pin.PULL_UP)		# DOWN button  
+nav_RR              = Pin(12, Pin.IN, Pin.PULL_UP)		# RIGHT button
+nav_LL              = Pin(13, Pin.IN, Pin.PULL_UP)		# LEFT button  
 nav_OK              = Pin(14, Pin.IN, Pin.PULL_UP)		# SELECT button
 
 # Create pins for encoder lines and the onboard button
@@ -366,7 +369,7 @@ program_list = [
               ("Cycle4", {"init" : 1, "run" : 24, "off" : 1})]
 
 # zone_list... zone ID, min, start-up, max pressures, SD multiplier, quadratic eq  a,b,c coefficients, and zone_max_drop
-# TODO ... need to test each zone's starting pressure...from full bore state, and adjust the min/max values accordingly.
+# TODO need to test each zone's starting pressure...from full bore state, and adjust the min/max values accordingly.
 # TODO revisit SD multiplier lookups
 # Then... when we have no water shortage, run for extended period to get quadratic profile of each zone.
 zone_list:list[tuple[str, int, int, int, float, float, float, int, int]] = [
@@ -746,7 +749,7 @@ def my_go_back():
     #     navigator.go_back()
                
 def show_program():
-    navigator.mode = "view_program"
+    navigator.mode = "view_prgrm"
                
 def show_events():
     navigator.set_display_list("events")
@@ -796,6 +799,8 @@ def my_reset():
     lcd.setRGB(0,0,0)
     lcd4x20.display_off()
     lcd4x20.backlight_off()
+    display.poweroff()
+
     soft_reset()
 
 def cancel_alarm()->None:
@@ -1208,6 +1213,10 @@ def toggle_HFLOGGING():
     lcd.setCursor(0, 1)
     lcd.printout(f'LOGHFDATA {' ON' if LOGHFDATA else 'OFF'}')
 
+def toggle_click()->None:
+    global btn_click
+    btn_click = not btn_click
+
 Item_Str    = "items"
 Title_Str   = "title"
 Value_Str   = "value"
@@ -1264,7 +1273,7 @@ new_menu = {
           { Title_Str: "Set Config->",
             Item_Str: [                  # items[3][0]
                 { Title_Str : DELAY,         Value_Str: {Default_Str: 15,   Working_Str : MYDELAY,              Step_Str : 5}},
-                { Title_Str : LCD,           Value_Str: {Default_Str: 5,    Working_Str : lcd_on_time,          Step_Str : 2}},
+                { Title_Str : LCD,           Value_Str: {Default_Str: 60,   Working_Str : lcd_on_time,          Step_Str : 2}},
                 { Title_Str : MINDIST_STR,   Value_Str: {Default_Str: 500,  Working_Str : housetank.min_dist,   Step_Str : 100}},
                 { Title_Str : MAXDIST_STR,   Value_Str: {Default_Str: 1400, Working_Str : housetank.max_dist,   Step_Str : 100}},
                 { Title_Str : MAXPRESSURE,   Value_Str: {Default_Str: 700,  Working_Str : MAX_LINE_PRESSURE,    Step_Str : 25}},                
@@ -1298,6 +1307,7 @@ new_menu = {
           { Title_Str: "Flush",             Action_Str: flush_data},
           { Title_Str: "Make Space",        Action_Str: make_more_space},
           { Title_Str: "Test Beep",         Action_Str: beepx3},
+          { Title_Str: "Toggle Click",      Action_Str: toggle_click},
           { Title_Str: "Toggle HFLOG",      Action_Str: toggle_HFLOGGING},
           { Title_Str: "Toggle PROD",       Action_Str: toggle_prod_mode},
           { Title_Str: "Toggle CALIB",      Action_Str: toggle_calibration_mode},
@@ -1313,23 +1323,11 @@ new_menu = {
     ]
 }
 
-# def encoder_a_IRQ(pin):
-#     global enc_a_last_time, encoder_count
-
-#     new_time = ticks_ms()
-#     if (new_time - enc_a_last_time) > DEBOUNCE_ROTARY:
-#         if enc_a.value() == enc_b.value():
-#             encoder_count += 1
-#             # print("+", end="")
-#             # navigator.next()
-#         else:
-#             encoder_count -= 1
-#             # navigator.previous()
-#     else:
-#         print(".", end="")
-#     # print(encoder_count)
-#     enc_a_last_time = new_time
-
+def click()->None:
+    beeper.value(1)
+    sleep_ms(30)
+    beeper.value(0)
+    
 def encoder_btn_IRQ(pin):
     global enc_btn_last_time, encoder_btn_state
 
@@ -1387,6 +1385,66 @@ def enc_cb(pos, delta):
         else:
             encoder_count -= 1
 
+def enc_press()->None:
+    do_enter_process()
+
+def btn_OK()->None:
+    if btn_click : click()
+
+    if ui_mode == UI_MODE_MENU:
+        navmode = navigator.mode
+        if navmode == "menu":
+            exit_menu()   
+        elif "view" in navmode:
+            # print("--> go_back")
+            navigator.go_back()
+        elif navmode == "value_change":     # TODO make all these things consts def'd in Navigator class
+            # print("--> set")
+            navigator.set()
+    elif ui_mode == UI_MODE_NORM:
+        # print("in do_enter_process: Entering MENU mode")
+        Change_Mode(UI_MODE_MENU)
+        # ui_mode = UI_MODE_MENU
+        navigator.go_to_start()
+        navigator.display_current_item()
+    else:
+        print(f'Huh? {ui_mode=}')
+    DisplayInfo()
+
+def btn_UP()->None:
+    if btn_click : click()
+    navmode = navigator.mode
+    if navmode == "menu":    
+        navigator.go_back()
+    elif "view" in navmode:
+        navigator.goto_first()
+    elif navmode == "value_change":
+        navigator.go_back()
+    DisplayInfo()
+
+def btn_DN()->None:
+    if btn_click : click()
+    navmode = navigator.mode
+    if navmode == "menu":
+        navigator.enter()   # this is the down button   
+    elif "view" in navmode:
+        # print("--> goto last")
+        navigator.goto_last()
+    elif navmode == "value_change":
+        # print("--> set_default")
+        navigator.set_default()
+    DisplayInfo()
+
+def btn_LL()->None:
+    if btn_click : click()
+    navigator.previous()
+    DisplayInfo()     # shouldn't be necessary, next/prev don'tchange mode... but might change IDX ???
+
+def btn_RR()->None:
+    if btn_click : click()
+    navigator.next()
+    DisplayInfo()
+
 def nav_up_cb(pin):
     global nav_btn_state, nav_btn_last_time
 
@@ -1394,15 +1452,7 @@ def nav_up_cb(pin):
     if (new_time - nav_btn_last_time) > DEBOUNCE_BUTTON:
         nav_btn_state = True
         print("U", end="")
-        # navmode = navigator.mode
-        # if navmode == "menu":
-        #     exit_menu()
-        # elif navmode == "value_change":
-        #     if len(navigator.current_level) > 1:
-        #         navigator.go_back()       # this is the up button
-        # elif "view" in navmode:
-        #     # print("--> goto first")
-        #     navigator.goto_first()
+
         navigator.go_back()       # this is the up button... ALWAYS goes up a level
         DisplayInfo()
     nav_btn_last_time = new_time
@@ -1439,8 +1489,8 @@ def nav_OK_cb(pin):
                 exit_menu()
             elif navmode == "value_change":
                 navigator.set()     # this is the select button
-            elif navmode == "wait":     # TODO Review wait mode in navigator
-                navigator.go_back()
+            # elif navmode == "wait":
+            #     navigator.go_back()
             else:
                 navigator.goto_first()
             # print("Ignoring OK press")
@@ -1480,22 +1530,46 @@ def nav_R_cb(pin):
     nav_btn_last_time = new_time
 
 def enable_controls():
-    global enc                      # added 18/5/25... encoder stopped working after DROP invoked timer.mgr
-    
+    global enc, pb_OK, pb_UP, pb_DN, pb_LL, pb_RR           # added 18/5/25... encoder stopped working after DROP invoked timer.mgr
+#                                                           21/8/25 added pb objects... Peter Hinch stuff
    # Enable the interupt handlers
     presspmp.irq(trigger=Pin.IRQ_RISING|Pin.IRQ_FALLING, handler=pp_callback)
     enc = Encoder(px, py, v=0, div=4, vmin=None, vmax=None, callback=enc_cb)
     # enc_a.irq(trigger=Pin.IRQ_RISING, handler=encoder_a_IRQ)
-    enc_btn.irq(trigger=Pin.IRQ_FALLING, handler=encoder_btn_IRQ)
 
     lcdbtn.irq(trigger=Pin.IRQ_FALLING, handler=lcdbtn_new)
     infomode.irq(trigger=Pin.IRQ_FALLING, handler=infobtn_cb)
 
-    nav_up.irq(trigger=Pin.IRQ_FALLING, handler=nav_up_cb)
-    nav_dn.irq(trigger=Pin.IRQ_FALLING, handler=nav_dn_cb)
-    nav_OK.irq(trigger=Pin.IRQ_FALLING, handler=nav_OK_cb)
-    nav_L.irq(trigger=Pin.IRQ_FALLING, handler=nav_L_cb)
-    nav_R.irq(trigger=Pin.IRQ_FALLING, handler=nav_R_cb)
+    # enc_btn.irq(trigger=Pin.IRQ_FALLING, handler=encoder_btn_IRQ)
+    # move to wider use of PH's great stuff!
+    pb_enc = Pushbutton(enc_btn, ())            # type: ignore
+
+    pb_enc.press_func(enc_press, ())            # type: ignore
+
+    # nav_up.irq(trigger=Pin.IRQ_FALLING, handler=nav_up_cb)
+    # nav_dn.irq(trigger=Pin.IRQ_FALLING, handler=nav_dn_cb)
+    # nav_OK.irq(trigger=Pin.IRQ_FALLING, handler=nav_OK_cb)
+    # nav_L.irq(trigger=Pin.IRQ_FALLING, handler=nav_L_cb)
+    # nav_R.irq(trigger=Pin.IRQ_FALLING, handler=nav_R_cb)
+
+# create button objects - Peter Hinch style
+    pb_OK = Pushbutton(nav_OK, suppress=True)   # type:ignore
+    pb_UP = Pushbutton(nav_UP, suppress=True)   # type:ignore
+    pb_DN = Pushbutton(nav_DN, suppress=True)   # type:ignore
+    pb_LL = Pushbutton(nav_LL, ())              # type:ignore
+    pb_RR = Pushbutton(nav_RR, ())              # type:ignore
+# and assign normal actions
+    pb_OK.release_func(btn_OK, ())              # type: ignore
+    pb_UP.release_func(btn_UP, ())              # type: ignore
+    pb_DN.release_func(btn_DN, ())              # type: ignore
+    pb_LL.press_func(btn_LL, ())                # type: ignore
+    pb_RR.press_func(btn_RR, ())                # type: ignore
+# and special cases...
+    pb_OK.long_func(exit_menu, ())              # type: ignore
+    pb_UP.long_func(lcdbtn_new, (None, ))       # type: ignore 
+    pb_UP.double_func(lcdbtn_new, (None, ))     # type: ignore
+    pb_DN.long_func(infobtn_cb, (None, ))       # type: ignore
+    pb_DN.double_func(infobtn_cb, (None, ))     # type: ignore
 
 # endregion
 # region LCD
@@ -2115,10 +2189,11 @@ def DisplayInfo()->None:
     now = time.time()
     if   ui_mode == UI_MODE_MENU:
         if   info_display_mode == INFO_AUTO:
-            str_0 = f'Lvl: {navigator.current_level[-1]["index"]}'
+            # str_0 = f'Lvl: {navigator.current_level[-1]["index"]:>3}'
+            str_0 = f'Lvl: {len(navigator.current_level):>2}'      # Now actually shows menu level.
             lcd4x20.move_to(0, 0)
             lcd4x20.putstr(str_0)
-            str_0 = f'Idx: {navigator.current_menuindex:3}'
+            str_0 = f'Idx: {navigator.current_menuindex:>3}'
             lcd4x20.move_to(12, 0)
             lcd4x20.putstr(str_0)
 
@@ -2131,6 +2206,9 @@ def DisplayInfo()->None:
                 str_1 = f'P:{par[0:4]} S:{st:2} V:{wv:4}'
             lcd4x20.move_to(0, 1)
             lcd4x20.putstr(str_1)
+
+            lcd4x20.move_to(0, 2)
+            lcd4x20.putstr(f'NavMod: {navigator.mode:>12}')
     
     elif ui_mode == UI_MODE_NORM:
         # if op_mode   == OP_MODE_AUTO:
@@ -2544,6 +2622,7 @@ def init_all():
     global ut_long, ut_short
     global stdev_Depth, stdev_Press
     global LOGHFDATA, read_count_since_ON
+    global btn_click
 
     PS_ND               = "Pressure sensor not detected"
     str_msg             = "At startup, BorePump is "
@@ -2650,6 +2729,8 @@ def init_all():
     ONESECBLINK         = 850          # 1 second blink time for LED
     lcd_timer           = None
 
+    btn_click = True
+
 def heartbeat() -> bool:
     global borepump
 # heartbeat... if pump is on, send a regular heartbeat to the RX end
@@ -2713,8 +2794,9 @@ def do_enter_process():
             navigator.set()
         elif "view" in navmode:        # careful... if more modes are added, ensure they contain "view"
             navigator.go_back()
-        elif navmode == "wait":         # added to provide compatibility with 5-way switch
-            navigator.go_back()
+        # elif navmode == "wait":         # added to provide compatibility with 5-way switch
+        #     print("Doing the WAIT go_back thing...")
+        #     navigator.go_back()
     elif ui_mode == UI_MODE_NORM:
         # print("in do_enter_process: Entering MENU mode")
         Change_Mode(UI_MODE_MENU)
