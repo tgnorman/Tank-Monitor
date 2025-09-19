@@ -12,8 +12,8 @@ class Tank:
         self.max_dist = 1200
         self.delta = 50
         self.depth_ROC = 0
-        self.min_ROC = 150              # ROC changes in mm/minute
-        self.max_ROC = 400
+        self.min_ROC = 15              # ROC changes in mm/minute
+        self.max_ROC = 40
         self.valve_state = False        # state of solenoid ball-valve
         self.fill_states = ["Overflow", "Full", "Near full", "Part full", "Near Empty", "Empty"]
         self.sensor_offset = 40

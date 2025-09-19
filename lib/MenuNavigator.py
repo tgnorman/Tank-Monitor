@@ -10,7 +10,6 @@ import time                         # type: ignore
 from RGB1602 import RGB1602         # type: ignore
 from utils import format_secs_short         # old methodsLCD_time, secs_to_localtime
 from TMErrors import TankError
-# from ringbuffer import RingBuffer, DuplicateDetectingBuffer
 
 # This 4x20 lcd no longer used by navigator... maybe later I will return to this.
 # from lcd_api import LcdApi
@@ -23,20 +22,28 @@ from TMErrors import TankError
 # i2c                 = I2C(0, sda=Pin(8), scl=Pin(9), freq=400000)
 # lcd4x20             = I2cLcd(i2c, I2C_ADDR, I2C_NUM_ROWS, I2C_NUM_COLS)
 
-# Main menu dict tags:
-Item_Str    = 'items'
-Title_Str   = 'title'
-Value_Str   = 'value'
-Action_Str  = 'action'
-Step_Str    = 'Step'
-Default_Str = 'D_V'
-Working_Str = 'W_V'
-
-NAVMODE_MENU   = 'menu'
-NAVMODE_VIEW   = 'view_XXX'         # need multiple variants, unless I rwork code
-NAVMODE_VALUE  = 'value_change' 
-
 class MenuNavigator:
+    NAVMODE_MENU    = 'menu'
+    NAVMODE_VALUE   = 'value_change'
+    MENU_TITLE      = "title"
+    MENU_ITEMS      = "items"
+    MENU_ACTION     = "action"
+    MENU_VALUE      = "value"
+    MENU_WV         = "W_V"
+    MENU_DV         = "D_V"
+    MENU_STEP       = "Step"
+    VIEWPROG        = "view_prgrm"
+    VIEWFILES       = "view_files"
+    VIEWRING        = "view_ring"
+    PRGRM_SUFFIX    = VIEWPROG.split("_")[1]
+    FILES_SUFFIX    = VIEWFILES.split("_")[1]
+
+    EVENTRING       = 'events'
+    SWITCHRING      = 'switch'
+    ERRORRING       = 'errors'
+    KPARING         = 'kpa'
+    DEPTHRING       = 'depth'
+
     def __init__(self, menu, dev2:RGB1602): #, dev4:I2cLcd):
         self.menu = menu
         # self.current_level = [menu]  # Stack to keep track of menu levels
@@ -45,27 +52,15 @@ class MenuNavigator:
         # self.prev_index = 0
         self.LCD2R = dev2
         # self.LCD4R = lcd4x20
-        self.mode = NAVMODE_MENU
+        self.mode = MenuNavigator.NAVMODE_MENU
         self.new_value = 0
 
-        # NOTE The following group of lists are initialised with ringbuffer buffers.
-        # These index values are for navigator scrolling... NOT to be confused with the actual ring's index
-        # I have probably never tested this code after the ring wraps around past its end... TODO test navigator lists
-
-        # self.eventlist = None
-        # self.event_navindex = 0
-        # self.switchlist = None
-        # self.switch_navindex = 0
-        # self.kpalist = None
-        # self.kpa_navindex = 0
-        # self.errorlist = None
-        # self.error_navindex = 0
-
         self.ring_buffers = {
-            'events': {'buffer': None, 'index': 0},
-            'switch': {'buffer': None, 'index': 0},
-            'kpa':    {'buffer': None, 'index': 0},
-            'errors': {'buffer': None, 'index': 0}
+            MenuNavigator.EVENTRING:    {'buffer': None, 'index': 0},
+            MenuNavigator.SWITCHRING:   {'buffer': None, 'index': 0},
+            MenuNavigator.KPARING:      {'buffer': None, 'index': 0},
+            MenuNavigator.ERRORRING:    {'buffer': None, 'index': 0},
+            MenuNavigator.DEPTHRING:    {'buffer': None, 'index': 0}      # added depth for consistency with other data structure 19/9/25
         }
 
         self.programlist = None     # no change to these ... yet
@@ -94,25 +89,30 @@ class MenuNavigator:
 
     def _format_display_entry(self, hist_str):
         """Format entry for LCD display"""
-        if not isinstance(hist_str, tuple):
-            return "Err in display", "hist not a tuple"
             
         if not hist_str:
             return f'{self.mode:<16}', "Nothing here"
+        
+        if not isinstance(hist_str, tuple):
+            return "Err in display", "Hist not a tuple"
             
-        if self.mode == "view_ring":
+        if self.mode == MenuNavigator.VIEWRING:
             datestamp = format_secs_short(int(hist_str[0]))
             if self.displaylistname == "errors":
-                tmp = hist_str[1]
+                tmp     = hist_str[1]
                 if type(tmp) == str:
                     tmp = int(tmp.split(" ")[0])
                 log_txt = self.errors.get_code(tmp)                 # needed since I added duplicate count after code
             else:
                 log_txt = hist_str[1]
             if type(log_txt) == str: log_txt = log_txt[:16]         # trim to 16 chars
+        elif self.mode == MenuNavigator.VIEWPROG:
+            datestamp   = hist_str[0]
+            prog        = hist_str[1]
+            log_txt     = f'Run {prog["run"]} Off {prog["off"]}'
         else:
-            datestamp = hist_str[0]
-            log_txt = hist_str[1]
+            datestamp   = hist_str[0]
+            log_txt     = hist_str[1]
             if type(log_txt) == str: log_txt = log_txt[:16]         # trim to 16 chars
             
         return datestamp, log_txt
@@ -136,28 +136,28 @@ class MenuNavigator:
     def _handle_menu_move(self, forward=True):
         direction = 1 if forward else -1
         current = self.current_level[-1]
-        menu_len = len(current['submenu'][Item_Str])
+        menu_len = len(current['submenu'][MenuNavigator.MENU_ITEMS])
         self.current_menuindex = (self.current_menuindex + direction) % menu_len
         current['index'] = self.current_menuindex
         self.display_current_item()
 
     def _handle_value_change(self, increment=True):
         item = self.get_current_item()
-        step = item[Value_Str][Step_Str]
+        step = item[MenuNavigator.MENU_VALUE][MenuNavigator.MENU_STEP]
         if increment:
             self.new_value += step
-        elif self.new_value >= step:  # Only decrement if result would be >= 0
+        elif self.new_value > step:  # Only decrement if result would be > 0
             self.new_value -= step
         self.LCD2R.setCursor(0, 1)
-        self.LCD2R.printout(f'{self.new_value:<16}')
+        self.LCD2R.printout(f'{str(self.new_value):<16}')
 
     # For non-ring buffer lists like programs and files
     def _handle_list_view(self, list_name, forward=True):
         """Handle viewing regular (non-ring buffer) lists"""
-        if list_name == "prgrm":        # TODO fix this too... error-prone
+        if list_name == MenuNavigator.PRGRM_SUFFIX:
             current_list = self.programlist
             index_attr = "program_navindex"
-        elif list_name == "files":
+        elif list_name == MenuNavigator.FILES_SUFFIX:
             current_list = self.filelist
             index_attr = "file_navindex"
         else:
@@ -176,7 +176,7 @@ class MenuNavigator:
         setattr(self, index_attr, new_index)
         
         # Format output based on list type
-        if list_name == "prgrm":
+        if list_name == MenuNavigator.PRGRM_SUFFIX:
             prog = current_list[new_index]
             prog_str = f'Run {prog[1]["run"]} Off {prog[1]["off"]}'
             return prog[0], prog_str
@@ -185,33 +185,29 @@ class MenuNavigator:
             filename, filesize = current_list[new_index]
             return filename, filesize
         
-    # def get_current_item(self):
-    #     return self.current_level[-1][Item_Str][self.current_menuindex]
     def get_current_item(self):
         current = self.current_level[-1]
-        return current['submenu'][Item_Str][self.current_menuindex]
+        return current['submenu'][MenuNavigator.MENU_ITEMS][self.current_menuindex]
     
     def display_current_item(self):
         item = self.get_current_item()
         self.LCD2R.clear()
         self.LCD2R.setCursor(0,0)
-        self.LCD2R.printout(item[Title_Str])
+        self.LCD2R.printout(f'{item[MenuNavigator.MENU_TITLE]:<16}')
 
-        if Value_Str in item:
+        if MenuNavigator.MENU_VALUE in item:
             self.LCD2R.setCursor(0, 1)
-            self.LCD2R.printout(item[Value_Str][Working_Str])
-#        print("Current Item: ", item)
-#        print(f"Current Item: {item[Title_Str]}")
+            self.LCD2R.printout(f'{str(item[MenuNavigator.MENU_VALUE][MenuNavigator.MENU_WV]):<16}')
 
     def next(self):
-        if self.mode == NAVMODE_MENU:
+        if self.mode == MenuNavigator.NAVMODE_MENU:
             self._handle_menu_move(forward=True)
-        elif self.mode == NAVMODE_VALUE:
+        elif self.mode == MenuNavigator.NAVMODE_VALUE:
             self._handle_value_change(increment=True)
-        elif self.mode == "view_ring":
+        elif self.mode == MenuNavigator.VIEWRING:
             hist_str = self._handle_ring_view(forward=True)
             self._update_display(*self._format_display_entry(hist_str))
-        elif self.mode in ["view_prgrm", "view_files"]:
+        elif self.mode in [MenuNavigator.VIEWPROG, MenuNavigator.VIEWFILES]:
             list_name = self.mode.split("_")[1]
             timestamp, message = self._handle_list_view(list_name, forward=True)
             self._update_display(timestamp, message[:16])
@@ -219,27 +215,52 @@ class MenuNavigator:
         #     self.go_back()
 
     def previous(self):
-        if self.mode == NAVMODE_MENU:
+        if self.mode == MenuNavigator.NAVMODE_MENU:
             self._handle_menu_move(forward=False)
-        elif self.mode == NAVMODE_VALUE:
+        elif self.mode == MenuNavigator.NAVMODE_VALUE:
             self._handle_value_change(increment=False)
-        elif self.mode == "view_ring":
+        elif self.mode == MenuNavigator.VIEWRING:
             hist_str = self._handle_ring_view(forward=False)
             self._update_display(*self._format_display_entry(hist_str))
-        elif self.mode in ["view_prgrm", "view_files"]:
+        elif self.mode in [MenuNavigator.VIEWPROG, MenuNavigator.VIEWFILES]:
             list_name = self.mode.split("_")[1]
             timestamp, message = self._handle_list_view(list_name, forward=False)
             self._update_display(timestamp, message[:16])
         # elif self.mode == "wait":
         #     self.go_back()
-    
+
+    def goto_position(self, first=True):
+        hist_str = None
+        if self.mode == MenuNavigator.VIEWRING:
+            if self.displaylist is not None:
+                if len(self.displaylist) > 0:
+                    pos = 0 if first else len(self.displaylist) - 1
+                    self.display_navindex = pos
+                    hist_str = self.displaylist[pos]
+        elif self.mode == MenuNavigator.VIEWPROG:
+            if self.programlist is not None:
+                if len(self.programlist) > 0:
+                    pos = 0 if first else len(self.programlist) - 1
+                    self.program_navindex = pos
+                    hist_str = self.programlist[pos]
+        elif self.mode == MenuNavigator.VIEWFILES:
+            if self.filelist is not None:
+                if len(self.filelist) > 0:
+                    pos = 0 if first else len(self.filelist) - 1
+                    self.file_navindex = pos
+                    hist_str = self.filelist[pos]
+
+        if hist_str is None:
+            hist_str = ("Err in display", "Nothing here")
+        self._update_display(*self._format_display_entry(hist_str))
+
     def go_back(self):
         if len(self.current_level) > 1:
             self.current_level.pop()  # Go up one level in the menu
             # self.current_index = self.prev_index
                 # Restore previous level's index
             self.current_menuindex = self.current_level[-1]['index']
-            self.mode = NAVMODE_MENU
+            self.mode = MenuNavigator.NAVMODE_MENU
             self.new_value = 0
 #            print(f"Going back to previous menu level {len(self.current_level)}")
             self.display_current_item()
@@ -247,12 +268,12 @@ class MenuNavigator:
             # print("Already at the top-level menu.  This should not happen...")
             # print("Exiting nav menu from go_back")
             self.LCD2R.setCursor(0, 1)
-            self.LCD2R.printout("Exiting nav menu")
+            self.LCD2R.printout(f'{"Exiting nav menu":<16}')
             self.exit_nav_menu()            # exit menu nav, and call exit_menu() in the menu structure
             
     def enter(self):
         item = self.get_current_item()
-        if Item_Str in item:
+        if MenuNavigator.MENU_ITEMS in item:
             # self.current_level.append(item)  # Go deeper into the submenu
             # self.prev_index = self.current_index
             # Save both menu and current index
@@ -261,141 +282,79 @@ class MenuNavigator:
                 'index': 0
             })
             self.current_menuindex = 0
-#            print(f"Entering {item[Title_Str]} submenu - level {len(self.current_level)}")
+#            print(f"Entering {item[MenuNavigator.MENU_TITLE]} submenu - level {len(self.current_level)}")
             self.display_current_item()
-        elif Action_Str in item:
-            action = item[Action_Str]
+        elif MenuNavigator.MENU_ACTION in item:
+            action = item[MenuNavigator.MENU_ACTION]
             if callable(action):
                 action()                # do it...
             else:
-                print(f"Simulate Executing action: {item[Action_Str]}")
-        elif Value_Str in item:
-            self.mode = NAVMODE_VALUE
-            param = item[Title_Str]
-            val = item[Value_Str]
-            self.new_value = item[Value_Str][Working_Str]
+                print(f"Simulate Executing action: {item[MenuNavigator.MENU_ACTION]}")
+        elif MenuNavigator.MENU_VALUE in item:
+            self.mode = MenuNavigator.NAVMODE_VALUE
+            param = item[MenuNavigator.MENU_TITLE]
+            val = item[MenuNavigator.MENU_VALUE]
+            # print(f'In ENTER {param} = {val}')
+            self.new_value = item[MenuNavigator.MENU_VALUE][MenuNavigator.MENU_WV]
             self.LCD2R.setCursor(0, 0)
             self.LCD2R.printout(f'{param} +-')
-
-            # print(f'In ENTER {param} = {val}')
         else:
             print(f"Unknown type in item... check menu def.  {item}")
     
         # print(f"In ENTER, mode is now {self.mode}")
 
-    def exit_nav_menu(self)-> None:
-    # since I can't reference exit_menu(), but I have a reference to it in the final menu structure, find it, then call it
-        # print(f"exit_nav_menu...{self.current_menuindex=}")
-        self.LCD2R.clear()
-        self.LCD2R.setCursor(0, 0)
-        self.LCD2R.printout("Exiting menu...")
-
-        self.current_menuindex = 0      # reset to top of menu.
-
-        for item in self.menu[Item_Str]:
-            if item[Title_Str] == "Exit":     # BEWARE ... dependency on finding "Exit" in the menu structure
-                item[Action_Str]()
-                break
-
     def set(self):
         item = self.get_current_item()
-#        param = item[Title_Str]
+#        param = item[MenuNavigator.MENU_TITLE]
 #        val = self.new_value
 #        print(f'New {param} = {val}')
         # print(f'In SET before change, item is: {item}')
-        if item[Value_Str][Working_Str] !=  self.new_value and self.new_value > 0:
-            item[Value_Str][Working_Str] =  self.new_value
+        if item[MenuNavigator.MENU_VALUE][MenuNavigator.MENU_WV] !=  self.new_value and self.new_value > 0:
+            item[MenuNavigator.MENU_VALUE][MenuNavigator.MENU_WV] =  self.new_value
             # print(f"In SET, updated Working Value to {self.new_value}")
             self.LCD2R.setCursor(0, 1)
             self.LCD2R.printout(f'Set {str(self.new_value):<12}')   
-            # print(f'In SET after  change, item is: {item}')
-            self.new_value = 0          # reset this, or we copy previous remnant value
-        # self.LCD2R.setCursor(0, 1)
-        # self.LCD2R.printout(f"Set to {str(self.new_value):<8}")
+        # print(f'In SET after  change, item is: {item}')
+        self.LCD2R.setCursor(0, 1)
+        self.LCD2R.printout(f"Set to {str(self.new_value):<9}")
+        # self.new_value = 0          # reset this, or we copy previous remnant value
         # self.mode = "wait"          # wait for a 2nd press so that changed value is displayed before going back to menu
         # self.go_back()              # go back to previous menu level
 
     def set_default(self):
         # print("Setting default value")
         item = self.get_current_item()
-        def_val = item[Value_Str][Default_Str]
-        item[Value_Str][Working_Str] = def_val
+        def_val = item[MenuNavigator.MENU_VALUE][MenuNavigator.MENU_DV]
+        item[MenuNavigator.MENU_VALUE][MenuNavigator.MENU_WV] = def_val
         print(f"Value set to Default: {def_val}")
         self.LCD2R.setCursor(0, 1)
-        self.LCD2R.printout(f"Set to {str(def_val):<8}")
-        self.new_value = 0          # reset this, or we copy previous remnant value
+        self.LCD2R.printout(f"Set to DV {str(def_val):<6}")
+        self.new_value = def_val          # reset this, or we copy previous remnant value
         # self.mode = "wait"          # wait for a 2nd press so that changed value is displayed before going back to menu
         # self.go_back()              # go back to previous menu level
-       
-    def goto_position(self, first=True):
-        if "view_" in self.mode:  #self.mode == "view_events" or self.mode == "view_switch":
-            # print(f'In goto_position {self.mode=}, {first=}')
-            if self.mode == "view_ring":
-                if self.displaylist is not None:
-                    if len(self.displaylist) > 0:
-                        pos = 0 if first else len(self.displaylist) - 1
-                        self.display_navindex = pos
-                        hist_str = self.displaylist[self.display_navindex]
-                    else:
-                        hist_str = "Eventlist: Empty"
-                else:
-                    hist_str = "Eventlist: None"     
-
-            elif self.mode == "view_prgrm":
-                if self.programlist is not None:
-                    if len(self.programlist) > 0:
-                        pos = 0 if first else len(self.programlist) - 1
-                        self.program_navindex = pos
-                        prog_name = self.programlist[self.program_navindex][0]
-                        prog_duration = self.programlist[self.program_navindex][1]["run"]
-                        prog_wait = self.programlist[self.program_navindex][1]["off"]
-                        prog_str = f'Run {prog_duration} Off {prog_wait}'
-                        hist_str = tuple((prog_name, prog_str))
-                    else:
-                        hist_str = "Prog list: Empty"                        
-                    # print(f'In goto_position {hist_str=}')
-                else:
-                    hist_str = "Prog list: None"
-            elif self.mode == "view_files":
-                if self.filelist is not None:
-                    if len(self.filelist) > 0:
-                        pos = 0 if first else len(self.filelist) - 1
-                        self.file_navindex = pos
-                        hist_str = self.filelist[self.file_navindex]
-                    else:
-                        hist_str = "File list: Empty"                        
-                else:
-                    hist_str = "File list: None"
-            if type(hist_str) == tuple:
-                if(len(hist_str) > 0):
-                    datestamp = hist_str[0]
-                    log_txt   = hist_str[1]
-                else:
-                    datestamp = f'{self.mode:<16}'
-                    log_txt   = "Nothing here"
-            else:
-                datestamp = f"Err in {'FIRST' if first else 'LAST'}"
-                log_txt   = "hist not a tuple"
-
-            self.LCD2R.setCursor(0, 0)
-            self.LCD2R.printout(f'{datestamp:<16}')
-            self.LCD2R.setCursor(0, 1)
-            self.LCD2R.printout(f'{log_txt:<16}')
-        else:
-            self.LCD2R.setCursor(0, 1)
-            self.LCD2R.printout("Not in VIEW mode")
-
+              
     def goto_first(self):
         self.goto_position(True)
 
     def goto_last(self):
         self.goto_position(False)
 
-    def set_event_list(self, myeventlist):
-        self.eventlist = myeventlist
+    def go_to_start(self):
+        self.current_menuindex = 0
 
-    def set_switch_list(self, myswitchlist):
-        self.switchlist = myswitchlist
+    def exit_nav_menu(self)-> None:
+    # since I can't reference exit_menu(), but I have a reference to it in the final menu structure, find it, then call it
+        # print(f"exit_nav_menu...{self.current_menuindex=}")
+        self.LCD2R.clear()
+        self.LCD2R.setCursor(0, 0)
+        self.LCD2R.printout(f'{"Exiting menu...":<16}')
+
+        self.current_menuindex = 0      # reset to top of menu.
+
+        for item in self.menu[MenuNavigator.MENU_ITEMS]:
+            if item[MenuNavigator.MENU_TITLE] == "Exit":     # BEWARE ... dependency on finding "Exit" in the menu structure
+                item[MenuNavigator.MENU_ACTION]()
+                break
 
     def set_program_list(self, mylist):
         if self.programlist is not None:
@@ -407,15 +366,73 @@ class MenuNavigator:
             del self.filelist           # clean up old stuff...
         self.filelist = mylist
 
-    def set_kpa_list(self, mylist):
-        # if self.kpalist is not None:
-        #     del self.kpalist           # clean up old stuff...  
-        self.kpalist = mylist
+    # def set_event_list(self, myeventlist):
+    #     self.eventlist = myeventlist
 
-    def set_error_list(self, mylist):
-        self.errorlist = mylist
+    # def set_switch_list(self, myswitchlist):
+    #     self.switchlist = myswitchlist
 
-    def go_to_start(self):
-        self.current_menuindex = 0
+    # def set_kpa_list(self, mylist):
+    #     # if self.kpalist is not None:
+    #     #     del self.kpalist           # clean up old stuff...  
+    #     self.kpalist = mylist
 
+    # def set_error_list(self, mylist):
+    #     self.errorlist = mylist
+
+    # def goto_position(self, first=True):
+    #     if "view_" in self.mode:  #self.mode == "view_events" or self.mode == "view_switch":
+    #         # print(f'In goto_position {self.mode=}, {first=}')
+    #         if self.mode == "view_ring":
+    #             if self.displaylist is not None:
+    #                 if len(self.displaylist) > 0:
+    #                     pos = 0 if first else len(self.displaylist) - 1
+    #                     self.display_navindex = pos
+    #                     hist_str = self.displaylist[self.display_navindex]
+    #                 else:
+    #                     hist_str = "Eventlist: Empty"
+    #             else:
+    #                 hist_str = "Eventlist: None"     
+    #         elif self.mode == "view_prgrm":
+    #             if self.programlist is not None:
+    #                 if len(self.programlist) > 0:
+    #                     pos = 0 if first else len(self.programlist) - 1
+    #                     self.program_navindex = pos
+    #                     prog_name = self.programlist[self.program_navindex][0]
+    #                     prog_duration = self.programlist[self.program_navindex][1]["run"]
+    #                     prog_wait = self.programlist[self.program_navindex][1]["off"]
+    #                     prog_str = f'Run {prog_duration} Off {prog_wait}'
+    #                     hist_str = tuple((prog_name, prog_str))
+    #                 else:
+    #                     hist_str = "Prog list: Empty"                        
+    #                 # print(f'In goto_position {hist_str=}')
+    #             else:
+    #                 hist_str = "Prog list: None"
+    #         elif self.mode == "view_files":
+    #             if self.filelist is not None:
+    #                 if len(self.filelist) > 0:
+    #                     pos = 0 if first else len(self.filelist) - 1
+    #                     self.file_navindex = pos
+    #                     hist_str = self.filelist[self.file_navindex]
+    #                 else:
+    #                     hist_str = "File list: Empty"                        
+    #             else:
+    #                 hist_str = "File list: None"
+    #         if type(hist_str) == tuple:
+    #             if(len(hist_str) > 0):
+    #                 datestamp = hist_str[0]
+    #                 log_txt   = hist_str[1]
+    #             else:
+    #                 datestamp = f'{self.mode:<16}'
+    #                 log_txt   = "Nothing here"
+    #         else:
+    #             datestamp = f"Err in {'FIRST' if first else 'LAST'}"
+    #             log_txt   = "hist not a tuple"
+    #         self.LCD2R.setCursor(0, 0)
+    #         self.LCD2R.printout(f'{datestamp:<16}')
+    #         self.LCD2R.setCursor(0, 1)
+    #         self.LCD2R.printout(f'{log_txt:<16}')
+    #     else:
+    #         self.LCD2R.setCursor(0, 1)
+    #         self.LCD2R.printout("Not in VIEW mode")
 

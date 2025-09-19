@@ -8,10 +8,10 @@
     "micropico.syncFolder": "",
     "micropico.openOnStart": true,
     "python.analysis.typeshedPaths": [
-        "~/.micropico-stubs/included"
+        "C:/Users/trevor/.micropico-stubs/included"
     ],
     "python.analysis.extraPaths": [
-        "~/.micropico-stubs/included",
+        "C:/Users/trevor/.micropico-stubs/included",
         "${workspaceFolder}/lib",           // this projects libs
         "../Libraries"                      // 3rd party libs
     ],

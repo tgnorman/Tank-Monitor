@@ -1,5 +1,6 @@
 {
     "extraPaths": [
+        "C:/Users/trevor/.micropico-stubs/included",
         "${workspaceFolder}/lib",
         "../Libraries"
     ]

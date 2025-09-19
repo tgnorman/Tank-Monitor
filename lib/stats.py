@@ -5,23 +5,26 @@ def mean_stddev(buff:list, count:int, startidx:int, ringlen:int)->tuple[float, f
         Args:
             buff:   list of values, stored in a ring buffer
             count:  number of values to use
-            startidx: position in rinng to begin at... and then...
-            look backwards from ABSOLUTE index startidx... NOT relative to hf_index
+            startidx: position in ring to begin at... and then...
+            look BACKWARDS from ABSOLUTE index startidx... NOT relative to hf_index
 
         Returns:
             tuple containg mean and sample std deviation
     """
+    if count > ringlen:     # ooh - that's bad...
+        print(f"mean_stddev: Count {count} reduced to {ringlen}")
+        count = ringlen     # should probably raise an exception...
     if count < 2:
         return 0, 0
     s = 0.0
     for i in range(count):
-        mod_index = (startidx - i - 1) % ringlen  # change to average hi_freq_kpa readings
+        mod_index = (startidx - 1 - i) % ringlen
         s += buff[mod_index]    
     mean: float = s / count
 
     ss_diffs = 0.0
     for i in range(count):
-        mod_index = (startidx - i - 1) % ringlen  # change to average hi_freq_kpa readings
+        mod_index = (startidx - 1 - i) % ringlen
         x = buff[mod_index]
         diff = (x - mean)
         ss_diffs += diff * diff

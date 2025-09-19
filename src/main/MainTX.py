@@ -17,7 +17,8 @@ import uasyncio as asyncio
 import ntptime
 import network
 from PiicoDev_Unified import sleep_ms
-from PiicoDev_VL53L1X import PiicoDev_VL53L1X
+# from PiicoDev_VL53L1X import PiicoDev_VL53L1X
+from TN_VL53L1X import TN_PiicoDev_VL53L1X
 from PiicoDev_Transceiver import PiicoDev_Transceiver
 from PiicoDev_SSD1306 import *
 from umachine import Timer, Pin, ADC, soft_reset, I2C
@@ -41,7 +42,7 @@ from Pushbutton import Pushbutton
 
 # endregion
 # region INITIALISE
-SW_VERSION          = "23/8/25 18:00"      # for display
+SW_VERSION          = "20/9/25 01:34"      # for display
 DEBUGLVL            = 0
 
 # micropython.mem_info()
@@ -49,7 +50,7 @@ DEBUGLVL            = 0
 
 # region MODES
 PRODUCTION_MODE     = False         # change to True when no longer in development cycle
-CALIBRATE_MODE      = False
+CALIBRATE_MODE      = True
 
 OP_MODE_AUTO        = 0
 OP_MODE_IRRIGATE    = 1
@@ -90,12 +91,9 @@ SWITCHRINGSIZE      = 20
 KPARINGSIZE         = 20            # size of ring buffer for pressure logging... NOT for calculation of average
 ERRORRINGSIZE       = 20            # max error log ringbuffer length
 HI_FREQ_RINGSIZE    = 120           # for high frequency pressure logging.  At 1 Hz that's 2 minutes of data
-DEPTHRINGSIZE       = 20            # since adding fast_average in critical_states, this no longer is a concern
+DEPTHRINGSIZE       = 10            # since adding fast_average in critical_states, this no longer is a concern, but is used for ROC SMA calc
 
-depthringindex      = 0             # for SMA calculation... keep last n measures in a ring buffer
-eventindex          = 0             # for scrolling through error logs on screen
-switchindex         = 0
-kpaindex            = 0             # for scrolling through pressure logs on screen
+# depthringindex      = 0           # for SMA calculation... keep last n measures in a ring buffer
 # endregion
 # region COUNTERS
 # Counters... for averaging or event timing
@@ -139,7 +137,7 @@ MAX_CONTIN_RUNMINS  = 360           # 3 hours max runtime.  More than this looks
 SIMULATE_PUMP       = False         # debugging aid...replace pump switches with a PRINT
 SIMULATE_KPA        = False         # debugging aid...replace pressure sensor with a PRINT
 
-report_outage       = True          # do I report next power outage?
+report_max_outage       = True          # do I report next power outage?
 sys_start_time      = 0             # for uptime report
 my_IP               = None
 # endregion
@@ -149,7 +147,7 @@ LOGHFDATA           = True          # log 1 second interval kPa data
 LOG_FREQ            = 1
 last_logged_depth   = 0
 last_logged_kpa     = 0
-LOG_MIN_DEPTH_CHANGE_MM  = 10      # reset after test run. to save space... only write to file if significant change in level
+LOG_MIN_DEPTH_CHANGE_MM  = 5      # reset after test run. to save space... only write to file if significant change in level
 LOG_MIN_KPA_CHANGE  = 10            # update after pressure sensor active
 level_init          = False 		# to get started
 # endregion
@@ -158,9 +156,9 @@ level_init          = False 		# to get started
 #vsys                = ADC(3)                            # one day I'll monitor this for over/under...
 temp_sensor         = ADC(4)			                # Internal temperature sensor is connected to ADC channel 4
 solenoid            = Pin(2, Pin.OUT, value=0)          # MUST ensure we don't close solenoid on startup... pump may already be running !!!  Note: Low == Open
-lcdbtn 	            = Pin(6, Pin.IN, Pin.PULL_UP)		# check if IN is correct!
+lcdbtn 	            = Pin(6, Pin.IN, Pin.PULL_UP)		# soon to be replaced with 5X double-click UP
 presspmp            = Pin(15, Pin.IN, Pin.PULL_UP)      # prep for pressure pump monitor.  Needs output from opamp circuit
-alarm 		        = Pin(16, Pin.OUT)                  # emergency situation !! Needs action taken...
+screamer 		    = Pin(16, Pin.OUT)                  # emergency situation !! Needs action taken...
 vbus_sense          = Pin('WL_GPIO2', Pin.IN)           # external power monitoring of VBUS
 led                 = Pin('LED', Pin.OUT)
 bp_pressure         = ADC(0)                            # read line pressure
@@ -182,7 +180,7 @@ py                  = Pin(19, Pin.IN)
 last_time           = 0
 
 beeper              = Pin(21, Pin.OUT)                  # for audible feedback
-infomode            = Pin(27, Pin.IN, Pin.PULL_UP)      # for changing display mode
+infomode            = Pin(27, Pin.IN, Pin.PULL_UP)      # for changing display mode ... replace with 5X double DOWN
 
 TEMP_CONV_FACTOR 	= 3.3 / 65535   # looks like 3.3V / max res of 16-bit ADC ??
 
@@ -195,7 +193,7 @@ lcd4x20             = I2cLcd(i2c, I2C_ADDR, I2C_NUM_ROWS, I2C_NUM_COLS)
 display             = create_PiicoDev_SSD1306()
 
 # Create PiicoDev sensor objects
-distSensor 	        = PiicoDev_VL53L1X()
+distSensor          = TN_PiicoDev_VL53L1X()             # use my custom driver, with extra snibbo's
 lcd 		        = RGB1602.RGB1602(16,2)
 radio               = PiicoDev_Transceiver()
 #rtc 		        = PiicoDev_RV3028()                 # Initialise the RTC module, enable charging
@@ -208,7 +206,6 @@ timer_mgr           = TimerManager()
 
 system              = SimpleDevice()                    # initialise my FSM.
 wf                  = MyWiFi()
-
 
 # Configure WiFi SSID and password
 SSID                = wf.ssid
@@ -233,6 +230,13 @@ depth_lock          = asyncio.Lock()
 pressure_lock       = asyncio.Lock()
 email_queue_lock    = asyncio.Lock()
 enc_btn_lock        = asyncio.Lock()
+
+# And now... with T's improved driver... I can set TimeBudget!
+TIMEBUDGET_MS       = 300       # note ... scale up to uS B4 calling method
+ROISIZE             = 12
+
+VBUS_LOST           = "VBUS LOST"
+VBUS_RESTORED       = "VBUS RESTORED"
 
 # endregion
 # region EMAIL
@@ -692,7 +696,7 @@ def exit_menu():                      # exit from MENU mode
     # print(f"Exiting menu...lcd_off in {config_dict['LCD']} seconds")
     if not lcd_timer is None:
         lcd_timer.deinit()
-    lcd_timer = Timer(period=config_dict[LCD] * 1000, mode=Timer.ONE_SHOT, callback=lcd_off)
+    lcd_timer = Timer(period=config_dict[LCD] * 1000, mode=Timer.ONE_SHOT, callback=lcd_off)    # type: ignore
 
 def cancel_program()->None:
     global program_pending, op_mode, program_cancelled
@@ -742,45 +746,54 @@ def display_pressure():
 def my_go_back():
     # print(f'in my_go_bacK, len(nav.c_l): {len(navigator.current_level)}')
     navigator.go_back()
-    # navmode = navigator.mode
-    # if navmode == "menu":
-    #     exit_menu()
-    # else:
-    #     navigator.go_back()
                
 def show_program():
-    navigator.mode = "view_prgrm"
+    navigator.mode = navigator.VIEWPROG           # not to be confused with list "program"
                
 def show_events():
-    navigator.set_display_list("events")
-    navigator.mode              = "view_ring"
-    # navigator.displaylistname   = "events"
-    # navigator.displaylist       = navigator.eventlist
-    # navigator.display_navindex  = navigator.event_navindex
+    if event_ring.index > -1:
+        navigator.set_display_list(MenuNavigator.EVENTRING)
+        navigator.mode           = MenuNavigator.VIEWRING
+        navigator.goto_first()
+    else:
+        lcd.setCursor(0,1)
+        lcd.printout("No events")
 
 def show_switch():
-    navigator.set_display_list("switch")
-    navigator.mode              = "view_ring"
-    # navigator.displaylistname   = "switch"
-    # navigator.displaylist       = navigator.switchlist
-    # navigator.display_navindex  = navigator.switch_navindex
+    if switch_ring.index > -1:
+        navigator.set_display_list(MenuNavigator.SWITCHRING)
+        navigator.mode           = MenuNavigator.VIEWRING
+        navigator.goto_first()
+    else:
+        lcd.setCursor(0,1)
+        lcd.printout("No switches")
 
 def show_errors():
-    navigator.set_display_list("errors")
-    navigator.mode              = "view_ring"
-    # navigator.displaylistname   = "errors"                  # this will need special handling to decode in MenuNavigator
-    # navigator.displaylist       = navigator.errorlist
-    # navigator.display_navindex  = navigator.error_navindex
+    if error_ring.index > -1:
+        navigator.set_display_list(MenuNavigator.ERRORRING)
+        navigator.mode           = MenuNavigator.VIEWRING
+        navigator.goto_first()
+    else:
+        lcd.setCursor(0,1)
+        lcd.printout("No errors")
 
 def show_pressure():
-    navigator.set_display_list("kpa")
-    navigator.mode              = "view_ring"
-    # navigator.displaylistname   = "kpa"
-    # navigator.displaylist       = navigator.kpalist
-    # navigator.display_navindex  = navigator.kpa_navindex
+    if kpa_ring.index > -1:
+        navigator.set_display_list(MenuNavigator.KPARING)
+        navigator.mode           = MenuNavigator.VIEWRING
+        navigator.goto_first()
+    else:
+        lcd.setCursor(0,1)
+        lcd.printout("No kPa's")        
 
 def show_depth():
-    print("Not implemented")
+    if depth_ring.index > -1:
+        navigator.set_display_list(MenuNavigator.DEPTHRING)
+        navigator.mode           = MenuNavigator.VIEWRING
+        navigator.goto_first()
+    else:
+        lcd.setCursor(0,1)
+        lcd.printout("No depth vals")
 
 def show_space():
     lcd.setCursor(0,1)
@@ -805,7 +818,7 @@ def my_reset():
 
 def cancel_alarm()->None:
     ev_log.write(f"{now_time_long()} ALARM CANCELLED!\n")
-    alarm.value(0)
+    screamer.value(0)
 
 def beepx3()->None:
     beeper.value(1)
@@ -861,7 +874,7 @@ def shutdown()->None:
             dump_pump_arg(presspump)
 
 # Stop anything new starting...
-    ev_log.write(f"{now_time_long()} Cancelling all timers...\\nn")
+    ev_log.write(f"{now_time_long()} Cancelling all timers...\n")
     timer_mgr.cancel_all()
 
     dump_zone_peak()
@@ -932,7 +945,7 @@ def show_dir():
         filelist.append((f, f'Size: {fsize}'))        # this is NOT kosher... allocating mem in ISR context
 
     # navigator.set_file_list(filelist)
-    navigator.mode = "view_files"
+    navigator.mode = navigator.VIEWFILES
     navigator.set_file_list(filelist)
 
     navigator.goto_first()
@@ -1248,6 +1261,7 @@ new_menu = {
           { Title_Str: "Events",        Action_Str: show_events},
           { Title_Str: "Switch",        Action_Str: show_switch},
           { Title_Str: "Pressure",      Action_Str: show_pressure},
+          { Title_Str: "Depth",         Action_Str: show_depth},
           { Title_Str: "Errors",        Action_Str: show_errors},
           { Title_Str: "Program",       Action_Str: show_program},
           { Title_Str: "Stats",         Action_Str: show_duty_cycle},
@@ -1274,8 +1288,8 @@ new_menu = {
             Item_Str: [                  # items[3][0]
                 { Title_Str : DELAY,         Value_Str: {Default_Str: 15,   Working_Str : MYDELAY,              Step_Str : 5}},
                 { Title_Str : LCD,           Value_Str: {Default_Str: 60,   Working_Str : lcd_on_time,          Step_Str : 2}},
-                { Title_Str : MINDIST_STR,   Value_Str: {Default_Str: 500,  Working_Str : housetank.min_dist,   Step_Str : 100}},
-                { Title_Str : MAXDIST_STR,   Value_Str: {Default_Str: 1400, Working_Str : housetank.max_dist,   Step_Str : 100}},
+                { Title_Str : MINDIST_STR,   Value_Str: {Default_Str: 400,  Working_Str : housetank.min_dist,   Step_Str : 100}},
+                { Title_Str : MAXDIST_STR,   Value_Str: {Default_Str: 1200, Working_Str : housetank.max_dist,   Step_Str : 100}},
                 { Title_Str : MAXPRESSURE,   Value_Str: {Default_Str: 700,  Working_Str : MAX_LINE_PRESSURE,    Step_Str : 25}},                
                 { Title_Str : NOPRESSURE,    Value_Str: {Default_Str: 15,   Working_Str : NO_LINE_PRESSURE,     Step_Str : 5}},
                 { Title_Str : MAXRUNMINS,    Value_Str: {Default_Str: 60,   Working_Str : MAX_CONTIN_RUNMINS,   Step_Str : 10}},
@@ -1353,9 +1367,7 @@ def infobtn_cb(pin):
         if new_mode != old_mode:
             info_display_mode = new_mode
             lcd4x20.clear()             # start with a blank sheet
-            # print(f"Before calling DisplayInfo ...{info_display_mode=}")
             DisplayInfo()
-            # print(f"Changing info display mode: {old_mode=} {info_display_mode=}")
     modebtn_last_time = new_time
 
 # create the main menu navigator object
@@ -1375,13 +1387,11 @@ def enc_cb(pos, delta):
     if delta > 0:
         if DO_NEXT_IN_CB:
             navigator.next()
-            # DisplayDebug()
         else:
             encoder_count += 1
     elif delta < 0:
         if DO_NEXT_IN_CB:
             navigator.previous()
-            # DisplayDebug()
         else:
             encoder_count -= 1
 
@@ -1390,21 +1400,18 @@ def enc_press()->None:
 
 def btn_OK()->None:
     if btn_click : click()
+    lcd_on()                        # but set no OFF timer...stay on until I exit menu 
 
     if ui_mode == UI_MODE_MENU:
         navmode = navigator.mode
-        if navmode == "menu":
+        if navmode == MenuNavigator.NAVMODE_MENU:
             exit_menu()   
-        elif "view" in navmode:
-            # print("--> go_back")
-            navigator.go_back()
-        elif navmode == "value_change":     # TODO make all these things consts def'd in Navigator class
-            # print("--> set")
+        elif navmode == MenuNavigator.NAVMODE_VALUE:
             navigator.set()
+        elif "view" in navmode:
+            navigator.go_back()
     elif ui_mode == UI_MODE_NORM:
-        # print("in do_enter_process: Entering MENU mode")
         Change_Mode(UI_MODE_MENU)
-        # ui_mode = UI_MODE_MENU
         navigator.go_to_start()
         navigator.display_current_item()
     else:
@@ -1414,7 +1421,7 @@ def btn_OK()->None:
 def btn_UP()->None:
     if btn_click : click()
     navmode = navigator.mode
-    if navmode == "menu":    
+    if navmode == MenuNavigator.NAVMODE_MENU:    
         navigator.go_back()
     elif "view" in navmode:
         navigator.goto_first()
@@ -1425,7 +1432,7 @@ def btn_UP()->None:
 def btn_DN()->None:
     if btn_click : click()
     navmode = navigator.mode
-    if navmode == "menu":
+    if navmode == MenuNavigator.NAVMODE_MENU:
         navigator.enter()   # this is the down button   
     elif "view" in navmode:
         # print("--> goto last")
@@ -1465,14 +1472,14 @@ def nav_dn_cb(pin):
         nav_btn_state = True
         print("D", end="")
         navmode = navigator.mode
-        if navmode == "menu":
+        if navmode == MenuNavigator.NAVMODE_MENU:
             navigator.enter()   # this is the down button   
-        elif navmode == "value_change":
-            # print("--> set_default")
-            navigator.set_default()
         elif "view" in navmode:
             # print("--> goto last")
             navigator.goto_last()
+        elif navmode == "value_change":
+            # print("--> set_default")
+            navigator.set_default()
         DisplayInfo()
     nav_btn_last_time = new_time
 
@@ -1485,17 +1492,12 @@ def nav_OK_cb(pin):
         print("S", end="")
         if ui_mode == UI_MODE_MENU:
             navmode = navigator.mode
-            if navmode == "menu":
+            if navmode == MenuNavigator.NAVMODE_MENU:
                 exit_menu()
             elif navmode == "value_change":
                 navigator.set()     # this is the select button
-            # elif navmode == "wait":
-            #     navigator.go_back()
             else:
                 navigator.goto_first()
-            # print("Ignoring OK press")
-            # lcd.setCursor(0,1)
-            # lcd.printout("Not in edit mode")
         elif ui_mode == UI_MODE_NORM:
             Change_Mode(UI_MODE_MENU)
             navigator.go_to_start()
@@ -1579,7 +1581,7 @@ def lcdbtn_new(pin):
     lcd_on()
     if not lcd_timer is None:
         lcd_timer.deinit()
-    lcd_timer = Timer(period=config_dict[LCD] * 1000, mode=Timer.ONE_SHOT, callback=lcd_off)
+    lcd_timer = Timer(period=config_dict[LCD] * 1000, mode=Timer.ONE_SHOT, callback=lcd_off)    # type:ignore
 
 # def lcdbtn_pressed(x):          # my lcd button ISR
 #     global lcdbtnflag
@@ -1673,6 +1675,7 @@ def init_logging():
     except Exception as e:
         print(f'Init_logging: file open exception - {e}')
         sys.exit()
+    print("All log files opened")
 
 def get_fill_state(d):
     if d > config_dict[MAXDIST_STR]:                                                    # empty
@@ -1689,10 +1692,11 @@ def get_fill_state(d):
         tmp = housetank.fill_states[0]
     return tmp
 
-def calc_SMA_Depth()-> int:
+def calc_SMA(buff:list)-> int:
     dsum = 0
     n = 0
-    for dval in depthringbuf:
+    for tup in buff:
+        dval = tup[1]       # life's different now with ringbuffer...
         if dval > 0:
             dsum += dval
             n += 1
@@ -1723,7 +1727,7 @@ def get_tank_depth():
     global tank_is
 
     d = int(distSensor.read()) - housetank.sensor_offset
-    housetank.depth= (housetank.height - d)
+    housetank.depth = (housetank.height - d)
     tank_is = get_fill_state(d)
 
 def set_zone(timer: Timer):
@@ -1772,21 +1776,20 @@ def updateData():
     global tank_is
     global depth_str
     global pressure_str
-    global depthringindex
     global average_kpa, zone, avg_kpa_set
     global temp
   
     get_tank_depth()
 
-    depthringbuf[depthringindex] = housetank.depth; depthringindex = (depthringindex + 1) % DEPTHRINGSIZE
-    sma_depth = calc_SMA_Depth()            # this calculates average of non-zero values... regardless of how many entries in depthring
+    # depthringbuf[depthringindex] = housetank.depth; depthringindex = (depthringindex + 1) % DEPTHRINGSIZE
+    depth_ring.add(housetank.depth)
+    sma_depth = calc_SMA(depth_ring.buffer)            # this calculates average of non-zero values... regardless of how many entries in the ring
     time_factor = config_dict[DELAY] / 60
     housetank.depth_ROC = int((sma_depth - housetank.last_depth) / time_factor)	# ROC in mm/minute.  Save negatives also...
     if DEBUGLVL > 0: print(f"{sma_depth=} {housetank.last_depth=} {housetank.depth_ROC=}")
-    housetank.last_depth = sma_depth				# track change since last reading
+    housetank.last_depth = sma_depth				# track ROC since last reading using SMA_DEPTH... NOT raw depth
     depth_str = f"{housetank.depth/1000:.2f}m " + tank_is
-    # print(f"In updateData: ADC value: {pv}")
-    # bp_kpa = kparing[kpaindex]        # get last kPa reading
+
     if read_count_since_ON >= AVG_KPA_COUNT:
         tmp = int(calc_average_HFpressure(0, AVG_KPA_COUNT))  # get average of last AVG_KPA_COUNT readings.
         if tmp > 0:
@@ -1878,9 +1881,9 @@ def borepump_ON(reason:str):
                     reset_state()
                     # timer_mgr.create_timer(name=AVG_KPA_TIMER_NAME, period=AVG_KPA_DELAY * 1000, callback=set_average_kpa)
                     # timer_mgr.create_timer(name=ZONE_TIMER_NAME, period=ZONE_DELAY * 1000, callback=set_zone)
-                    average_timer = Timer(period=AVG_KPA_DELAY  * 1000, mode=Timer.ONE_SHOT, callback=set_average_kpa)  # start timer to record average after 5 seconds
-                    zone_timer    = Timer(period=ZONE_DELAY * 1000,     mode=Timer.ONE_SHOT, callback=set_zone)  # start timer to record zone after 30 seconds
-                    # change_logging(True)
+                    average_timer = Timer(period=AVG_KPA_DELAY  * 1000, mode=Timer.ONE_SHOT, callback=set_average_kpa)      # type:ignore # start timer to record average after 5 seconds
+                    zone_timer    = Timer(period=ZONE_DELAY * 1000,     mode=Timer.ONE_SHOT, callback=set_zone)      # type:ignore # start timer to record zone after 30 seconds
+        # change_logging(True)
                     LOGHFDATA = True
             else:
                 log_switch_error(new_state)
@@ -1925,9 +1928,9 @@ def borepump_OFF(reason:str):
 def manage_tank_fill():
     global tank_is
     if tank_is == housetank.fill_states[0]:		# Overfull
-        alarm.value(1)			        # raise alarm
+        screamer.value(1)			        # raise alarm
     else:
-        alarm.value(0)
+        screamer.value(0)
     if tank_is == housetank.fill_states[len(housetank.fill_states) - 1]:		# Empty
         if not borepump.state:		# pump is off, we need to switch on
             if op_mode == OP_MODE_AUTO:
@@ -2118,17 +2121,17 @@ def checkForAnomalies()->None:
                 error_ring.add(TankError.MAX_ROC_EXCEEDED)
 
         # now, check standard deviation for high values...    
-            mean_D, stdev_Depth = mean_stddev(depthringbuf, D_STD_DEV_COUNT, depthringindex, DEPTHRINGSIZE)
-            if stdev_Depth > DEPTH_SD_MAX:
-                raiseAlarm("XS D SDEV", stdev_Depth)
-                error_ring.add(TankError.HI_VAR_DIST)
+        mean_D, stdev_Depth = mean_stddev(depth_ring.buffer, D_STD_DEV_COUNT, depth_ring.index, DEPTHRINGSIZE)
+        if stdev_Depth > DEPTH_SD_MAX:
+            raiseAlarm("XS D SDEV", stdev_Depth)
+            error_ring.add(TankError.HI_VAR_DIST)
         # this records the CURRENT stdev_Press... which will go higher on kpadrop.
-            if kpa_sensor_found and read_count_since_ON > P_STD_DEV_COUNT:
-                mean_P, stdev_Press = mean_stddev(hi_freq_kpa_ring, P_STD_DEV_COUNT, hi_freq_kpa_index, HI_FREQ_RINGSIZE)
-                # k_slope, k_intercept, stdev_Press, r2 = linear_regression(hi_freq_kpa_ring, hi_freq_kpa_ring, P_STD_DEV_COUNT,(hi_freq_kpa_index - LOOKBACKCOUNT) % HI_FREQ_RINGSIZE, HI_FREQ_RINGSIZE)
-                if stdev_Press > PRESS_SD_MAX:
-                    raiseAlarm("XS P SDEV", stdev_Press)
-                    error_ring.add(TankError.HI_VAR_PRES)
+        if kpa_sensor_found and read_count_since_ON > P_STD_DEV_COUNT:
+            mean_P, stdev_Press = mean_stddev(hi_freq_kpa_ring, P_STD_DEV_COUNT, hi_freq_kpa_index, HI_FREQ_RINGSIZE)
+            # k_slope, k_intercept, stdev_Press, r2 = linear_regression(hi_freq_kpa_ring, hi_freq_kpa_ring, P_STD_DEV_COUNT,(hi_freq_kpa_index - LOOKBACKCOUNT) % HI_FREQ_RINGSIZE, HI_FREQ_RINGSIZE)
+            if stdev_Press > PRESS_SD_MAX:
+                raiseAlarm("XS P SDEV", stdev_Press)
+                error_ring.add(TankError.HI_VAR_PRES)
 
     else:                                       # pump is OFF
         if op_mode == OP_MODE_AUTO:
@@ -2183,13 +2186,12 @@ def DisplayInfo()->None:
 # NOTE: to avoid overlapping content on a line, really need to compose a full line string, then putstr the entire thing :20
 #       moving to a field and updating bits doesn't relly work so well... at least not unless ALL modes use consistent field defs...
 #
-#       More important: Don't leave remnant stuff behind!  That means writing blanks unless there is to report in the current mode
+#   More important: Don't leave remnant stuff behind!  That means writing blanks unless there is something to report in the current mode
 #   Finally... dealing with 3 separate modes: ui_mode, op_mode, & info_mode.  BEWARE !!!
 
     now = time.time()
     if   ui_mode == UI_MODE_MENU:
         if   info_display_mode == INFO_AUTO:
-            # str_0 = f'Lvl: {navigator.current_level[-1]["index"]:>3}'
             str_0 = f'Lvl: {len(navigator.current_level):>2}'      # Now actually shows menu level.
             lcd4x20.move_to(0, 0)
             lcd4x20.putstr(str_0)
@@ -2198,7 +2200,7 @@ def DisplayInfo()->None:
             lcd4x20.putstr(str_0)
 
             str_1 = f'{" ":^20}'
-            if navigator.mode == "value_change":
+            if navigator.mode == navigator.NAVMODE_VALUE:
                 it = navigator.get_current_item()
                 par = it[Title_Str]
                 st = it[Value_Str][Step_Str]
@@ -2214,33 +2216,32 @@ def DisplayInfo()->None:
         # if op_mode   == OP_MODE_AUTO:
         if   info_display_mode == INFO_AUTO:
             e_code = "   "
+            rep_count = 0
             if error_ring.index > -1:
                 entry  = error_ring.buffer[error_ring.index]
                 tmp = entry[1]              # entry is either an int, or a string consisting of an int followed by a repeat count
                 if type(tmp) == str:
-                    er_str = tmp.split(" ")
-                    print(f'{er_str=}')
-                    if len(er_str) > 0:
-                        if type(er_str[0]) == tuple:
-                            ec = er_str[0][0]
-                            print(f'ec=')
-                            tmp = int(ec)
-                        # ecode_str = er_str[0]
-                        # print(f'{ecode_str=}')
+                    if len(tmp) > 0:
+                        er_str = tmp.split(" ")
+                        # print(f'{er_str=}')             # should look like [code_str, repeat_string_str]
+                        enum_str = er_str[0]
+                        # print(f'{enum_str=}')
+                        rep_count_str = er_str[2]       # looks like 'x3)' ... slice off 1st and last chars to get count, convert to int 
+                        rep_count = int(rep_count_str[1:-1])
+                        tmp = int(enum_str)
                     # tmp = int(tmp.split(" ")[0])
-                elif type(tmp) == tuple:        # TODO sort out this confusion: So what is it?  a TUPLE OR A STRING?
-                    tmp = int(tmp[0])
                 else:
                     tmp=int(tmp)
                 e_code = errors.get_code(tmp)
-                er_len = len(error_ring.buffer)
-                e_desc = errors.get_description(tmp)
-                # print(f'{er_len=} {error_ring.index=} {entry=} {e_code=} {e_desc=}')
             lcd4x20.move_to(0, 0)                # move to top left corner of LCD
             lcd4x20.putstr(f'EC:{e_code:<4}')
 
-            lcd4x20.move_to(8, 0)
-            lcd4x20.putstr(f"S{1 if stable_pressure else 0}    ")
+            lcd4x20.move_to(7, 0)
+            rstr = f'x{rep_count:<2}' if rep_count > 0 else "   "
+            lcd4x20.putstr(rstr)
+
+            lcd4x20.move_to(11, 0)
+            lcd4x20.putstr(f"S{1 if stable_pressure else 0} ")
 
             lcd4x20.move_to(14, 0)
             lcd4x20.putstr(f"HF:{' ON' if LOGHFDATA else 'OFF'}")
@@ -2405,7 +2406,7 @@ def DisplayGraph():
     # print(f'{scaled_bar=}')
     percent      = int(100 * housetank.depth/housetank.height)
     display.fill(0)
-    display.text(f"Depth/kPa  {percent:>2}%", 0, 0, 1)
+    display.text(f"Depth {housetank.depth/1000:<.2f}M {percent:>2}%", 0, 0, 1)
 
     # display.updateGraph2D(graphkPa, scaled_press)
     display.fill_rect(0, HEIGHT-BAR_THICKNESS, scaled_bar, BAR_THICKNESS, 1)
@@ -2558,24 +2559,15 @@ def calibrate_clock():
     transmit_and_pause(t, delay)
 
 def init_ringbuffers():
-    global depthringbuf, depthringindex, eventindex, switchindex, kpaindex, hi_freq_kpa_ring, hi_freq_kpa_index
-    global event_ring, error_ring, switch_ring, kpa_ring
+    global hi_freq_kpa_ring, hi_freq_kpa_index
+    global event_ring, error_ring, switch_ring, kpa_ring, depth_ring
 
-    depthringbuf = [0]                 # start with a list containing zero...
-    if DEPTHRINGSIZE > 1:             # expand it as needed...
-        for _ in range(DEPTHRINGSIZE - 1):
-            depthringbuf.append(0)
-    if DEBUGLVL > 0: print("Ringbuf is ", depthringbuf)
-    depthringindex = 0
-
-# Standard ring buffer for errors using the instance
-    # error_ring = RingBuffer(
-    #     size=ERRORRINGSIZE, 
-    #     time_formatter=lambda t: format_secs_long(t),
-    #     short_time_formatter=lambda t: format_secs_short(t),
-    #     value_formatter=lambda x: errors.get_description(x),
-    #     logger=ev_log.write
-    # )
+    # depthringbuf = [0]                # start with a list containing zero...
+    # if DEPTHRINGSIZE > 1:             # expand it as needed...
+    #     for _ in range(DEPTHRINGSIZE - 1):
+    #         depthringbuf.append(0)
+    # if DEBUGLVL > 0: print("Ringbuf is ", depthringbuf)
+    # depthringindex = 0
 
     switch_ring = RingBuffer(
         size=SWITCHRINGSIZE, 
@@ -2586,6 +2578,12 @@ def init_ringbuffers():
 
     kpa_ring = RingBuffer(
         size=KPARINGSIZE, 
+        time_formatter=lambda t: format_secs_long(t),
+        short_time_formatter=lambda t: format_secs_short(t)
+    )
+
+    depth_ring = RingBuffer(
+        size=DEPTHRINGSIZE, 
         time_formatter=lambda t: format_secs_long(t),
         short_time_formatter=lambda t: format_secs_short(t)
     )
@@ -2612,8 +2610,14 @@ def init_ringbuffers():
     hi_freq_kpa_ring = [0 for _ in range(HI_FREQ_RINGSIZE)]
     hi_freq_kpa_index = 0
 
+def change_TB(newTB_ms):
+    distSensor.stopRanging()
+    if not distSensor.setMeasurementTimingBudget(newTB_ms * 1000):      # convert to uSecs
+        print("setTB failed!")
+    distSensor.startRanging()
+
 def init_all():
-    global borepump, free_space_KB, presspump, vbus_status, vbus_on_time, report_outage
+    global borepump, free_space_KB, presspump, vbus_prev_status, vbus_last_OFF_time, report_max_outage
     global display_mode, navigator, encoder_count, encoder_btn_state, enc_a_last_time, enc_btn_last_time, modebtn_last_time
     global slist, program_pending, sys_start_time, rotary_btn_pressed, kpa_sensor_found
     global nav_btn_state, nav_btn_last_time
@@ -2659,20 +2663,21 @@ def init_all():
         solenoid.value(0)           # be very careful... inverse logic!
     else:
         if DEBUGLVL > 0:
-            print(str_msg +  "OFF ... closing valve")
+            print(str_msg + "OFF ... closing valve")
         solenoid.value(1)           # be very careful... inverse logic!
 
     presspump           = Pump("PressurePump", False)
 
     init_ringbuffers()                      # this is required BEFORE we raise any alarms...
 
-    navigator.set_buffer("events", event_ring.buffer)
-    navigator.set_buffer("switch", switch_ring.buffer)
-    navigator.set_buffer("kpa",    kpa_ring.buffer)
-    navigator.set_buffer("errors", error_ring.buffer)
+    navigator.set_buffer(MenuNavigator.EVENTRING,  event_ring.buffer)
+    navigator.set_buffer(MenuNavigator.SWITCHRING, switch_ring.buffer)
+    navigator.set_buffer(MenuNavigator.KPARING,    kpa_ring.buffer)
+    navigator.set_buffer(MenuNavigator.ERRORRING,  error_ring.buffer)
+    navigator.set_buffer(MenuNavigator.DEPTHRING,  depth_ring.buffer)
 
     navigator.set_program_list(program_list)
-    #  Note: filelist is set in show_dir
+    #  Note: filelist is set in show_dir... DO NOT set here !!
 
     sync_programlist_to_menu()
 
@@ -2688,13 +2693,13 @@ def init_all():
     read_count_since_ON = 0
     now                 = time.time()
     if vbus_sense.value():
-        vbus_status     = True
-        vbus_on_time    = now 
-        report_outage   = True
+        vbus_prev_status     = True
+        vbus_last_OFF_time    = now 
+        report_max_outage   = True
     else:
-        vbus_status     = False         # just in case we start up without main power, ie, running on battery
-        vbus_on_time    = now - 60 * 60        # looks like an hour ago
-        report_outage   = False
+        vbus_prev_status     = False         # just in case we start up without main power, ie, running on battery
+        vbus_last_OFF_time    = now - 60 * 60        # looks like an hour ago
+        report_max_outage   = False
 
     display_mode        = "pressure"
     program_pending     = False         # no program
@@ -2719,8 +2724,8 @@ def init_all():
     if not kpa_sensor_found:
         lcd4x20.move_to(0, 3)
         lcd4x20.putstr(f'NO PS: kPa:{startup_calibrated_pressure:2}')
-        print(f'{PS_ND} {startup_calibrated_pressure=}')
-        ev_log.write(f"{now_time_long()}  {PS_ND} initial:{startup_calibrated_pressure:3} - HF kPa logging disabled\n")
+        print(f'{PS_ND} - {startup_calibrated_pressure=}')
+        ev_log.write(f"{now_time_long()} {PS_ND} initial:{startup_calibrated_pressure:3} - HF kPa logging disabled\n")
     else:
         print(f"Pressure sensor detected - {startup_raw_ADC=} {startup_calibrated_pressure=}")
         ev_log.write(f"{now_time_long()} Pressure sensor detected - logging enabled\n")
@@ -2729,7 +2734,26 @@ def init_all():
     ONESECBLINK         = 850          # 1 second blink time for LED
     lcd_timer           = None
 
-    btn_click = True
+    btn_click = False
+
+#   Do spiffy stuff with VL53L1X if I can...
+    if hasattr(distSensor, "setMeasurementTimingBudget"):
+        change_TB(TIMEBUDGET_MS)         # this line only called if my driver is loaded.
+        distSensor.stopRanging()
+        distSensor.setDistanceMode('medium')
+        sleep_ms(200)
+        distSensor.setROISize(ROISIZE, ROISIZE)
+        sleep_ms(200)
+        distSensor.startRanging()
+        sleep_ms(500)
+        _ = distSensor.read()
+        _ = distSensor.read()
+        _ = distSensor.read()       # couple of dummy reads to make sure things have settled
+        ev_log.write(f"{now_time_long()} Set VL53L1X TimeBudget to {TIMEBUDGET_MS} ms, ROI to {ROISIZE}, DM to 'medium'\n")
+        print(f"{now_time_long()} Set VL53L1X TimeBudget to {TIMEBUDGET_MS} ms, ROI to {ROISIZE}, and DM to 'medium'")
+    else:
+        ev_log.write(f"{now_time_long()} setMeasurementTimingBudget not available in this driver.\n")
+        print("setMeasurementTimingBudget not available in this driver.")
 
 def heartbeat() -> bool:
     global borepump
@@ -2772,7 +2796,7 @@ def confirm_and_switch_solenoid(state):
 
 def free_space()->int:
     # Get the filesystem stats
-    stats = uos.statvfs('/')
+    stats = uos.statvfs('/')        # type: ignore   YUK, but wasted too much time trying to fix Pylance...
     
     # Calculate free space
     block_size = stats[0]
@@ -2788,19 +2812,14 @@ def do_enter_process():
 
     if ui_mode == UI_MODE_MENU:
         navmode = navigator.mode
-        if navmode == "menu":
+        if navmode == MenuNavigator.NAVMODE_MENU:
             navigator.enter()
         elif navmode == "value_change":
             navigator.set()
         elif "view" in navmode:        # careful... if more modes are added, ensure they contain "view"
             navigator.go_back()
-        # elif navmode == "wait":         # added to provide compatibility with 5-way switch
-        #     print("Doing the WAIT go_back thing...")
-        #     navigator.go_back()
     elif ui_mode == UI_MODE_NORM:
-        # print("in do_enter_process: Entering MENU mode")
         Change_Mode(UI_MODE_MENU)
-        # ui_mode = UI_MODE_MENU
         navigator.go_to_start()
         navigator.display_current_item()
     else:
@@ -2812,42 +2831,47 @@ def sim_detect()->bool:
 # endregion
 # region ASYNCIO defs
 async def monitor_vbus()->None:
-    global vbus_on_time, report_outage, vbus_status
-    str_lost = "VBUS LOST"
-    str_restored = "VBUS RESTORED"
+    """
+    Monitor power supplied to VBUS, report outages, and check for long outages > MAX_OUTAGE seonds
+    """
+    global vbus_last_OFF_time, report_max_outage, vbus_prev_status
 
     while True:
-        if vbus_sense.value():
-            if not vbus_status:     # power has turned on since last test
+        if vbus_sense.value():          # we have power
+            if not vbus_prev_status:    # power has turned on since last test
                 now = time.time()
-                vbus_on_time = now
-                report_outage = True
-                s = f"{now_time_long()}  {str_restored}\n"
+                outage_duration = now - vbus_last_OFF_time
+                s = f"{now_time_long()} {VBUS_RESTORED}\n"
                 print(s)
-                event_ring.add(str_restored)
+                event_ring.add(VBUS_RESTORED)
                 ev_log.write(s)
                 lcd.setCursor(0,1)
-                lcd.printout(str_restored)
-                vbus_status = True
-        else:
-            if report_outage:
-                s = f"{now_time_long()}  {str_lost}\n"
-                print(s)
-                event_ring.add(str_lost)
-                ev_log.write(s)
-                lcd.setCursor(0,1)
-                lcd.printout(str_lost)
-                vbus_status = False
-                report_outage = False
-
+                lcd.printout(VBUS_RESTORED)
+                print(f'{outage_duration=}')
+                report_max_outage = True
+                vbus_prev_status = True
+        else:                           # NO POWER
             now = time.time()
-            if (now - vbus_on_time >= MAX_OUTAGE) and report_outage:
-                s = f"{now_time_long()}  Power off more than {MAX_OUTAGE} seconds\n"
+            if vbus_prev_status:        # we had power previous loop - now LOST POWER...
+                vbus_last_OFF_time = now
+                s = f"{now_time_long()} {VBUS_LOST}\n"
                 print(s)
-                ev_log.write(s)  # seconds since last saw power 
-                event_ring.add("MAX_OUTAGE")
-                report_outage = True
-                # housekeeping(False)
+                event_ring.add(VBUS_LOST)
+                ev_log.write(s)
+                lcd.setCursor(0,1)
+                lcd.printout(VBUS_LOST)
+                vbus_prev_status = False
+            else:                       # still no power, same as last loop
+                time_off_so_far = now - vbus_last_OFF_time
+                if (time_off_so_far >= MAX_OUTAGE) and report_max_outage:
+                    s = f"{now_time_long()} VBUS off more than {MAX_OUTAGE} seconds\n"
+                    print(s)
+                    ev_log.write(s)
+                    lcd.setCursor(0,1)
+                    lcd.printout("MAX_OUTAGE") 
+                    event_ring.add("MAX_OUTAGE")
+                    report_max_outage = False       # OK... reported, now shut up until next long outage event
+                    housekeeping(False)             # save stuff... but don't close files
         await asyncio.sleep(1)
 
 async def read_pressure()->None:
@@ -2901,7 +2925,7 @@ async def read_pressure()->None:
             await asyncio.sleep_ms(PRESSURE_PERIOD_MS)
 
     except Exception as e:
-        print(f"read_pressure exception: {e}, {kpaindex=}")
+        print(f"read_pressure exception: {e}")
 
 async def regular_flush(flush_seconds)->None:
     while True:
@@ -3091,7 +3115,7 @@ async def do_main_loop():
     global ev_log, rec_num, housetank, system, op_mode
 
     # start doing stuff
-    alarm.value(0)			    # turn alarm off
+    screamer.value(0)			    # turn alarm off
     beeper.value(0)			    # turn beeper off
     lcd.clear()
     lcd_on()
@@ -3101,8 +3125,7 @@ async def do_main_loop():
         if DEBUGLVL > 0:
             print("GAK... no State Machine")
     else:
- #       print(f"Before while...{type(system.state)} ")
-        while  str(system.state) != "READY":
+        while  str(system.state) != "READY":        # TODO add a "standby" state... requires wiring XSHUT to VL53L1X
             print(str(system.state))
             if str(system.state) == "PicoReset":
                 connect_wifi()  # ACK WIFI
@@ -3125,13 +3148,13 @@ async def do_main_loop():
             # sleep(1)
 
     start_time = time.time()
-    init_logging()          # needs correct time first!
     print(f"Main TX starting {format_secs_long(start_time)} swv:{SW_VERSION}")
+    init_logging()          # needs correct time first!
     
     get_tank_depth()
     init_all()
 
-    _ = Timer(period=config_dict[LCD] * 1000, mode=Timer.ONE_SHOT, callback=lcd_off)
+    _ = Timer(period=config_dict[LCD] * 1000, mode=Timer.ONE_SHOT, callback=lcd_off)    # type:ignore
 
     str_msg = "Immediate switch pump "
     housetank.state = tank_is
