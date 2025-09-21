@@ -25,7 +25,7 @@ from umachine import Timer, Pin, ADC, soft_reset, I2C
 from MenuNavigator import MenuNavigator
 from encoder import Encoder
 from ubinascii import b2a_base64 as b64
-from SM_SimpleFSM import SimpleDevice
+from State_Machine import SimpleDevice
 # from lcd_api import LcdApi
 from i2c_lcd import I2cLcd
 from Pump import Pump
@@ -36,13 +36,15 @@ from stats import mean_stddev, linear_regression
 from ringbuffer import RingBuffer, DuplicateDetectingBuffer
 from utils import now_time_short, now_time_long, format_secs_short, format_secs_long, now_time_tuple
 from Pushbutton import Pushbutton
+
+from TM_Protocol import *
 #import aioprof
 
 # from math import sqrt  # MicroPython does include math
 
 # endregion
 # region INITIALISE
-SW_VERSION          = "20/9/25 01:34"      # for display
+SW_VERSION          = "21/9/25 22:49"      # for display
 DEBUGLVL            = 0
 
 # micropython.mem_info()
@@ -79,7 +81,7 @@ DEBOUNCE_ROTARY     = 10            # determined from trial... see test_rotary_i
 DEBOUNCE_BUTTON     = 400           # 50 was still registering spurious presses... go real slow.
 ROTARY_PERIOD_MS    = 200           # needs to be short... check rotary ISR variables
 PRESSURE_PERIOD_MS  = 1000          # ms
-RADIO_PAUSE         = 1000          # ms
+#RADIO_PAUSE         = 1000          # TODO make RADIO_PAUSE consistent with RX - put it in TM_Protocol!
 SLOW_BLINK          = 850           # ms
 FAST_BLINK          = 300           # ms
 BlinkDelay          = SLOW_BLINK    # for blinking LED... 1 second, given LED is on for 150ms, off for 850ms
@@ -237,6 +239,10 @@ ROISIZE             = 12
 
 VBUS_LOST           = "VBUS LOST"
 VBUS_RESTORED       = "VBUS RESTORED"
+
+# Some modes
+DM_DEPTH            = 'depth'
+DM_PRESSURE         = 'pressure'
 
 # endregion
 # region EMAIL
@@ -730,7 +736,7 @@ def cancel_program()->None:
 def display_depth():
     global display_mode
 
-    display_mode = "depth"
+    display_mode = DM_DEPTH
     print(f'{display_mode=}')
     lcd.setCursor(0,1)
     lcd.printout(f'{"Display depth":<16}')
@@ -738,7 +744,7 @@ def display_depth():
 def display_pressure():
     global display_mode
 
-    display_mode = "pressure"
+    display_mode = DM_PRESSURE
     print(f'{display_mode=}')
     lcd.setCursor(0,1)
     lcd.printout(f'{"Display kPa":<16}')
@@ -1822,11 +1828,14 @@ def log_switch_error(new_state):
 def parse_reply(rply):
     if DEBUGLVL > 1: print(f"in parse arg is {rply}")
     if isinstance(rply, tuple):			# good...
-        key = rply[0]
+        key = rply[0].upper()
         val = rply[1]
 #        print(f"in parse: key={key}, val={val}")
-        if key.upper() == "STATUS":
+        if key == MSG_STATUS_RSP:
             return True, val
+        elif MSG_ERROR in key:          # TODO Fix radio MSG_ERR receipts
+            resp = key.split(" ")
+            return False, -1
         else:
             print(f"Unknown tuple: key {key}, val {val}")
             return False, -1
@@ -1856,12 +1865,12 @@ def borepump_ON(reason:str):
     if SIMULATE_PUMP:
         print(f"{now_time_long()} SIM Pump ON")
     else:
-        tup = ("ON", radio_time(time.time()))   # was previosuly counter... now, time
+        tup = (MSG_REQ_ON, radio_time(time.time()))   # was previosuly counter... now, time
     #            print(tup)
-        system.on_event("ON REQ")
-        transmit_and_pause(tup, 2 * RADIO_PAUSE)    # that's two sleeps... as expecting immediate reply
+        system.on_event(SimpleDevice.SM_EV_ON_REQ)
+        transmit_and_pause(tup, 2 * RADIO_PAUSE)    # TODO test R_P - what is typical?
     # try implicit CHECK... which should happen in my RX module as state_changed
-    #            radio.send("CHECK")
+    #            radio.send(MSG_CHECK)
     #            sleep_ms(RADIO_PAUSE)
         if radio.receive():
             rply = radio.message
@@ -1875,7 +1884,7 @@ def borepump_ON(reason:str):
                 switch_ring.add("PUMP ON")
                 # print(f"***********Setting timer for average_kpa at {now_time_long()}")    
                 ev_log.write(f"{now_time_long()} ON {reason}\n")
-                system.on_event("ON ACK")
+                system.on_event(SimpleDevice.SM_EV_ON_ACK)
                 # print(f"***********Setting timer for avg & set_zone at {now_time_long()}")
                 if kpa_sensor_found:
                     reset_state()
@@ -1902,12 +1911,12 @@ def borepump_OFF(reason:str):
     if SIMULATE_PUMP:
         print(f"{now_time_long()} SIM Pump OFF")
     else:
-        tup = ("OFF", radio_time(time.time()))
+        tup = (MSG_REQ_OFF, radio_time(time.time()))
     #            print(tup)
-        system.on_event("OFF REQ")
+        system.on_event(SimpleDevice.SM_EV_OFF_REQ)
         transmit_and_pause(tup, 2 * RADIO_PAUSE)    # that's two sleeps... as expecting immediate reply
     # try implicit CHECK... which should happen in my RX module as state_changed
-    #            radio.send("CHECK")
+    #            radio.send(MSG_CHECK)
     #            sleep_ms(RADIO_PAUSE)
         if radio.receive():
             rply = radio.message
@@ -1919,7 +1928,7 @@ def borepump_OFF(reason:str):
                 # change_logging(False)
                 LOGHFDATA = False
                 ev_log.write(f"{now_time_long()} OFF {reason}\n")
-                system.on_event("OFF ACK")
+                system.on_event(SimpleDevice.SM_EV_OFF_ACK)
                 if DEBUGLVL > 1: print("borepump_OFF: Closing valve")
                 solenoid.value(1)               # wait until pump OFF confirmed before closing valve !!!
             else:
@@ -2346,12 +2355,12 @@ def DisplayData()->None:
 
 # First, determine what to display on LCD 2x16
         if op_mode == OP_MODE_AUTO:
-            if display_mode == "depth":
+            if display_mode == DM_DEPTH:
                 display_str = depth_str
-            elif display_mode == "pressure":
+            elif display_mode == DM_PRESSURE:
                 display_str = pressure_str
             else:
-                display_str = "no display mode"
+                display_str = "no Display Mode"
         elif op_mode == OP_MODE_IRRIGATE:
             now = time.time()
             if program_pending:                                         # programmed cycle waiting to start
@@ -2390,9 +2399,9 @@ def DisplayData()->None:
             else:
                 display_str = "IRRIG MODE...??"
         elif op_mode == OP_MODE_DISABLED:
-            if display_mode == "depth":
+            if display_mode == DM_DEPTH:
                 display_str = depth_str
-            elif display_mode == "pressure":
+            elif display_mode == DM_PRESSURE:
                 display_str = pressure_str
         elif op_mode == OP_MODE_MAINT:
             display_str = "MAINT MODE"
@@ -2447,7 +2456,7 @@ def listen_to_radio():
         msg = radio.message
         if isinstance(msg, str):
             print(msg)
-            if "FAIL" in msg:
+            if MSG_ERROR in msg:
                 print(f"Dang... something wrong...{msg}")
         elif isinstance(msg, tuple):
             print("Received tuple: ", msg[0], msg[1])
@@ -2466,17 +2475,17 @@ def init_radio():
 
 # if we get here, my RX is responding.
     # print("RX responded to ping... comms ready")
-    system.on_event("ACK COMMS")
+    system.on_event(SimpleDevice.SM_EV_COMMS_ACK)
 
 def ping_RX() -> bool:           # at startup, test if RX is listening
 #    global radio
 
     ping_acknowleged = False
-    transmit_and_pause("PING", RADIO_PAUSE)
+    transmit_and_pause(MSG_PING_REQ, RADIO_PAUSE)
     if radio.receive():                     # depending on time relative to RX Pico, may need to pause more here before testing?
         msg = radio.message
         if isinstance(msg, str):
-            if msg == "PING REPLY":
+            if msg == MSG_PING_RSP:
                 ping_acknowleged = True
 
     return ping_acknowleged
@@ -2484,7 +2493,7 @@ def ping_RX() -> bool:           # at startup, test if RX is listening
 def get_initial_pump_state() -> bool:
 
     initial_state = False
-    transmit_and_pause("CHECK",  RADIO_PAUSE)
+    transmit_and_pause(MSG_CHECK,  RADIO_PAUSE)
     if radio.receive():
         rply = radio.message
         valid_response, new_state = parse_reply(rply)
@@ -2529,7 +2538,7 @@ def connect_wifi():
         while not wlan.isconnected():
             print(">", end="")
             sleep(1)
-    system.on_event("ACK WIFI")
+    system.on_event(SimpleDevice.SM_EV_WIFI_ACK)
     my_ifconfig = wlan.ifconfig()
     my_IP = my_ifconfig[0]
     print('Connected to:', wlan.ifconfig())
@@ -2546,7 +2555,7 @@ def init_clock():
 #   if time.localtime()[0] < 2024:  # if we reset, localtime will return 2021...
 #        connect_wifi()
     set_time()
-    system.on_event("ACK NTP")
+    system.on_event(SimpleDevice.SM_EV_NTP_ACK)
 
 def calibrate_clock():
     global radio
@@ -2554,7 +2563,7 @@ def calibrate_clock():
     delay=500
 #   for i in range(1):
     p = ticks_ms()
-    s = "CLK"
+    s = MSG_CLOCK
     t=(s, p)
     transmit_and_pause(t, delay)
 
@@ -2701,7 +2710,7 @@ def init_all():
         vbus_last_OFF_time    = now - 60 * 60        # looks like an hour ago
         report_max_outage   = False
 
-    display_mode        = "pressure"
+    display_mode        = DM_PRESSURE
     program_pending     = False         # no program
     sys_start_time      = now            # must be AFTER we set clock ...
     
@@ -2767,7 +2776,7 @@ def heartbeat() -> bool:
 # only do heartbeat if the pump is running
     if borepump.state:
         # print("sending HEARTBEAT")
-        transmit_and_pause("BABOOM", RADIO_PAUSE)       # this might be a candidate for a shorter delay... if no reply expected
+        transmit_and_pause(MSG_HEARTBEAT, RADIO_PAUSE)       # this might be a candidate for a shorter delay... if no reply expected
     return borepump.state
 
 def switch_valve(state):
@@ -2814,7 +2823,7 @@ def do_enter_process():
         navmode = navigator.mode
         if navmode == MenuNavigator.NAVMODE_MENU:
             navigator.enter()
-        elif navmode == "value_change":
+        elif navmode == MenuNavigator.NAVMODE_VALUE:
             navigator.set()
         elif "view" in navmode:        # careful... if more modes are added, ensure they contain "view"
             navigator.go_back()
@@ -2910,7 +2919,7 @@ async def read_pressure()->None:
                 hf_log.write(f"{now_time_long()} {bpp:>3} {hi_freq_avg} {error_bar}\n")
             if ui_mode == UI_MODE_NORM:
                 if op_mode ==  OP_MODE_AUTO: 
-                    if display_mode == "pressure":
+                    if display_mode == DM_PRESSURE:
                         lstr = f'{int(hi_freq_avg):3} {zone}'
                         lcd.setCursor(9, 1)
                         lcd.printout(lstr)
@@ -3125,26 +3134,26 @@ async def do_main_loop():
         if DEBUGLVL > 0:
             print("GAK... no State Machine")
     else:
-        while  str(system.state) != "READY":        # TODO add a "standby" state... requires wiring XSHUT to VL53L1X
+        while  str(system.state) != SimpleDevice.STATE_PICO_READY:        # TODO add a "standby" state... requires wiring XSHUT to VL53L1X
             print(str(system.state))
-            if str(system.state) == "PicoReset":
+            if str(system.state) == SimpleDevice.STATE_PICO_RESET:
                 connect_wifi()  # ACK WIFI
                 lcd.clear()
                 lcd.printout("WIFI")
-            if str(system.state) == "WIFI_READY":
+            if str(system.state) == SimpleDevice.STATE_WIFI_READY:
                 init_clock()    # ACK NTP
                 lcd.clear()
                 lcd.printout("CLOCK")
-            if str(system.state) == "CLOCK_SET":
+            if str(system.state) == SimpleDevice.STATE_CLOCK_SET:
                 init_radio()    # ACK COMMS
                 lcd.clear()
                 lcd.printout("COMMS")
-            if str(system.state) == "COMMS_READY":
+            if str(system.state) == SimpleDevice.STATE_COMMS_READY:
 #                sync_clock()    # ACK SYNC
 #            if str(system.state) == "CLOCK_SYNCED":
                 lcd.clear()
                 lcd.printout("READY")
-                system.on_event("START_MONITORING")
+                system.on_event(SimpleDevice.SM_EV_SYS_START)
             # sleep(1)
 
     start_time = time.time()

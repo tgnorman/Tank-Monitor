@@ -22,6 +22,9 @@ from TMErrors import TankError
 # i2c                 = I2C(0, sda=Pin(8), scl=Pin(9), freq=400000)
 # lcd4x20             = I2cLcd(i2c, I2C_ADDR, I2C_NUM_ROWS, I2C_NUM_COLS)
 
+# NOTE: I removed the variables used to retain the index position in ringbuffers, when I transitioned depth to a ring.
+# So... always goes back to the start.  No biggie ... and simpler code.  19/9/25
+
 class MenuNavigator:
     NAVMODE_MENU    = 'menu'
     NAVMODE_VALUE   = 'value_change'
@@ -32,9 +35,9 @@ class MenuNavigator:
     MENU_WV         = "W_V"
     MENU_DV         = "D_V"
     MENU_STEP       = "Step"
+    VIEWRING        = "view_ring"
     VIEWPROG        = "view_prgrm"
     VIEWFILES       = "view_files"
-    VIEWRING        = "view_ring"
     PRGRM_SUFFIX    = VIEWPROG.split("_")[1]
     FILES_SUFFIX    = VIEWFILES.split("_")[1]
 
