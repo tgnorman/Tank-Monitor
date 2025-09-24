@@ -43,8 +43,9 @@ from TM_Protocol import *
 # from math import sqrt  # MicroPython does include math
 
 # endregion
+
 # region INITIALISE
-SW_VERSION          = "21/9/25 22:49"      # for display
+SW_VERSION          = "25/9/25 00:09"      # for display
 DEBUGLVL            = 0
 
 # micropython.mem_info()
@@ -206,7 +207,6 @@ housetank           = Tank("Empty")                     # make my tank object
 errors              = TankError()
 timer_mgr           = TimerManager()
 
-system              = SimpleDevice()                    # initialise my FSM.
 wf                  = MyWiFi()
 
 # Configure WiFi SSID and password
@@ -2461,7 +2461,7 @@ def listen_to_radio():
         elif isinstance(msg, tuple):
             print("Received tuple: ", msg[0], msg[1])
 
-def init_radio():
+def init_radio()->bool:
     global radio, system
     
     print("Init radio...")
@@ -2475,7 +2475,8 @@ def init_radio():
 
 # if we get here, my RX is responding.
     # print("RX responded to ping... comms ready")
-    system.on_event(SimpleDevice.SM_EV_COMMS_ACK)
+    return True
+    # system.on_event(SimpleDevice.SM_EV_RADIO_ACK)
 
 def ping_RX() -> bool:           # at startup, test if RX is listening
 #    global radio
@@ -2525,8 +2526,8 @@ def dump_pump_arg(p:Pump):
     ev_log.write(f"Duty cycle: {dc:.2f}%\n")
     ev_log.flush()
 
-def connect_wifi():
-    global system, my_IP
+def init_wifi()->bool:
+    global my_IP
 
 # Connect to Wi-Fi
     wlan = network.WLAN(network.STA_IF)
@@ -2538,24 +2539,25 @@ def connect_wifi():
         while not wlan.isconnected():
             print(">", end="")
             sleep(1)
-    system.on_event(SimpleDevice.SM_EV_WIFI_ACK)
     my_ifconfig = wlan.ifconfig()
     my_IP = my_ifconfig[0]
     print('Connected to:', wlan.ifconfig())
+    return True
+    # system.on_event(SimpleDevice.SM_EV_WIFI_ACK)
    
 def set_time():
  # Set time using NTP server
     print("Syncing time with NTP...")
     ntptime.settime()  # This will set the system time to UTC
     
-def init_clock():
-    global system
+def init_clock()->bool:
 
     print("Initialising local clock")
 #   if time.localtime()[0] < 2024:  # if we reset, localtime will return 2021...
 #        connect_wifi()
     set_time()
-    system.on_event(SimpleDevice.SM_EV_NTP_ACK)
+    return True
+    # system.on_event(SimpleDevice.SM_EV_NTP_ACK)
 
 def calibrate_clock():
     global radio
@@ -2837,6 +2839,21 @@ def do_enter_process():
 def sim_detect()->bool:
     return True
 
+# endregion
+# region AppContext
+class AppContext:
+    def __init__(self):
+        self.wlan = None
+        self.my_IP = None
+        self.lcd = RGB1602.RGB1602(16,2)        # type ignore
+        # Add references to functions if needed
+        # self.log_event = log_event
+        # self.update_ringbuffer = update_ringbuffer
+        # ...etc...
+context             = AppContext()
+context.lcd         = lcd
+
+system              = SimpleDevice(context)       
 # endregion
 # region ASYNCIO defs
 async def monitor_vbus()->None:
@@ -3134,27 +3151,26 @@ async def do_main_loop():
         if DEBUGLVL > 0:
             print("GAK... no State Machine")
     else:
-        while  str(system.state) != SimpleDevice.STATE_PICO_READY:        # TODO add a "standby" state... requires wiring XSHUT to VL53L1X
-            print(str(system.state))
-            if str(system.state) == SimpleDevice.STATE_PICO_RESET:
-                connect_wifi()  # ACK WIFI
-                lcd.clear()
-                lcd.printout("WIFI")
-            if str(system.state) == SimpleDevice.STATE_WIFI_READY:
-                init_clock()    # ACK NTP
-                lcd.clear()
-                lcd.printout("CLOCK")
-            if str(system.state) == SimpleDevice.STATE_CLOCK_SET:
-                init_radio()    # ACK COMMS
-                lcd.clear()
-                lcd.printout("COMMS")
-            if str(system.state) == SimpleDevice.STATE_COMMS_READY:
-#                sync_clock()    # ACK SYNC
-#            if str(system.state) == "CLOCK_SYNCED":
-                lcd.clear()
-                lcd.printout("READY")
+        while  str(system.state) != SimpleDevice.STATE_PICO_READY:      # TODO add a "standby" state... requires wiring XSHUT to VL53L1X
+            current_state = str(system.state)       # NOTE: BY caching system.state this forces only one state transition per loop
+            # print(current_state)        
+            if current_state == SimpleDevice.STATE_PICO_RESET:
+                # system.on_event(SimpleDevice.SM_EV_SYS_INIT)
+                if init_wifi():
+                    system.on_event(SimpleDevice.SM_EV_WIFI_ACK)
+
+            if current_state == SimpleDevice.STATE_WIFI_READY:
+                if init_clock():
+                    system.on_event(SimpleDevice.SM_EV_NTP_ACK)
+
+            if current_state == SimpleDevice.STATE_CLOCK_SET:
+                if init_radio():
+                    system.on_event(SimpleDevice.SM_EV_RADIO_ACK)
+
+            if current_state == SimpleDevice.STATE_RADIO_READY:
                 system.on_event(SimpleDevice.SM_EV_SYS_START)
-            # sleep(1)
+                
+            await asyncio.sleep(1)
 
     start_time = time.time()
     print(f"Main TX starting {format_secs_long(start_time)} swv:{SW_VERSION}")
