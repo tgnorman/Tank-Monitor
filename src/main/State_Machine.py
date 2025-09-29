@@ -160,7 +160,7 @@ class SimpleDevice(object):
     STATE_CLOCKS_SYNC   = 'CLOCKS_SYNCED'       # Not yet in use... place-holder for future work
     STATE_RADIO_READY   = 'RADIO_READY'
     STATE_PICO_READY    = 'READY'
-    STATE_PICO_SLEEP    = 'SNOOZING'            # also for future implementation, with VL53L1X XSHUT
+    STATE_PICO_SLEEP    = 'SLEEP'            # also for future implementation, with VL53L1X XSHUT
     STATE_AUTO          = 'AUTO'
     STATE_IRRIGATE      = 'IRRIGATE'
     STATE_MAINTENANCE   = 'MAINTMODE'

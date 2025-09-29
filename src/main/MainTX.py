@@ -38,6 +38,8 @@ from utils import now_time_short, now_time_long, format_secs_short, format_secs_
 from Pushbutton import Pushbutton
 
 from TM_Protocol import *
+from ringbuf_queue import RingbufQueue
+
 #import aioprof
 
 # from math import sqrt  # MicroPython does include math
@@ -244,6 +246,14 @@ VBUS_RESTORED       = "VBUS RESTORED"
 DM_DEPTH            = 'depth'
 DM_PRESSURE         = 'pressure'
 
+RADIO_LISTEN_MS     = 100           # check for received radio msg every...
+sleep_mins          = 60            # how long to sleep with XSHUT
+
+last_activity_time  = 0             # for sleepmode calcs
+# endregion
+# region Async_Comms
+RADIO_Q_SIZE        = 5             # way overkill... really, I don't expect even 5.
+
 # endregion
 # region EMAIL
 SMTP_SERVER         = "smtp.gmail.com"
@@ -323,6 +333,7 @@ MAXPRESSURE         = "Max Pressure"
 NOPRESSURE          = "No Pressure"
 MAXRUNMINS          = "Max RunMins"
 KPASTDEVMULT        = "P SD Mult"
+SLEEPMODE_MINS      = "Sleep Mins"
 
 config_dict         = {
     DELAY           : MYDELAY,
@@ -334,7 +345,8 @@ config_dict         = {
     NOPRESSURE      : NO_LINE_PRESSURE,
     MAXRUNMINS      : MAX_CONTIN_RUNMINS,
     LCD             : lcd_on_time,
-    KPASTDEVMULT    : kPa_sd_multiple
+    KPASTDEVMULT    : kPa_sd_multiple,
+    SLEEPMODE_MINS  : sleep_mins
             }
 
 timer_dict          = {
@@ -1300,6 +1312,7 @@ new_menu = {
                 { Title_Str : NOPRESSURE,    Value_Str: {Default_Str: 15,   Working_Str : NO_LINE_PRESSURE,     Step_Str : 5}},
                 { Title_Str : MAXRUNMINS,    Value_Str: {Default_Str: 60,   Working_Str : MAX_CONTIN_RUNMINS,   Step_Str : 10}},
                 { Title_Str : KPASTDEVMULT,  Value_Str: {Default_Str: 25,   Working_Str : kPa_sd_multiple,      Step_Str : 1}},
+                { Title_Str : SLEEPMODE_MINS,Value_Str: {Default_Str: 60,   Working_Str : sleep_mins,           Step_Str : 15}},
                 { Title_Str: "Save config",  Action_Str: update_config},
                 { Title_Str: "Go Back",      Action_Str: my_go_back}
             ]
@@ -2449,18 +2462,6 @@ def LogData()->None:
     # tank_log.write(logstr)          # *** REMOVE AFTER kPa TESTING ***
     print(dbgstr)
 
-def listen_to_radio():
-#This needs to be in a separate event task... next job is that
-    global radio
-    if radio.receive():
-        msg = radio.message
-        if isinstance(msg, str):
-            print(msg)
-            if MSG_ERROR in msg:
-                print(f"Dang... something wrong...{msg}")
-        elif isinstance(msg, tuple):
-            print("Received tuple: ", msg[0], msg[1])
-
 def init_radio()->bool:
     global radio, system
     
@@ -2494,7 +2495,7 @@ def ping_RX() -> bool:           # at startup, test if RX is listening
 def get_initial_pump_state() -> bool:
 
     initial_state = False
-    transmit_and_pause(MSG_CHECK,  RADIO_PAUSE)
+    transmit_and_pause(MSG_STATUS_CHK,  RADIO_PAUSE)
     if radio.receive():
         rply = radio.message
         valid_response, new_state = parse_reply(rply)
@@ -2541,7 +2542,7 @@ def init_wifi()->bool:
             sleep(1)
     my_ifconfig = wlan.ifconfig()
     my_IP = my_ifconfig[0]
-    print('Connected to:', wlan.ifconfig())
+    print(f'Connected to {my_IP}')
     return True
     # system.on_event(SimpleDevice.SM_EV_WIFI_ACK)
    
@@ -2638,6 +2639,7 @@ def init_all():
     global stdev_Depth, stdev_Press
     global LOGHFDATA, read_count_since_ON
     global btn_click
+    global last_activity_time
 
     PS_ND               = "Pressure sensor not detected"
     str_msg             = "At startup, BorePump is "
@@ -2741,8 +2743,8 @@ def init_all():
         print(f"Pressure sensor detected - {startup_raw_ADC=} {startup_calibrated_pressure=}")
         ev_log.write(f"{now_time_long()} Pressure sensor detected - logging enabled\n")
 
-    enable_controls()               # enable rotary encoder, LCD B/L button etc
-    ONESECBLINK         = 850          # 1 second blink time for LED
+    enable_controls()                   # enable rotary encoder, LCD B/L button etc
+    ONESECBLINK         = 850           # 1 second blink time for LED
     lcd_timer           = None
 
     btn_click = False
@@ -2765,6 +2767,8 @@ def init_all():
     else:
         ev_log.write(f"{now_time_long()} setMeasurementTimingBudget not available in this driver.\n")
         print("setMeasurementTimingBudget not available in this driver.")
+    
+    last_activity_time = now    # start now... check "regularly" - whatever that is
 
 def heartbeat() -> bool:
     global borepump
@@ -2856,6 +2860,22 @@ context.lcd         = lcd
 system              = SimpleDevice(context)       
 # endregion
 # region ASYNCIO defs
+async def listen_to_radio():
+    """
+    Listen for incoming comms, save to a msg queue
+    """
+    # For full asynchronous comms this must be running as a task.
+    # Full-monty version should probably put received messages in a queue for comsumption.
+
+    # First cut... dont parse... just put whatever was received on the incoming queue
+    global last_msg
+
+    while True:
+        if radio.receive():
+            msg = radio.message
+
+        await asyncio.sleep_ms(RADIO_LISTEN_MS)
+
 async def monitor_vbus()->None:
     """
     Monitor power supplied to VBUS, report outages, and check for long outages > MAX_OUTAGE seonds
@@ -3145,8 +3165,11 @@ async def do_main_loop():
     beeper.value(0)			    # turn beeper off
     lcd.clear()
     lcd_on()
-    #radio.rfm69_reset
 
+    # BEFORE we init_radio, create radio in/out queues...
+    radio_incoming  = RingbufQueue(RADIO_Q_SIZE)
+    radio_outgoing  = RingbufQueue(RADIO_Q_SIZE)
+    
     if not system:              # yikes... don't have a SM ??
         if DEBUGLVL > 0:
             print("GAK... no State Machine")
@@ -3173,7 +3196,7 @@ async def do_main_loop():
             await asyncio.sleep(1)
 
     start_time = time.time()
-    print(f"Main TX starting {format_secs_long(start_time)} swv:{SW_VERSION}")
+    print(f"Main TX starting {format_secs_long(start_time)} SM version:{system.version} TX version:{SW_VERSION}")
     init_logging()          # needs correct time first!
     
     get_tank_depth()

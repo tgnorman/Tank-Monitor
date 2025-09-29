@@ -144,7 +144,9 @@ def connect_wifi():
         wlan.connect(ssid, password)
         while not wlan.isconnected():
             time.sleep(1)
-    print('Connected to:', wlan.ifconfig())
+    my_ifconfig = wlan.ifconfig()
+    my_IP = my_ifconfig[0]
+    print(f'Connected to {my_IP}')
 
 def set_time():
 # Set time using NTP server
@@ -153,7 +155,6 @@ def set_time():
 
 def init_clock():
     if time.localtime()[0] < 2024:  # if we reset, localtime will return 2021...
-        connect_wifi()
         set_time()
 
 def calculate_clock_diff() -> int:
@@ -192,13 +193,17 @@ def housekeeping(close_files: bool):
     print("Flushing data to flash...")
 
     event_log.write(f"Receiver shutdown at {now_time_long()}\n")
+    if DEBUGLVL > 0: print('Before flush')
     event_log.flush()
     if close_files:
+        if DEBUGLVL > 0:print('Before close()')
         event_log.close()
+        if DEBUGLVL > 0:print('After close()')
 
 def main():
     global bore_ctl, detect, led, pump_state, state_changed, last_ON_time, last_comms_time
-
+    
+    connect_wifi()
     init_clock()
     init_logging()
     start_time = time.time()
@@ -229,7 +234,7 @@ def main():
                 last_comms_time = time.time()
                 if isinstance(message, str):
                     if DEBUGLVL > 2: print(message)
-                    if message == MSG_CHECK:
+                    if message == MSG_STATUS_CHK:
                         resp_txt = (MSG_STATUS_RSP, 1 if check_state(CHECK_MS) else 0)   # reply encodes pump status
                         transmit_and_pause(resp_txt, RADIO_PAUSE)
                         if DEBUGLVL > 1: print(f"REPLY: {resp_txt}")
