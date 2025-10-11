@@ -38,13 +38,7 @@ class State(object):
         return self.__class__.__name__
     
 class PICO_RESET(State):
-    # def on_enter(self, context):
-    #     print('PICO_RESET - on_enter')
-    #     super().on_enter(context)
-        # context.init_wifi()         # this CANNOT work here... system object is not yet created!!
-
     def on_enter(self, context):
-        # context.boot_required = True
         context.lcd.clear()
         context.lcd.printout('PICO_RESET')
         return self
@@ -73,7 +67,6 @@ class CLOCK_SET(State):
         context.lcd.clear()
         context.lcd.printout('CLOCK')
         super().on_enter(context)
-        # context.init_radio()
     
     def on_event(self, event, context):
         # print('CLOCK_SET - ON_EVENT')
@@ -90,13 +83,31 @@ class CLOCK_SYNCED(State):              # currently NOT USED... no synchronisati
         return self
         
 class RADIO_READY(State):
-    def on_event(self, event, context):
+    def on_enter(self, context):
         context.lcd.clear()
         context.lcd.printout('RADIO')
+        super().on_enter(context)
+
+    def on_event(self, event, context):
+        if event == SimpleDevice.SM_EV_INI_ACK:
+            return INIT_PUMP()
+        if event == SimpleDevice.SM_EV_INI_NAK:
+            return INIT_PUMP()
+        return self
+    
+class INIT_PUMP(State):                 # added another state to facilitate all prelim stuff sorted before entering main "READY" loop
+    def on_enter(self, context):
+        context.lcd.clear()
+        context.lcd.printout('PUMP')
+        print('SM on_enter INIT_PUMP')
+        super().on_enter(context)
+        
+    def on_event(self, event, context):
+        print(f'INIT_PUMP on_event {event}')
         if event == SimpleDevice.SM_EV_SYS_START:
             return READY()
         return self
-                           
+    
 class READY(State):
 # Initial state on start-up 
 
@@ -159,6 +170,7 @@ class SimpleDevice(object):
     STATE_CLOCK_SET     = 'CLOCK_SET'
     STATE_CLOCKS_SYNC   = 'CLOCKS_SYNCED'       # Not yet in use... place-holder for future work
     STATE_RADIO_READY   = 'RADIO_READY'
+    STATE_INITIALPUMP   = 'INIT_PUMP'
     STATE_PICO_READY    = 'READY'
     STATE_PICO_SLEEP    = 'SLEEP'            # also for future implementation, with VL53L1X XSHUT
     STATE_AUTO          = 'AUTO'
@@ -183,12 +195,16 @@ class SimpleDevice(object):
     SM_EV_RADIO_ACK     = 'RADIO ACK'
     SM_EV_WIFI_ACK      = 'WIFI ACK'
     SM_EV_NTP_ACK       = 'NTP ACK'
-
+    SM_EV_INI_ACK       = 'INI ACK'
+    SM_EV_INI_NAK       = 'INI NAK'
+    
     SM_EV_SYS_INIT      = 'SYS INIT'
     SM_EV_SYS_START     = 'START MONITORING'
+    SM_EV_MAINTENANCE   = 'SYS MAINT'
+    
 # endregion
     def __init__(self, context):
-        self.version = '24/9/2025'
+        self.version = '4/10/2025'
         self.context = context
         self.state = PICO_RESET()            # NOTE: when my SimpleDevice instance is created, start in state PICO_RESET
         self.state.on_enter(context)
@@ -201,7 +217,7 @@ class SimpleDevice(object):
 
         TN added on_enter, to provide a means to 'do stuff' when a new state is entered.
         *** IMPORTANT CAVEAT:   NEVER, NEVER, add code in on_enter that directly OR indirectly triggers events or state changes !!!
-        Strictly for passive stuff... initialise an attribute etc.  Basic, simple logic only!
+        Strictly for passive stuff... initialise an attribute etc.  Basic, simple logic only!  Otherwise things go re-entrant.
         """
         # The next state will be the result of the on_event function.
         #self.state = self.state.on_event(event, self.context)

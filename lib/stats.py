@@ -3,7 +3,7 @@ import math     # type: ignore
 def mean_stddev(buff:list, count:int, startidx:int, ringlen:int)->tuple[float, float]:
     """
         Args:
-            buff:   list of values, stored in a ring buffer
+            buff:   list of values, stored in a ring buffer.  Either scalar or tuple...
             count:  number of values to use
             startidx: position in ring to begin at... and then...
             look BACKWARDS from ABSOLUTE index startidx... NOT relative to hf_index
@@ -16,18 +16,34 @@ def mean_stddev(buff:list, count:int, startidx:int, ringlen:int)->tuple[float, f
         count = ringlen     # should probably raise an exception...
     if count < 2:
         return 0, 0
+    
     s = 0.0
-    for i in range(count):
-        mod_index = (startidx - 1 - i) % ringlen
-        s += buff[mod_index]    
-    mean: float = s / count
-
     ss_diffs = 0.0
-    for i in range(count):
-        mod_index = (startidx - 1 - i) % ringlen
-        x = buff[mod_index]
-        diff = (x - mean)
-        ss_diffs += diff * diff
+
+    tuplebuf:bool = isinstance(buff[0], tuple)      # let's see what we have here...
+    if not tuplebuf:
+        for i in range(count):
+            mod_index = (startidx - 1 - i) % ringlen
+            s += buff[mod_index]    
+        mean: float = s / count
+
+        for i in range(count):
+            mod_index = (startidx - 1 - i) % ringlen
+            x = buff[mod_index]
+            diff = (x - mean)
+            ss_diffs += diff * diff
+    else:       # tuples, (timestamp, value)
+        for i in range(count):
+            mod_index = (startidx - 1 - i) % ringlen
+            s += buff[mod_index][1]    
+        mean: float = s / count
+
+        for i in range(count):
+            mod_index = (startidx - 1 - i) % ringlen
+            x = buff[mod_index][1]
+            diff = (x - mean)
+            ss_diffs += diff * diff
+
     v = ss_diffs / (count - 1)
     sd = math.sqrt(v)
     return mean, sd
