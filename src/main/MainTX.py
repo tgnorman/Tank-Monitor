@@ -47,8 +47,8 @@ from ringbuf_queue import RingbufQueue
 # endregion
 
 # region INITIALISE
-SW_VERSION          = "25/9/25 00:09"      # for display
-DEBUGLVL            = 0
+SW_VERSION          = "11/10/25 00:09"      # works with old MainRX... NOT AsyncRX
+DEBUGLVL            = 2
 
 # micropython.mem_info()
 # gc.collect()
@@ -1805,7 +1805,7 @@ def updateData():
     sma_depth = calc_SMA(depth_ring.buffer)            # this calculates average of non-zero values... regardless of how many entries in the ring
     time_factor = config_dict[DELAY] / 60
     housetank.depth_ROC = int((sma_depth - housetank.last_depth) / time_factor)	# ROC in mm/minute.  Save negatives also...
-    if DEBUGLVL > 0: print(f"{sma_depth=} {housetank.last_depth=} {housetank.depth_ROC=}")
+    if DEBUGLVL > 2: print(f"{sma_depth=} {housetank.last_depth=} {housetank.depth_ROC=}")
     housetank.last_depth = sma_depth				# track ROC since last reading using SMA_DEPTH... NOT raw depth
     depth_str = f"{housetank.depth/1000:.2f}m " + tank_is
 
@@ -1839,25 +1839,30 @@ def log_switch_error(new_state):
     event_ring.add(f"ERR swtch {new_state}")
     
 def parse_reply(rply):
-    if DEBUGLVL > 1: print(f"in parse arg is {rply}")
+    if DEBUGLVL > 1: print(f"{now_time_long()} in parse_reply, arg is {rply}")
     if isinstance(rply, tuple):			# good...
         key = rply[0].upper()
         val = rply[1]
-#        print(f"in parse: key={key}, val={val}")
-        if key == MSG_STATUS_RSP:
+        # if DEBUGLVL > 1: print(f"in parse: key={key}, val={val}")
+        if key == MSG_STATUS_ACK:
             return True, val
         elif MSG_ERROR in key:          # TODO Fix radio MSG_ERR receipts
             resp = key.split(" ")
             return False, -1
         else:
-            print(f"Unknown tuple: key {key}, val {val}")
+            print(f"{now_time_long()} Unknown tuple: key {key}, val {val}")
             return False, -1
     else:
         print(f"Expected tuple... didn't get one.  Got {rply}")
         return False, False
 
 def transmit_and_pause(msg, delay):
-    if DEBUGLVL > 1: print(f"TX Sending {msg}, sleeping for {delay} ms")
+    not_ready_count = 0
+    while not radio.transceiver_ready:
+        not_ready_count += 1
+        sleep_ms(5)
+    if not_ready_count > 0: print(f'{not_ready_count=}')    
+    if DEBUGLVL > 1: print(f"{now_time_long()} TX Sending {msg}, sleeping for {delay} ms")
     radio.send(msg)
     sleep_ms(delay)
 
@@ -1881,14 +1886,15 @@ def borepump_ON(reason:str):
         tup = (MSG_REQ_ON, radio_time(time.time()))   # was previosuly counter... now, time
     #            print(tup)
         system.on_event(SimpleDevice.SM_EV_ON_REQ)
-        transmit_and_pause(tup, 2 * RADIO_PAUSE)    # TODO test R_P - what is typical?
+        wait_ms = 3 * RADIO_PAUSE
+        transmit_and_pause(tup, wait_ms)    # TODO test R_P - what is typical?
     # try implicit CHECK... which should happen in my RX module as state_changed
     #            radio.send(MSG_CHECK)
     #            sleep_ms(RADIO_PAUSE)
         if radio.receive():
             rply = radio.message
         #                print(f"radio.message (rm): {rm}")
-        #                print(f"received response: rply is {rply}")
+            if DEBUGLVL > 1: print(f"{now_time_long()} received response: {rply}")
             valid_response, new_state = parse_reply(rply)
         #                print(f"in ctlBP: rply is {valid_response} and {new_state}")
             if valid_response and new_state > 0:
@@ -1909,6 +1915,8 @@ def borepump_ON(reason:str):
                     LOGHFDATA = True
             else:
                 log_switch_error(new_state)
+        else:
+            print(f'{now_time_long()} No reply to REQ ON after {wait_ms} ms')
 
 def reset_state():
     global read_count_since_ON, stable_pressure, avg_kpa_set, kpa_peak, kpa_low
@@ -1927,7 +1935,8 @@ def borepump_OFF(reason:str):
         tup = (MSG_REQ_OFF, radio_time(time.time()))
     #            print(tup)
         system.on_event(SimpleDevice.SM_EV_OFF_REQ)
-        transmit_and_pause(tup, 2 * RADIO_PAUSE)    # that's two sleeps... as expecting immediate reply
+        wait_ms = 3 * RADIO_PAUSE
+        transmit_and_pause(tup, wait_ms)    # that's two sleeps... as expecting immediate reply
     # try implicit CHECK... which should happen in my RX module as state_changed
     #            radio.send(MSG_CHECK)
     #            sleep_ms(RADIO_PAUSE)
@@ -1946,6 +1955,8 @@ def borepump_OFF(reason:str):
                 solenoid.value(1)               # wait until pump OFF confirmed before closing valve !!!
             else:
                 log_switch_error(new_state)
+        else:
+            print(f'{now_time_long()} No reply to REQ OFF after {wait_ms} ms')
 
 def manage_tank_fill():
     global tank_is
@@ -1956,9 +1967,10 @@ def manage_tank_fill():
     if tank_is == housetank.fill_states[len(housetank.fill_states) - 1]:		# Empty
         if not borepump.state:		# pump is off, we need to switch on
             if op_mode == OP_MODE_AUTO:
-                if DEBUGLVL > 1: print("cBP: Opening valve")
+                if DEBUGLVL > 1: print("manage_tank_fill: Opening valve")
                 solenoid.value(0)
             if confirm_solenoid():
+                if DEBUGLVL > 1: print("manage_tank_fill: calling borepump_ON")
                 borepump_ON("Tank EMPTY")
             else:               # dang... want to turn pump on, but solenoid looks OFF
                 raiseAlarm("NOT turning pump on... valve is CLOSED!", tank_is)
@@ -2463,12 +2475,12 @@ def LogData()->None:
     print(dbgstr)
 
 def init_radio()->bool:
-    global radio, system
+    global radio
     
     print("Init radio...")
     if radio.receive():
         msg = radio.message
-        print(f"Read {msg}")
+        print(f"Read and discarded {msg}")
 
     while not ping_RX():
         print("Waiting for RX...")
@@ -2483,24 +2495,33 @@ def ping_RX() -> bool:           # at startup, test if RX is listening
 #    global radio
 
     ping_acknowleged = False
-    transmit_and_pause(MSG_PING_REQ, RADIO_PAUSE)
+    wait_ms = 2 * RADIO_PAUSE
+    transmit_and_pause(MSG_PING_REQ, wait_ms)
     if radio.receive():                     # depending on time relative to RX Pico, may need to pause more here before testing?
         msg = radio.message
+        if DEBUGLVL > 1: print(f'{now_time_long()} ping_RX received {msg}')
         if isinstance(msg, str):
             if msg == MSG_PING_RSP:
                 ping_acknowleged = True
+    else:
+        if DEBUGLVL > 1: print(f'{now_time_long()} ping_RX received NO REPLY!')
 
     return ping_acknowleged
 
 def get_initial_pump_state() -> bool:
 
     initial_state = False
-    transmit_and_pause(MSG_STATUS_CHK,  RADIO_PAUSE)
+    wait_ms = 3 * RADIO_PAUSE
+    transmit_and_pause(MSG_STATUS_CHK,  wait_ms)
     if radio.receive():
         rply = radio.message
+        if DEBUGLVL > 1: print(f'{now_time_long()} get_initial_pump_state received: {rply}')
         valid_response, new_state = parse_reply(rply)
         if valid_response and new_state > 0:
             initial_state = True
+    else:
+        print(f'{now_time_long()} get_initial_pump_state: did NOT receive reply after {wait_ms} ms !!')
+
     return initial_state
 
 def calc_pump_runtime(p:Pump) -> str:
@@ -2559,16 +2580,6 @@ def init_clock()->bool:
     set_time()
     return True
     # system.on_event(SimpleDevice.SM_EV_NTP_ACK)
-
-def calibrate_clock():
-    global radio
-
-    delay=500
-#   for i in range(1):
-    p = ticks_ms()
-    s = MSG_CLOCK
-    t=(s, p)
-    transmit_and_pause(t, delay)
 
 def init_ringbuffers():
     global hi_freq_kpa_ring, hi_freq_kpa_index
@@ -2667,7 +2678,8 @@ def init_all():
     display.show()   
 
 # Get the current pump state and init my object    
-    borepump            = Pump("BorePump", get_initial_pump_state())
+    init_state          = get_initial_pump_state()
+    borepump            = Pump("BorePump", init_state)
 
 # On start, valve should now be open... but just to be sure... and to verify during testing...
     if borepump.state:

@@ -29,7 +29,7 @@ wf          = MyWiFi()
 ssid        = wf.ssid
 password    = wf.password
 
-DEBUGLVL    = 0                        # Multi-level debug for better analysis. 0:None, 1: Some, 2:Lots
+DEBUGLVL    = 2                       # Multi-level debug for better analysis. 0:None, 1: Some, 2:Lots
 
 # region  initial declarations
 RADIO_PAUSE = 500
@@ -74,7 +74,7 @@ def confirm_state(req, period_ms):		            # test if reality agrees with la
     if req:				# request was to switch ON... count better be well above zero!
         if period_count > min_crosses:
             if DEBUGLVL > 1: print(f'Counted {period_count} pulses in {period_ms}ms.. confirmed pump is indeed ON')
-            msg = (MSG_STATUS_RSP, 1)
+            msg = (MSG_STATUS_ACK, 1)
             transmit_and_pause(msg, RADIO_PAUSE)
         else:
             if DEBUGLVL > 1: print(f'Gak!... Only saw {period_count} pulses in {period_ms} milliseconds.  FAIL')
@@ -83,7 +83,7 @@ def confirm_state(req, period_ms):		            # test if reality agrees with la
     else:				# request was to switch OFF... count should be close to zero...
         if period_count < min_crosses:
             if DEBUGLVL > 1: print(f'Counted {period_count} pulses in {period_ms}ms.. confirmed pump is indeed OFF')
-            msg = (MSG_STATUS_RSP, 0)
+            msg = (MSG_STATUS_ACK, 0)
             transmit_and_pause(msg, RADIO_PAUSE)
         else:
             if DEBUGLVL > 1: print(f'Zounds!... Saw {period_count} pulses in {period_ms} milliseconds.  FAIL')
@@ -117,10 +117,10 @@ def init_radio():
     last_comms_time = time.time()       # not entirely true, but setting to zero triggers an immediate max silence condition
     if radio.receive():
         msg = radio.message
+        print(f"RX received: {msg}")
         if isinstance(msg, str):
             if msg == MSG_PING_REQ:         # respond I am alive...
                 resp_txt = MSG_PING_RSP
-                print(f"REPLY: {resp_txt}")
                 transmit_and_pause(resp_txt, RADIO_PAUSE)
             else:
                 print(f"Read unknown message: {msg}")
@@ -130,7 +130,7 @@ def init_radio():
 def transmit_and_pause(msg, delay):
     global radio
 
-    if DEBUGLVL > 1: print(f"RX Sending {msg}")
+    if DEBUGLVL > 1: print(f"{now_time_long() } RX Sending {msg}")
     radio.send(msg)
     sleep_ms(delay)
 
@@ -204,7 +204,8 @@ def main():
     global bore_ctl, detect, led, pump_state, state_changed, last_ON_time, last_comms_time
     
     connect_wifi()
-    init_clock()
+    # init_clock()
+    set_time()
     init_logging()
     start_time = time.time()
     state_changed = False
@@ -233,27 +234,27 @@ def main():
                 message = radio.message
                 last_comms_time = time.time()
                 if isinstance(message, str):
-                    if DEBUGLVL > 2: print(message)
+                    if DEBUGLVL > 1: print(f"{now_time_long()} RX received string: {message}")
                     if message == MSG_STATUS_CHK:
-                        resp_txt = (MSG_STATUS_RSP, 1 if check_state(CHECK_MS) else 0)   # reply encodes pump status
+                        resp_txt = (MSG_STATUS_ACK, 1 if check_state(CHECK_MS) else 0)   # reply encodes pump status
                         transmit_and_pause(resp_txt, RADIO_PAUSE)
-                        if DEBUGLVL > 1: print(f"REPLY: {resp_txt}")
+                        if DEBUGLVL > 1: print(f"{now_time_long()} REPLY: {resp_txt}")
                     elif message == MSG_PING_REQ:         # respond I am alive...
                         resp_txt = MSG_PING_RSP
                         transmit_and_pause(resp_txt, RADIO_PAUSE)
-                        if DEBUGLVL > 1: print(f"REPLY: {resp_txt}")
+                        if DEBUGLVL > 1: print(f"{now_time_long()} REPLY: {resp_txt}")
                     elif message == MSG_HEARTBEAT:
                         if DEBUGLVL > 2: print("TX Heartbeat received")
                 elif isinstance(message, tuple):
                     if DEBUGLVL > 1:
-                        print("Received tuple: ", message[0], message[1])
+                        print(f"{now_time_long()} RX received tuple:  {message[0]}, {message[1]}")
                     if message[0] == MSG_REQ_OFF:
                         if pump_state:		        # pump is ON.. take action
                             switch_relay(False)
                             if DEBUGLVL > 0:
                                 logstr = f'{now_time_long()} Request {message[0]}'
                                 event_log.write(logstr + '\n')
-                                print(logstr)
+                                # print(logstr)
                         else:
                             if DEBUGLVL > 1: print("Ignoring OFF... already OFF")
                     elif message[0] == MSG_REQ_ON:
@@ -262,7 +263,7 @@ def main():
                             if DEBUGLVL > 0:
                                 logstr = f'{now_time_long()} Request {message[0]}'
                                 event_log.write(logstr + '\n')
-                                print(logstr)
+                                # print(logstr)
                             last_ON_time = message[1]
                         else:
                             if DEBUGLVL > 1: print("Ignoring ON... already ON")
@@ -285,7 +286,7 @@ def main():
             now = time.time()
             radio_silence_secs = now - last_comms_time
             if pump_state:
-                if DEBUGLVL > 1: print(f"Radio silence period: {radio_silence_secs} seconds")
+                if DEBUGLVL > 2: print(f"Radio silence period: {radio_silence_secs} seconds")
                 if radio_silence_secs > MAX_NON_COMM_PERIOD:     # Houston, we have a problem...
                     logstr = f"{now_time_long()} Max radio silence period exceeded! Turning pump OFF"
                     print(logstr)
@@ -296,7 +297,7 @@ def main():
             else:
                 led.toggle()        # blink LED to show we are alive and waiting for a message. Blink-rate depends on LOOP_DELAY
 
-            if DEBUGLVL > 1: print(".", end="")    
+            if DEBUGLVL > 2: print(".", end="")    
             
             flush_counter += 1
             if flush_counter >= FLUSH_COUNT:	# do a flush every 5 minutes
