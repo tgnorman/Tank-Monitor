@@ -74,7 +74,7 @@ def confirm_state(req, period_ms):		            # test if reality agrees with la
     if req:				# request was to switch ON... count better be well above zero!
         if period_count > min_crosses:
             if DEBUGLVL > 1: print(f'Counted {period_count} pulses in {period_ms}ms.. confirmed pump is indeed ON')
-            msg = (MSG_STATUS_RSP, 1)
+            msg = (MSG_STATUS_ACK, 1)
             transmit_and_pause(msg, RADIO_PAUSE)
         else:
             if DEBUGLVL > 1: print(f'Gak!... Only saw {period_count} pulses in {period_ms} milliseconds.  FAIL')
@@ -83,7 +83,7 @@ def confirm_state(req, period_ms):		            # test if reality agrees with la
     else:				# request was to switch OFF... count should be close to zero...
         if period_count < min_crosses:
             if DEBUGLVL > 1: print(f'Counted {period_count} pulses in {period_ms}ms.. confirmed pump is indeed OFF')
-            msg = (MSG_STATUS_RSP, 0)
+            msg = (MSG_STATUS_ACK, 0)
             transmit_and_pause(msg, RADIO_PAUSE)
         else:
             if DEBUGLVL > 1: print(f'Zounds!... Saw {period_count} pulses in {period_ms} milliseconds.  FAIL')
@@ -249,7 +249,7 @@ def main():
                 if isinstance(message, str):
                     if DEBUGLVL > 2: print(message)
                     if message == MSG_STATUS_CHK:
-                        resp_txt = (MSG_STATUS_RSP, 1 if check_state(CHECK_MS) else 0)   # reply encodes pump status
+                        resp_txt = (MSG_STATUS_ACK, 1 if check_state(CHECK_MS) else 0)   # reply encodes pump status
                         transmit_and_pause(resp_txt, RADIO_PAUSE)
                         if DEBUGLVL > 1: print(f"REPLY: {resp_txt}")
                     elif message == MSG_PING_REQ:         # respond I am alive...
