@@ -48,7 +48,7 @@ def mean_stddev(buff:list, count:int, startidx:int, ringlen:int)->tuple[float, f
     sd = math.sqrt(v)
     return mean, sd
 
-def linear_regression(x: list, y: list, count:int, startidx:int, ringlen:int) -> tuple[float, float, float, float]:
+def linear_regression(x: list, y: list, count:int, startidx:int, ringlen:int) -> tuple[float, float, float, float, float]:
     """
     Calculate linear regression coefficients (slope, intercept) and other stats (std dev and r-squared).
     
@@ -82,7 +82,7 @@ def linear_regression(x: list, y: list, count:int, startidx:int, ringlen:int) ->
     y_mean = ring_ybar / count
 
     sum_xy = sum_xx = sum_yy = 0.0
-    ss_res = ss_tot = 0.0  # For R-squared calculation
+    ss_reg = ss_tot = 0.0  # For R-squared calculation
 
     my_x = count
     for i in range(count):
@@ -126,13 +126,14 @@ def linear_regression(x: list, y: list, count:int, startidx:int, ringlen:int) ->
         y_pred = slope * my_x + intercept
         # 
         # print(f'{xi} {y_pred} {yi}')
-        # Sum of squares of residuals
-        ss_res += (y_pred - y_mean) ** 2
+        # Sum of squares of due to regression
+        ss_reg += (y_pred - y_mean) ** 2
         # Total sum of squares
         ss_tot += (yi - y_mean) ** 2
     
-    r_squared = (ss_res / ss_tot) if ss_tot != 0 else 0
-    std_dev = math.sqrt(sum_yy / (count-1))  # Using sum_yy we calculated earlier
-    
+    ss_dev      = ss_tot - ss_reg        # SS due to deviations ref... page 7-3 of my DAES lecture notes !!
+    r_squared   = (ss_reg / ss_tot) if ss_tot != 0 else 0
+    std_dev     = math.sqrt(sum_yy / (count-1))  # Using sum_yy we calculated earlier
+    sd_resids   = math.sqrt(ss_dev / (count-1))
     # print(f'{x_mean=} {y_mean=} {sum_xy=} {sum_xx=}')
-    return slope, intercept, std_dev, r_squared
+    return slope, intercept, std_dev, sd_resids, r_squared

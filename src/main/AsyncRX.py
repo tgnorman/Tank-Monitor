@@ -18,7 +18,7 @@ wf          = MyWiFi()
 ssid        = wf.ssid
 password    = wf.password
 
-DEBUGLVL    = 1                        # Multi-level debug for better analysis. 0:None, 1: Some, 2:Lots
+DEBUGLVL    = 0                        # Multi-level debug for better analysis. 0:None, 1: Some, 2:Lots
 
 # region  initial declarations
 # RADIO_PAUSE = 500

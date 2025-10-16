@@ -49,7 +49,7 @@ from queue import Queue
 # endregion
 
 # region INITIALISE
-SW_VERSION          = "14/10/25 17:33"      # for display
+SW_VERSION          = "16/10/25 17:20"      # for display
 DEBUGLVL            = 0
 
 # micropython.mem_info()
@@ -129,8 +129,8 @@ kpa_sensor_found    = True          # set to True if pressure sensor is detected
 avg_kpa_set         = False         # set to True if kpa average is set
 kpa_peak            = 0             # track peak pressure for each zone
 kpa_low             = 1000
-DEPTH_SD_MAX        = 3             # test...
-PRESS_SD_MAX        = 3.6           # test this too
+DEPTH_SD_MAX        = 2             # Optimisation: calc SD of residuals after removing linear trend... it matters! Then reduce 5 to about 2!
+PRESS_SD_MAX        = 2             # test this too.  Was 3.6 before I changed to calc on residuals... not bare kPa
 kPa_sd_multiple     = 30            # 10X so that is 2.5 std devs ... a LOT of wiggle room.  Divide by 10 later...
 hf_xvalues          = [i for i in range(HI_FREQ_RINGSIZE)]  # 
 # endregion
@@ -255,7 +255,9 @@ sleep_mins          = 60            # how long to sleep with XSHUT
 last_activity_time  = 0             # for sleepmode calcs
 # endregion
 # region Async_Comms
-pending_request    = {}            # to track what we are waiting for
+pending_request     = {}            # to track what we are waiting for
+
+depthringindex      = 0             # testing linreg residual SD stuff...
 
 # endregion
 # region EMAIL
@@ -1179,6 +1181,9 @@ def enter_maint_mode_reason(reason:str)->None:
     info_display_mode = INFO_MAINT
     BlinkDelay        = FAST_BLINK              # fast LED flash to indicate maintenance mode
     maint_mode_time = now_time_long()
+    logstr = f'{now_time_long()} Entered MAINT mode - {reason}'
+    ev_log.write(logstr + '\n')
+    print(logstr)
 
 def enter_maint_mode()->None:
     enter_maint_mode_reason("(via menu)")
@@ -1800,10 +1805,11 @@ def updateData():
     global pressure_str
     global average_kpa, zone, avg_kpa_set
     global temp
-  
+    global depthringindex
+
     get_tank_depth()
 
-    # depthringbuf[depthringindex] = housetank.depth; depthringindex = (depthringindex + 1) % DEPTHRINGSIZE
+    depthringbuf[depthringindex] = housetank.depth; depthringindex = (depthringindex + 1) % DEPTHRINGSIZE
     depth_ring.add(housetank.depth)
     sma_depth = calc_SMA(depth_ring.buffer)            # this calculates average of non-zero values... regardless of how many entries in the ring
     time_factor = config_dict[DELAY] / 60
@@ -2111,9 +2117,9 @@ def checkForAnomalies()->None:
                 # if isRapidDrop(LOOKBACKCOUNT, expected_drop):   # check for rapid drop... if so, then set alarm and turn off pump
     # NOTE: the startidx param is CRITICAL!!  we need to do LR on the data BEFORE pressure dropped...
                 idx =  (hi_freq_kpa_index - 1 - (LOOKBACKCOUNT - P_STD_DEV_COUNT)) % HI_FREQ_RINGSIZE
-                k_slope, k_intercept, prio_stdev_Press, r2 = linear_regression(hf_xvalues, hi_freq_kpa_ring, P_STD_DEV_COUNT, idx, HI_FREQ_RINGSIZE)
+                k_slope, k_intercept, _, prior_stdev_Press, r2 = linear_regression(hf_xvalues, hi_freq_kpa_ring, P_STD_DEV_COUNT, idx, HI_FREQ_RINGSIZE)
                 slope_drop = round(abs(k_slope) * LOOKBACKCOUNT, 2)     # changed from incorrect P_STD_DEV_COUNT 19/7/25
-                SD_drop = round(prio_stdev_Press * kPa_sd_multiple)
+                SD_drop = round(prior_stdev_Press * kPa_sd_multiple)
                 max_drop = slope_drop + SD_drop
                 # max_drop = abs(k_slope * LOOKBACKCOUNT) + stdev_Press * float(config_dict[KPASTDEVMULT])
                 # if actual_pressure_drop > zone_max_drop:     # This needs to be zone-specific - even if I don't use quad
@@ -2129,14 +2135,17 @@ def checkForAnomalies()->None:
                         beeper.value(1)                              # this might change... to ONLY if not in TWM/IRRIGATE    
                         # kpa_drop_timer = Timer(period=ALARMTIME * 1000, mode=Timer.ONE_SHOT, callback=kpadrop_cb)
                         timer_mgr.create_timer(KPA_DROP_TIMER_NAME, ALARMTIME * 1000, kpadrop_cb)
+            # now get the CURRENT stdev_Press... which will go higher on kpadrop, but for alarm purposes, only interested in residual SD
+                _,_, _, stdev_Press, _ = linear_regression(hf_xvalues, hi_freq_kpa_ring, P_STD_DEV_COUNT, hi_freq_kpa_index, HI_FREQ_RINGSIZE)
+                if stdev_Press > PRESS_SD_MAX:      # now ignores trend...
+                    raiseAlarm("XS P SDEV", stdev_Press)
+                    error_ring.add(TankError.HI_VAR_PRES)
 
                 # if op_mode == OP_MODE_IRRIGATE and  kpa_sensor_found and average_kpa < zone_minimum:
                 if average_kpa < zone_minimum:   # this could happen in AUTO/HT tank-fill mode also...
                     raiseAlarm("Below Zone Min Pressure", average_kpa)
                     error_ring.add(TankError.BELOW_ZONE_MIN)
                     if PRODUCTION_MODE: abort_pumping("kPa below Zone min")
-
-        # if op_mode == OP_MODE_AUTO:                         # assumes we only fill tank in AUTO mode... not always true.
 
         if not CALIBRATE_MODE:                              # easy way to prevent pesky alarms while testing
             if tank_is == "Overflow":                       # ideally, refer to a Tank object... but this will work for now
@@ -2154,17 +2163,12 @@ def checkForAnomalies()->None:
                 error_ring.add(TankError.MAX_ROC_EXCEEDED)
 
         # now, check standard deviation for high values...    
-        mean_D, stdev_Depth = mean_stddev(depth_ring.buffer, D_STD_DEV_COUNT, depth_ring.index, DEPTHRINGSIZE)
+        # mean_D, stdev_Depth = mean_stddev(depth_ring.buffer, D_STD_DEV_COUNT, depth_ring.index, DEPTHRINGSIZE)
+        # changed to get SD of residulas after removing trend... which is significant on normal depth change during tank fill
+        _,_,_, stdev_Depth, r2 = linear_regression(depthringbuf, hf_xvalues, D_STD_DEV_COUNT, depthringindex, DEPTHRINGSIZE)
         if stdev_Depth > DEPTH_SD_MAX:
             raiseAlarm("XS D SDEV", stdev_Depth)
             error_ring.add(TankError.HI_VAR_DIST)
-        # this records the CURRENT stdev_Press... which will go higher on kpadrop.
-        if kpa_sensor_found and read_count_since_ON > P_STD_DEV_COUNT:
-            mean_P, stdev_Press = mean_stddev(hi_freq_kpa_ring, P_STD_DEV_COUNT, hi_freq_kpa_index, HI_FREQ_RINGSIZE)
-            # k_slope, k_intercept, stdev_Press, r2 = linear_regression(hi_freq_kpa_ring, hi_freq_kpa_ring, P_STD_DEV_COUNT,(hi_freq_kpa_index - LOOKBACKCOUNT) % HI_FREQ_RINGSIZE, HI_FREQ_RINGSIZE)
-            if stdev_Press > PRESS_SD_MAX:
-                raiseAlarm("XS P SDEV", stdev_Press)
-                error_ring.add(TankError.HI_VAR_PRES)
 
     else:                                       # pump is OFF
         if op_mode == OP_MODE_AUTO:
@@ -2274,7 +2278,7 @@ def DisplayInfo()->None:
             lcd4x20.putstr(rstr)
 
             lcd4x20.move_to(11, 0)
-            lcd4x20.putstr(f"S{1 if stable_pressure else 0} ")
+            lcd4x20.putstr(f"{'S' if stable_pressure else 'U'}P ")
 
             lcd4x20.move_to(14, 0)
             lcd4x20.putstr(f"HF:{' ON' if LOGHFDATA else 'OFF'}")
@@ -2592,13 +2596,14 @@ def calibrate_clock():
 def init_ringbuffers():
     global hi_freq_kpa_ring, hi_freq_kpa_index
     global event_ring, error_ring, switch_ring, kpa_ring, depth_ring
+    global depthringbuf, depthringindex     # revert to old style for linreg/residual analysis of SD
 
-    # depthringbuf = [0]                # start with a list containing zero...
-    # if DEPTHRINGSIZE > 1:             # expand it as needed...
-    #     for _ in range(DEPTHRINGSIZE - 1):
-    #         depthringbuf.append(0)
-    # if DEBUGLVL > 0: print("Ringbuf is ", depthringbuf)
-    # depthringindex = 0
+    depthringbuf = [0]                # start with a list containing zero...
+    if DEPTHRINGSIZE > 1:             # expand it as needed...
+        for _ in range(DEPTHRINGSIZE - 1):
+            depthringbuf.append(0)
+    if DEBUGLVL > 0: print("Ringbuf is ", depthringbuf)
+    depthringindex = 0
 
     switch_ring = RingBuffer(
         size=SWITCHRINGSIZE, 
@@ -2743,7 +2748,7 @@ def init_all():
     zone_minimum        = 0
     zone_maximum        = 0
     zone_max_drop       = 15            # check after more tests
-    kPa_sd_multiple      = float(config_dict[KPASTDEVMULT])      # this is now just default starting value... overwritten in set_zone
+    kPa_sd_multiple     = float(config_dict[KPASTDEVMULT])      # this is now just default starting value... overwritten in set_zone
     last_ON_time        = 0
     ut_short            = ""
     ut_long             = ""
@@ -2952,7 +2957,8 @@ async def read_pressure()->None:
             lcd4x20.putstr(f"{bpp:>3}")
             if LOGHFDATA:       # conditionally, write to logfile... but note I ALWAYS add to the ring buffer
                                 # This gets switched On/OFF depending on pump state... but NOTE: buffer updates happen ALWAYS!
-                error_bar = bpp - round(stdev_Press * float(config_dict[KPASTDEVMULT] / 10 ), 2)
+                # error_bar = bpp - round(stdev_Press * float(config_dict[KPASTDEVMULT] / 10 ), 2)
+                error_bar = bpp - round(stdev_Press, 2)
                 hf_log.write(f"{now_time_long()} {bpp:>3} {hi_freq_avg} {error_bar}\n")
             if ui_mode == UI_MODE_NORM:
                 if op_mode ==  OP_MODE_AUTO: 
@@ -3159,14 +3165,18 @@ async def blinkx2():
 
 async def pump_action_processor():
     """
-    Key component of async ops... get commands from queue and action them by sending to slave RX
+    Key component of async ops... get commands from queue and action them by sending to slave RX,
+    then await for ACK/NAK
     """
     global average_timer, zone_timer, last_ON_time, LOGHFDATA
 
     while True:
         act_tuple = await pump_action_queue.get()
+        qlen = pump_action_queue.qsize()
+        print(f'{now_time_long()} pap after get {qlen=}')
         cmd = act_tuple[0]
         reason = act_tuple[1]
+        if DEBUGLVL > 0: print(f'{now_time_long()} waiting on SCWT {cmd}')
         success, response = await send_command_with_timeout(cmd, MSG_ANY_ACK)
         if success:
             if cmd == MSG_REQ_ON:
@@ -3189,6 +3199,7 @@ async def pump_action_processor():
 
             elif cmd == MSG_REQ_OFF:
                 borepump.switch_pump(False)
+# TODO do solenoid stuff here...
                 LOGHFDATA = False
                 switch_ring.add("PUMP OFF")
                 logstr = f'{now_time_long()} p_a_p {cmd} processed {reason}, pump switched OFF'
@@ -3197,11 +3208,16 @@ async def pump_action_processor():
                 event_ring.add("PUMP OFF")
                 system.on_event(SimpleDevice.SM_EV_OFF_ACK)
             else:
-                print(f'Unknown command {cmd}')
+                logstr = f'Unknown command {cmd}'
+                ev_log.write(f'{logstr}\n')
+                print(logstr) 
         else:       # looks like a failed request...
-            logstr = f'{now_time_long()} {cmd} FAIL'
-            ev_log.write(f'{logstr}\n')
-            print(logstr)        
+            if response == None:    # this is bad...  drop into MAINTENENACE mode
+                enter_maint_mode_reason("PAP Timeout")
+            else:
+                logstr = f'{now_time_long()} {cmd} FAIL'
+                ev_log.write(f'{logstr}\n')
+                print(logstr)        
                     
 # ============================================
 # Task 1: Radio Receiver (producer)
@@ -3241,11 +3257,19 @@ async def response_handler_task():
 # ============================================
 # Helper: Send command and wait for response
 # ============================================
-async def send_command_with_timeout(command, expected_response, timeout=2, max_retries=3):
+async def send_command_with_timeout(command, expected_response, timeout=5, max_retries=4):
     """
     Send a command and wait for expected response with timeout and retries.
     Returns: (success, response)
+
+    Note:  RX slave takes about 7-8 seconds to boot from power-off to ready to receive... So...
+    If I want to allow TX to cater for a brief power outage on RX (with no LiPo), need to cope with
+    timeout of say 15 seconds??
+
+    Also... need to decide when to give up and transition to MAINTENNCE MODE
     """
+    # TODO MAINTENANCE MODE timeout ???
+
     if DEBUGLVL > 0: print(f'{now_time_long()} Entered S_C_W_T cmd {command}')
 
     for attempt in range(max_retries):
@@ -3275,7 +3299,7 @@ async def send_command_with_timeout(command, expected_response, timeout=2, max_r
         # Timeout occurred
         print(f"{now_time_long()} Timeout on {command}, attempt {attempt + 1}/{max_retries}")
     
-    # All retries failed
+    # All retries failed.  
     return (False, None)
 
 # ============================================
@@ -3400,6 +3424,8 @@ async def main_control_task():
 
                 if tank_is == housetank.fill_states[len(housetank.fill_states) - 1] and not borepump.state:		# Empty
                     pump_action_queue.put_nowait(("ON", "Tank Empty"))
+                    if DEBUGLVL > 0:
+                        print(f'{now_time_long()} after putting ON in PA queue... qlen: {pump_action_queue.qsize()}')
                 
                 elif (tank_is == housetank.fill_states[0] or tank_is == housetank.fill_states[1]) and borepump.state:	# Full or Overfull
                     pump_action_queue.put_nowait(("OFF", "Tank FULL"))
