@@ -49,7 +49,7 @@ from queue import Queue
 # endregion
 
 # region INITIALISE
-SW_VERSION          = "16/10/25 17:20"      # for display
+SW_VERSION          = "17/10/25 13:03"      # for display
 DEBUGLVL            = 0
 
 # micropython.mem_info()
@@ -1847,28 +1847,28 @@ def log_switch_error(new_state):
     ev_log.write(f"{now_time_long()} ERROR on switching to state {new_state}\n")
     event_ring.add(f"ERR swtch {new_state}")
     
-def parse_reply(rply):
-    if DEBUGLVL > 1: print(f"in parse arg is {rply}")
-    if isinstance(rply, tuple):			# good...
-        key = rply[0].upper()
-        val = rply[1]
-#        print(f"in parse: key={key}, val={val}")
-        if key == MSG_STATUS_ACK:       # *** THIS IS NO LONGER VALID... Slave no longer returns a tuple... either ACK or NAK.
-            return True, val
-        elif MSG_ERROR in key:          # TODO Fix radio MSG_ERR receipts
-            resp = key.split(" ")
-            return False, -1
-        else:
-            print(f"Unknown tuple: key {key}, val {val}")
-            return False, -1
-    else:
-        print(f"Expected tuple... didn't get one.  Got {rply}")
-        return False, False
+# def parse_reply(rply):
+#     if DEBUGLVL > 1: print(f"in parse arg is {rply}")
+#     if isinstance(rply, tuple):			# good...
+#         key = rply[0].upper()
+#         val = rply[1]
+# #        print(f"in parse: key={key}, val={val}")
+#         if key == MSG_STATUS_ACK:       # *** THIS IS NO LONGER VALID... Slave no longer returns a tuple... either ACK or NAK.
+#             return True, val
+#         elif MSG_ERROR in key:
+#             resp = key.split(" ")
+#             return False, -1
+#         else:
+#             print(f"Unknown tuple: key {key}, val {val}")
+#             return False, -1
+#     else:
+#         print(f"Expected tuple... didn't get one.  Got {rply}")
+#         return False, False
 
-def transmit_and_pause(msg, delay):
-    if DEBUGLVL > 1: print(f"tx_and_pause: Sending {msg}, sleeping for {delay} ms")
-    radio.device.send(msg)
-    sleep_ms(delay)
+# def transmit_and_pause(msg, delay):
+#     if DEBUGLVL > 1: print(f"tx_and_pause: Sending {msg}, sleeping for {delay} ms")
+#     radio.device.send(msg)
+#     sleep_ms(delay)
 
 def confirm_solenoid():
     solenoid_state = sim_detect()
@@ -2477,54 +2477,58 @@ def LogData()->None:
     # tank_log.write(logstr)          # *** REMOVE AFTER kPa TESTING ***
     print(dbgstr)
 
-def init_radio_nowait():
-    global radio, system
+# def init_radio_nowait():
+#     global radio, system
     
-    print("Init radio...")
-    if radio.device.receive():
-        msg = radio.device.message
-        print(f"Read & discarded {msg}")
+#     print("Init radio...")
 
-def init_radio()->bool:
-    global radio, system
+#     radio.device.off()
+#     radio.device.on()       # should clear receive buffers
+#     if radio.device.receive():
+#         msg = radio.device.message
+#         print(f"Read & discarded {msg}.  Should not happen if rcv buffer cleared")
     
-    print("Init radio...")
-    if radio.device.receive():
-        msg = radio.device.message
-        print(f"Read & discarded {msg}")
 
-    while not ping_RX():
-        print("Waiting for RX...")
-        sleep(1)
+# def init_radio()->bool:
+#     global radio, system
+    
+#     print("Init radio...")
+#     if radio.device.receive():
+#         msg = radio.device.message
+#         print(f"Read & discarded {msg}")
+
+#     while not ping_RX():
+#         print("Waiting for RX...")
+#         sleep(1)
 
 # if we get here, my RX is responding.
     # print("RX responded to ping... comms ready")
-    return True
+    # return True
     # system.on_event(SimpleDevice.SM_EV_RADIO_ACK)
 
-def ping_RX() -> bool:           # at startup, test if RX is listening
-#    global radio
+# def ping_RX() -> bool:           # at startup, test if RX is listening
+# #    global radio
 
-    ping_acknowleged = False
-    transmit_and_pause(MSG_PING_REQ, RADIO_PAUSE)
-    if radio.device.receive():                     # depending on time relative to RX Pico, may need to pause more here before testing?
-        msg = radio.device.message
-        if isinstance(msg, str):
-            if msg == MSG_PING_RSP:
-                ping_acknowleged = True
+#     ping_acknowleged = False
+#     transmit_and_pause(MSG_PING_REQ, RADIO_PAUSE)
+#     if radio.device.receive():                     # depending on time relative to RX Pico, may need to pause more here before testing?
+#         msg = radio.device.message
+#         if isinstance(msg, str):
+#             if msg == MSG_PING_RSP:
+#                 ping_acknowleged = True
 
-    return ping_acknowleged
+#     return ping_acknowleged
 
-def get_initial_pump_state() -> bool:
+# def get_initial_pump_state() -> bool:
 
-    initial_state = False
-    transmit_and_pause(MSG_STATUS_CHK,  RADIO_PAUSE)
-    if radio.device.receive():
-        rply = radio.device.message
-        valid_response, new_state = parse_reply(rply)
-        if valid_response and new_state > 0:
-            initial_state = True
-    return initial_state
+#     initial_state = False
+#     transmit_and_pause(MSG_STATUS_CHK,  RADIO_PAUSE)
+#     if radio.device.receive():
+#         rply = radio.device.message
+#         valid_response, new_state = parse_reply(rply)
+#         if valid_response and new_state > 0:
+#             initial_state = True
+#     return initial_state
 
 def calc_pump_runtime(p:Pump) -> str:
     dc_secs = p.cum_seconds_on
@@ -2583,15 +2587,15 @@ def init_clock()->bool:
     return True
     # system.on_event(SimpleDevice.SM_EV_NTP_ACK)
 
-def calibrate_clock():
-    global radio
+# def calibrate_clock():
+#     global radio
 
-    delay=500
-#   for i in range(1):
-    p = ticks_ms()
-    s = MSG_CLOCK
-    t=(s, p)
-    transmit_and_pause(t, delay)
+#     delay=500
+# #   for i in range(1):
+#     p = ticks_ms()
+#     s = MSG_CLOCK
+#     t=(s, p)
+#     transmit_and_pause(t, delay)
 
 def init_ringbuffers():
     global hi_freq_kpa_ring, hi_freq_kpa_index
@@ -2972,7 +2976,8 @@ async def read_pressure()->None:
                 error_ring.add(TankError.EXCESS_KPA)                        
                 # borepump_OFF()
                 abort_pumping("Max kPa exceeded")       # this is safer
-                solenoid.value(1)
+                confirm_and_switch_solenoid(False)      # TODO Problem !! Turning solenoid off needs to aysnc confirm pump is OFF so... also needs to be async.
+                # solenoid.value(1)
 
             await asyncio.sleep_ms(PRESSURE_PERIOD_MS)
 
@@ -3178,7 +3183,7 @@ async def pump_action_processor():
         reason = act_tuple[1]
         if DEBUGLVL > 0: print(f'{now_time_long()} waiting on SCWT {cmd}')
         success, response = await send_command_with_timeout(cmd, MSG_ANY_ACK)
-        if success:
+        if success:     # TODO refactor, transposing if success & if cmd == [ON | OFF]
             if cmd == MSG_REQ_ON:
                 borepump.switch_pump(True)
                 LOGHFDATA = True
@@ -3253,6 +3258,8 @@ async def response_handler_task():
                 pending_request['received'] = True
                 pending_request['response'] = response
         
+        # TODO R_H_T: and the else clause is ???
+
         # Could also handle unsolicited messages here if needed
 # ============================================
 # Helper: Send command and wait for response
@@ -3266,9 +3273,7 @@ async def send_command_with_timeout(command, expected_response, timeout=5, max_r
     If I want to allow TX to cater for a brief power outage on RX (with no LiPo), need to cope with
     timeout of say 15 seconds??
 
-    Also... need to decide when to give up and transition to MAINTENNCE MODE
     """
-    # TODO MAINTENANCE MODE timeout ???
 
     if DEBUGLVL > 0: print(f'{now_time_long()} Entered S_C_W_T cmd {command}')
 
@@ -3346,6 +3351,8 @@ async def main_control_task():
                 system.on_event(SimpleDevice.SM_EV_NTP_ACK)
         
         if current_state == SimpleDevice.STATE_CLOCK_SET:
+            radio.device.off()
+            radio.device.on()       # this should clear send/receive buffers
             success, response = await send_command_with_timeout(MSG_PING_REQ, MSG_PING_RSP, timeout=2)
             if success:
                 system.on_event(SimpleDevice.SM_EV_RADIO_ACK)
@@ -3453,30 +3460,30 @@ async def main_control_task():
 async def heartbeat_task():
     """Send periodic heartbeat to slave"""
     while True:
-        await radio.outgoing_queue.put(MSG_HEARTBEAT)       # TODO this version has no response/timeout... 
+        await radio.outgoing_queue.put(MSG_HEARTBEAT)
         await asyncio.sleep(5)  # Every 5 seconds
 
-async def get_to_ready_state():
-    while  str(system.state) != SimpleDevice.STATE_PICO_READY:
-        current_state = str(system.state)       # NOTE: BY caching system.state this forces only one state transition per loop
-        # print(current_state)        
-        if current_state == SimpleDevice.STATE_PICO_RESET:
-            # system.on_event(SimpleDevice.SM_EV_SYS_INIT)
-            if init_wifi():
-                system.on_event(SimpleDevice.SM_EV_WIFI_ACK)
+# async def get_to_ready_state():
+#     while  str(system.state) != SimpleDevice.STATE_PICO_READY:
+#         current_state = str(system.state)       # NOTE: BY caching system.state this forces only one state transition per loop
+#         # print(current_state)        
+#         if current_state == SimpleDevice.STATE_PICO_RESET:
+#             # system.on_event(SimpleDevice.SM_EV_SYS_INIT)
+#             if init_wifi():
+#                 system.on_event(SimpleDevice.SM_EV_WIFI_ACK)
 
-        if current_state == SimpleDevice.STATE_WIFI_READY:
-            if init_clock():
-                system.on_event(SimpleDevice.SM_EV_NTP_ACK)
+#         if current_state == SimpleDevice.STATE_WIFI_READY:
+#             if init_clock():
+#                 system.on_event(SimpleDevice.SM_EV_NTP_ACK)
 
-        if current_state == SimpleDevice.STATE_CLOCK_SET:
-            if init_radio():
-                system.on_event(SimpleDevice.SM_EV_RADIO_ACK)
+#         if current_state == SimpleDevice.STATE_CLOCK_SET:
+#             if init_radio():
+#                 system.on_event(SimpleDevice.SM_EV_RADIO_ACK)
 
-        if current_state == SimpleDevice.STATE_RADIO_READY:
-            system.on_event(SimpleDevice.SM_EV_SYS_START)
+#         if current_state == SimpleDevice.STATE_RADIO_READY:
+#             system.on_event(SimpleDevice.SM_EV_SYS_START)
             
-        await asyncio.sleep(1)
+#         await asyncio.sleep(1)
 
 # endregion
 # region MAIN
