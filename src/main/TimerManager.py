@@ -16,7 +16,7 @@ class TimerManager:
         self.schedules[name] = time.time() + int(period / 1000)  # Convert ms to seconds.  The int() is CRITICAL
         
         # Create and store timer
-        self.timers[name] = Timer(period=period, mode=mode, callback=callback)
+        self.timers[name] = Timer(period=period, mode=mode, callback=callback)  # type: ignore
         return self.timers[name]
 
     def is_pending(self, name: str) -> bool:
@@ -46,7 +46,7 @@ class TimerManager:
             period=new_period * 1000, 
             mode=Timer.ONE_SHOT,
             callback=self.callbacks[name]
-        )
+        )   # type: ignore
 
     def cancel_timer(self, name: str) -> None:
         """Cancel and clean up a timer"""

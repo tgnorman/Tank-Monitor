@@ -164,6 +164,8 @@ class SimpleDevice(object):
     A simple state machine that mimics the functionality of a device from a high level.
     """
 # region constants
+
+# TODO None of these consts are actually referred to ... ANYWHERE!
     STATE_PICO_RESET    = 'PICO_RESET'
     STATE_CONNECTING    = 'WIFI_CONNECTING'
     STATE_WIFI_READY    = 'WIFI_READY'
@@ -185,7 +187,7 @@ class SimpleDevice(object):
     STATE_PENDING_ON    = 'BP_PENDING_ON'
     STATE_PENDING_OFF   = 'BP_PENDING_OFF'
 
-    # and also list all events...
+    # and also list all events... these, I use!!
     SM_EV_ON_REQ        = 'ON REQ'
     SM_EV_ON_ACK        = 'ON ACK'
     SM_EV_ON_NAK        = 'ON NAK'

@@ -10,23 +10,23 @@ from utils import now_time_long, now_time_tuple
 from TM_Protocol import *
 
 from Radio import My_Radio
+# from queue import Queue  # Peter Hinch's queue
 
+SW_VERSION      = "2/11/2025 16:18"
+DEBUGLVL        = 1                     # Multi-level debug for better analysis. 0:None, 1: Some, 2:Lots
+
+# region initial declarations
 # Configure your WiFi SSID and password
-SW_VERSION  = "14/10/2025 13:36"
+wf              = MyWiFi()
+ssid            = wf.ssid
+password        = wf.password
 
-wf          = MyWiFi()
-ssid        = wf.ssid
-password    = wf.password
-
-DEBUGLVL    = 0                        # Multi-level debug for better analysis. 0:None, 1: Some, 2:Lots
-
-# region  initial declarations
 # RADIO_PAUSE = 500
-LOOP_DELAY  = 400                       # this actually determines LED blink rate... independant of radio check frequency.  Good...
-CHECK_MS    = 500                       # how long to listen for power cross interupts
+RADIOPOLL_MS    = 20                    # poll radio for data every x millisecs
+LOOP_DELAY      = 400                   # this actually determines LED blink rate... independant of radio check frequency.  Good...
+CHECK_MS        = 500                   # how long to listen for power cross interupts
 MAX_NON_COMM_PERIOD = 60                # maximum seconds allowed between heartbeats, turn pump off if exceeded.  FAIL-SAFE
-# FLUSH_COUNT = 5 * 60 * 1000 / LOOP_DELAY  # flush logged data to flash every 5 minutes
-LOGFLUSHSECS = 5 * 60                   # every 5 minutes
+LOGFLUSHSECS    = 5 * 60                # every 5 minutes
 
 # OK, initialise control pins
 led 		= Pin('LED', Pin.OUT, value=0)
@@ -58,8 +58,8 @@ def count_next_period(mili):		# count how many crossings in the specified period
     global count, detect
     count = 0
     detect.irq(handler=pulse_count, trigger=Pin.IRQ_FALLING)	# turn on interupt handler
-    sleep_ms(mili)                  # TODO make this asynch? Has implications... refer to Claude chat
-    detect.irq(handler=None)									# turn off interupt handler
+    sleep_ms(mili)                  # TODO make this asynch? Has LOTS of implications... refer to Claude chat
+    detect.irq(handler=None)        # turn off interupt handler
     return count
 
 # async def send_fail(req):         # this probably should be handled by [ON|OFF|STATUS_CHK] NAK reply]
@@ -244,7 +244,7 @@ async def radio_receive_task():
             last_comms_time = time.time()
             if DEBUGLVL > 1: print(f'r_r_t: {message}')
             await radio.incoming_queue.put(message)
-        await asyncio.sleep_ms(20)  # Don't hog CPU
+        await asyncio.sleep_ms(RADIOPOLL_MS)  # Don't hog CPU
 
 # ============================================
 # Task 2: Command Processor (consumer/producer)
@@ -312,22 +312,21 @@ async def radio_transmit_task():
         message = await radio.outgoing_queue.get()  # Blocks until response ready
         if DEBUGLVL > 1: print(f'radio_tx_task: sending {message}')
         radio.device.send(message)      # NOTE: agnostic about type of message... string, tuple... whatever
-        await asyncio.sleep_ms(20)  # Small delay between transmissions
+        await asyncio.sleep_ms(RADIOPOLL_MS)  # Small delay between transmissions
 
 # ============================================
 # Task 4: Heartbeat Monitor (optional)
 # ============================================
 async def heartbeat_monitor_task():
     """Check if master is still alive"""
-    last_heartbeat_time = time.time()
     
     while True:
         radio_silence_secs = time.time() - last_comms_time
         # if pump_state and radio_silence_secs > MAX_NON_COMM_PERIOD:
         if radio_silence_secs > MAX_NON_COMM_PERIOD:        # change to ALWAYS listen to radio, even when OFF
             process_radio_silence(radio_silence_secs)
-        if not pump_state: led.toggle()        # blink LED to show we are alive and waiting for a message. Blink-rate depends on LOOP_DELAY
-        await asyncio.sleep_ms(LOOP_DELAY)  # TODO does this make sense now?
+        if not pump_state: led.toggle()         # blink LED to show we are alive and waiting for a message. Blink-rate depends on LOOP_DELAY
+        await asyncio.sleep_ms(LOOP_DELAY)
 
 # ============================================
 # Task 5: flush logs to flash

@@ -49,7 +49,7 @@ from queue import Queue
 # endregion
 
 # region INITIALISE
-SW_VERSION          = "17/10/25 13:03"      # for display
+SW_VERSION          = "2/11/25 10:23"      # for display
 DEBUGLVL            = 0
 
 # micropython.mem_info()
@@ -129,10 +129,12 @@ kpa_sensor_found    = True          # set to True if pressure sensor is detected
 avg_kpa_set         = False         # set to True if kpa average is set
 kpa_peak            = 0             # track peak pressure for each zone
 kpa_low             = 1000
-DEPTH_SD_MAX        = 2             # Optimisation: calc SD of residuals after removing linear trend... it matters! Then reduce 5 to about 2!
-PRESS_SD_MAX        = 2             # test this too.  Was 3.6 before I changed to calc on residuals... not bare kPa
+DEPTH_SD_MAX        = 3             # Optimisation: calc SD of residuals after removing linear trend... it matters! Then reduce 5 to about 2!
+PRESS_SD_MAX        = 3             # test this too.  Was 3.6 before I changed to calc on residuals... not bare kPa
 kPa_sd_multiple     = 30            # 10X so that is 2.5 std devs ... a LOT of wiggle room.  Divide by 10 later...
 hf_xvalues          = [i for i in range(HI_FREQ_RINGSIZE)]  # 
+dr_xvalues          = [i for i in range(DEPTHRINGSIZE)]
+dr_yvalues          = [0 for i in range(DEPTHRINGSIZE)]            # TODO revert to simple buffer for depthring.
 # endregion
 # region SYSTEM
 FREE_SPACE_LOWATER  = 150           # in KB...
@@ -1135,7 +1137,7 @@ def make_more_space()->None:
 
     hitList: list[tuple] = []
     device_files = uos.listdir()
-    tank_files = [x for x in device_files if x.endswith('.txt') and (x.startswith('tank') or x.startswith('HF'))]
+    tank_files = [x for x in device_files if x.endswith('.txt') and (x.startswith('tank') or x.startswith('HF') or x.startswith('pres ') or x.startswith('BPEV'))]
     for f in tank_files:
         ftuple = uos.stat(f)
         kb = int(ftuple[6] / 1024)
@@ -1144,7 +1146,7 @@ def make_more_space()->None:
         file_entry = tuple((f, kb, ts, tstr))
         hitList.append(file_entry)
 
-    sorted_by_date = sorted(hitList, key=lambda x: x[2], reverse=True)
+    sorted_by_date = sorted(hitList, key=lambda x: x[2])
     print(f"Files by date:\n{sorted_by_date}")
     starting_free = free_space()
     if starting_free < FREE_SPACE_LOWATER:
@@ -1164,7 +1166,7 @@ def make_more_space()->None:
         ending_free = free_space()
         reclaimed = ending_free - starting_free
         print(f"After cleanup: {ending_free} Kb")
-        ev_log.write(f"{now_time_long()} free space {ending_free}.  Reclaimed {reclaimed} Kb in {count} files\n")
+        ev_log.write(f"{now_time_long()} free space {ending_free} kb.  Reclaimed {reclaimed} Kb in {count} files\n")
         lcd.setCursor(0, 1)
         lcd.printout(f'Saved {reclaimed} Kb')
 
@@ -2098,7 +2100,15 @@ def find_menu_index(param_name: str) -> int:
             
     print(f"Did not find {param_name} in config menu")
     return -1
-           
+
+def copy_dr_to_list():
+    global dr_yvalues
+
+    start = depthringindex
+    for i in range(DEPTHRINGSIZE):
+        modidx = (start - i) % DEPTHRINGSIZE
+        dr_yvalues[i] = depthringbuf[modidx]
+
 def quad(a: float, b: float, c: int, x: int) -> int:
     """Calculate the pressure at a given point using a quadratic equation"""
     return int(a * x*x + b * x + c)
@@ -2165,7 +2175,9 @@ def checkForAnomalies()->None:
         # now, check standard deviation for high values...    
         # mean_D, stdev_Depth = mean_stddev(depth_ring.buffer, D_STD_DEV_COUNT, depth_ring.index, DEPTHRINGSIZE)
         # changed to get SD of residulas after removing trend... which is significant on normal depth change during tank fill
-        _,_,_, stdev_Depth, r2 = linear_regression(depthringbuf, hf_xvalues, D_STD_DEV_COUNT, depthringindex, DEPTHRINGSIZE)
+        # TODO replace this...
+        copy_dr_to_list()
+        _,_,_, stdev_Depth, r2 = linear_regression(dr_xvalues, dr_yvalues, D_STD_DEV_COUNT, depthringindex, DEPTHRINGSIZE)
         if stdev_Depth > DEPTH_SD_MAX:
             raiseAlarm("XS D SDEV", stdev_Depth)
             error_ring.add(TankError.HI_VAR_DIST)
@@ -3168,43 +3180,106 @@ async def blinkx2():
         led.value(0)
         await asyncio.sleep_ms(BlinkDelay)     # adjust so I get a 1 second blink... or faster in maintenacne mode
 
+# async def pump_action_processor():
+#     """
+#     Key component of async ops... get commands from queue and action them by sending to slave RX,
+#     then await for ACK/NAK
+#     """
+#     global average_timer, zone_timer, last_ON_time, LOGHFDATA
+
+#     while True:
+#         act_tuple = await pump_action_queue.get()
+#         qlen = pump_action_queue.qsize()
+#         print(f'{now_time_long()} pap after get {qlen=}')
+#         cmd = act_tuple[0]
+#         reason = act_tuple[1]
+#         if DEBUGLVL > 0: print(f'{now_time_long()} waiting on SCWT {cmd}')
+#         success, response = await send_command_with_timeout(cmd, MSG_ANY_ACK)
+#         if success:     # TODO refactor, transposing if success & if cmd == [ON | OFF]
+#             if cmd == MSG_REQ_ON:
+#                 borepump.switch_pump(True)
+#                 LOGHFDATA = True
+#                 switch_ring.add("PUMP ON")
+#                 last_ON_time = time.time()          # for easy calculation of runtime to DROP pressure OFF    
+#                 if kpa_sensor_found:
+#                     reset_state()
+#                     # timer_mgr.create_timer(name=AVG_KPA_TIMER_NAME, period=AVG_KPA_DELAY * 1000, callback=set_average_kpa)
+#                     # timer_mgr.create_timer(name=ZONE_TIMER_NAME, period=ZONE_DELAY * 1000, callback=set_zone)
+#                     average_timer = Timer(period=AVG_KPA_DELAY  * 1000, mode=Timer.ONE_SHOT, callback=set_average_kpa)      # type:ignore # start timer to record average after 5 seconds
+#                     zone_timer    = Timer(period=ZONE_DELAY * 1000,     mode=Timer.ONE_SHOT, callback=set_zone)      # type:ignore # start timer to record zone after 30 seconds
+                    
+#                 logstr = f'{now_time_long()} p_a_p {cmd} processed {reason}, pump switched ON'
+#                 ev_log.write(f'{logstr}\n')
+#                 print(logstr)
+#                 event_ring.add("PUMP ON")
+#                 system.on_event(SimpleDevice.SM_EV_ON_ACK)
+
+#             elif cmd == MSG_REQ_OFF:
+#                 borepump.switch_pump(False)
+# # TODO do solenoid stuff here...
+#                 LOGHFDATA = False
+#                 switch_ring.add("PUMP OFF")
+#                 logstr = f'{now_time_long()} p_a_p {cmd} processed {reason}, pump switched OFF'
+#                 ev_log.write(f'{logstr}\n')
+#                 print(logstr)
+#                 event_ring.add("PUMP OFF")
+#                 system.on_event(SimpleDevice.SM_EV_OFF_ACK)
+#             else:
+#                 logstr = f'Unknown command {cmd}'
+#                 ev_log.write(f'{logstr}\n')
+#                 print(logstr) 
+#         else:       # looks like a failed request...
+#             if response == None:    # this is bad...  drop into MAINTENENACE mode
+#                 enter_maint_mode_reason("PAP Timeout")
+#             else:
+#                 logstr = f'{now_time_long()} {cmd} FAIL'
+#                 ev_log.write(f'{logstr}\n')
+#                 print(logstr)        
+
 async def pump_action_processor():
-    """
-    Key component of async ops... get commands from queue and action them by sending to slave RX,
-    then await for ACK/NAK
-    """
+    """Process pump actions from queue, handle success/failure differently for ON/OFF"""
     global average_timer, zone_timer, last_ON_time, LOGHFDATA
 
     while True:
         act_tuple = await pump_action_queue.get()
-        qlen = pump_action_queue.qsize()
-        print(f'{now_time_long()} pap after get {qlen=}')
         cmd = act_tuple[0]
         reason = act_tuple[1]
+        qlen = pump_action_queue.qsize()
+        if DEBUGLVL > 1: print(f'{now_time_long()} pap after get {qlen=}')
         if DEBUGLVL > 0: print(f'{now_time_long()} waiting on SCWT {cmd}')
+
         success, response = await send_command_with_timeout(cmd, MSG_ANY_ACK)
-        if success:     # TODO refactor, transposing if success & if cmd == [ON | OFF]
-            if cmd == MSG_REQ_ON:
+
+        if cmd == MSG_REQ_ON:
+            if success:
+                # Handle successful ON request
                 borepump.switch_pump(True)
                 LOGHFDATA = True
                 switch_ring.add("PUMP ON")
-                last_ON_time = time.time()          # for easy calculation of runtime to DROP pressure OFF    
+                last_ON_time = time.time()
                 if kpa_sensor_found:
                     reset_state()
-                    # timer_mgr.create_timer(name=AVG_KPA_TIMER_NAME, period=AVG_KPA_DELAY * 1000, callback=set_average_kpa)
-                    # timer_mgr.create_timer(name=ZONE_TIMER_NAME, period=ZONE_DELAY * 1000, callback=set_zone)
-                    average_timer = Timer(period=AVG_KPA_DELAY  * 1000, mode=Timer.ONE_SHOT, callback=set_average_kpa)      # type:ignore # start timer to record average after 5 seconds
-                    zone_timer    = Timer(period=ZONE_DELAY * 1000,     mode=Timer.ONE_SHOT, callback=set_zone)      # type:ignore # start timer to record zone after 30 seconds
-                    
+                    average_timer   = Timer(period=AVG_KPA_DELAY * 1000, mode=Timer.ONE_SHOT, callback=set_average_kpa)  # type:ignore
+                    zone_timer      = Timer(period=ZONE_DELAY * 1000,    mode=Timer.ONE_SHOT, callback=set_zone)  # type:ignore
                 logstr = f'{now_time_long()} p_a_p {cmd} processed {reason}, pump switched ON'
                 ev_log.write(f'{logstr}\n')
                 print(logstr)
                 event_ring.add("PUMP ON")
                 system.on_event(SimpleDevice.SM_EV_ON_ACK)
+            else:
+                # Handle failed ON request
+                if response is None:
+                    enter_maint_mode_reason("PAP Timeout on ON request")
+                else:
+                    logstr = f'{now_time_long()} ON request FAILED'
+                    ev_log.write(f'{logstr}\n')
+                    print(logstr)
+                    system.on_event(SimpleDevice.SM_EV_ON_NAK)
 
-            elif cmd == MSG_REQ_OFF:
+        elif cmd == MSG_REQ_OFF:
+            if success:
+                # Handle successful OFF request
                 borepump.switch_pump(False)
-# TODO do solenoid stuff here...
                 LOGHFDATA = False
                 switch_ring.add("PUMP OFF")
                 logstr = f'{now_time_long()} p_a_p {cmd} processed {reason}, pump switched OFF'
@@ -3213,17 +3288,25 @@ async def pump_action_processor():
                 event_ring.add("PUMP OFF")
                 system.on_event(SimpleDevice.SM_EV_OFF_ACK)
             else:
-                logstr = f'Unknown command {cmd}'
-                ev_log.write(f'{logstr}\n')
-                print(logstr) 
-        else:       # looks like a failed request...
-            if response == None:    # this is bad...  drop into MAINTENENACE mode
-                enter_maint_mode_reason("PAP Timeout")
-            else:
-                logstr = f'{now_time_long()} {cmd} FAIL'
-                ev_log.write(f'{logstr}\n')
-                print(logstr)        
-                    
+                # Handle failed OFF request - potentially more serious
+                if response is None:
+                    logstr = f'{now_time_long()} PAP Timeout on OFF request'
+                    ev_log.write(f'{logstr}\n')
+                    print(logstr)                
+                    enter_maint_mode_reason("PAP Timeout on OFF request")
+                    error_ring.add(TankError.PUMP_OFF_FAILED)
+                else:
+                    logstr = f'{now_time_long()} OFF request FAILED - pump state uncertain'
+                    ev_log.write(f'{logstr}\n')
+                    print(logstr)
+                    error_ring.add(TankError.PUMP_OFF_FAILED)
+                    system.on_event(SimpleDevice.SM_EV_OFF_NAK)
+
+        else:
+            logstr = f'Unknown command {cmd}'
+            ev_log.write(f'{logstr}\n')
+            print(logstr)
+                 
 # ============================================
 # Task 1: Radio Receiver (producer)
 # ============================================

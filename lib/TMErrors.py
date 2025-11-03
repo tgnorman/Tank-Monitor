@@ -18,6 +18,7 @@ class TankError:
     AVG_KPA_ZERO        = 15
     HI_VAR_PRES         = 16
     HI_VAR_DIST         = 17
+    PUMP_OFF_FAILED     = 18
     MAX_REPEAT_EVENT    = 100
 
     def __init__(self):
@@ -41,6 +42,7 @@ class TankError:
             self.AVG_KPA_ZERO:      ("AKP0", "Avg kPa zero"),
             self.HI_VAR_PRES:       ("XVP",  "Hi P Variance"),
             self.HI_VAR_DIST:       ("XVD",  "Hi D Variance"),
+            self.PUMP_OFF_FAILED:   ("POF",  "PumpOFF failed"),
             self.MAX_REPEAT_EVENT:  ("XREP", "Max repeated events")
         }
     
