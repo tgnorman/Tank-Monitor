@@ -40,9 +40,11 @@ from Pushbutton import Pushbutton
 from TM_Protocol import *
 from ringbuf_queue import RingbufQueue
 
-#import aioprof
+from Radio import My_Radio
 
-# from math import sqrt  # MicroPython does include math
+from uasyncio import Event
+from queue import Queue
+#import aioprof
 
 # endregion
 
@@ -84,7 +86,6 @@ DEBOUNCE_ROTARY     = 10            # determined from trial... see test_rotary_i
 DEBOUNCE_BUTTON     = 400           # 50 was still registering spurious presses... go real slow.
 ROTARY_PERIOD_MS    = 200           # needs to be short... check rotary ISR variables
 PRESSURE_PERIOD_MS  = 1000          # ms
-#RADIO_PAUSE         = 1000          # TODO make RADIO_PAUSE consistent with RX - put it in TM_Protocol!
 SLOW_BLINK          = 850           # ms
 FAST_BLINK          = 300           # ms
 BlinkDelay          = SLOW_BLINK    # for blinking LED... 1 second, given LED is on for 150ms, off for 850ms
@@ -98,7 +99,6 @@ ERRORRINGSIZE       = 20            # max error log ringbuffer length
 HI_FREQ_RINGSIZE    = 120           # for high frequency pressure logging.  At 1 Hz that's 2 minutes of data
 DEPTHRINGSIZE       = 10            # since adding fast_average in critical_states, this no longer is a concern, but is used for ROC SMA calc
 
-# depthringindex      = 0           # for SMA calculation... keep last n measures in a ring buffer
 # endregion
 # region COUNTERS
 # Counters... for averaging or event timing
@@ -129,10 +129,12 @@ kpa_sensor_found    = True          # set to True if pressure sensor is detected
 avg_kpa_set         = False         # set to True if kpa average is set
 kpa_peak            = 0             # track peak pressure for each zone
 kpa_low             = 1000
-DEPTH_SD_MAX        = 3            # test...
-PRESS_SD_MAX        = 3.6           # test this too
+DEPTH_SD_MAX        = 3             # Optimisation: calc SD of residuals after removing linear trend... it matters! Then reduce 5 to about 2!
+PRESS_SD_MAX        = 3             # test this too.  Was 3.6 before I changed to calc on residuals... not bare kPa
 kPa_sd_multiple     = 30            # 10X so that is 2.5 std devs ... a LOT of wiggle room.  Divide by 10 later...
 hf_xvalues          = [i for i in range(HI_FREQ_RINGSIZE)]  # 
+dr_xvalues          = [i for i in range(DEPTHRINGSIZE)]
+dr_yvalues          = [0 for i in range(DEPTHRINGSIZE)]            # TODO revert to simple buffer for depthring.
 # endregion
 # region SYSTEM
 FREE_SPACE_LOWATER  = 150           # in KB...
@@ -142,9 +144,12 @@ MAX_CONTIN_RUNMINS  = 360           # 3 hours max runtime.  More than this looks
 SIMULATE_PUMP       = False         # debugging aid...replace pump switches with a PRINT
 SIMULATE_KPA        = False         # debugging aid...replace pressure sensor with a PRINT
 
-report_max_outage       = True          # do I report next power outage?
+report_max_outage   = True          # do I report next power outage?
 sys_start_time      = 0             # for uptime report
 my_IP               = None
+
+pump_action_queue   = Queue()       # Queue to hold async on/off requests, processed asynchronously
+
 # endregion
 # region LOGGING
 # logging stuff...
@@ -200,7 +205,8 @@ display             = create_PiicoDev_SSD1306()
 # Create PiicoDev sensor objects
 distSensor          = TN_PiicoDev_VL53L1X()             # use my custom driver, with extra snibbo's
 lcd 		        = RGB1602.RGB1602(16,2)
-radio               = PiicoDev_Transceiver()
+radio_dev           = PiicoDev_Transceiver()
+radio               = My_Radio(radio_dev)
 #rtc 		        = PiicoDev_RV3028()                 # Initialise the RTC module, enable charging
 housetank           = Tank("Empty")                     # make my tank object
 
@@ -230,7 +236,7 @@ DEFAULT_DUTY_CYCLE  = 24            # % ON time for irrigation program
 
 clock_adjust_ms     = 0             # will be set later... this just to ensure it is ALWAYS something
 # Code Review suggestions to avoid race conditions
-depth_lock          = asyncio.Lock()
+depth_lock          = asyncio.Lock()        # TODO Review Lock things
 pressure_lock       = asyncio.Lock()
 email_queue_lock    = asyncio.Lock()
 enc_btn_lock        = asyncio.Lock()
@@ -246,13 +252,14 @@ VBUS_RESTORED       = "VBUS RESTORED"
 DM_DEPTH            = 'depth'
 DM_PRESSURE         = 'pressure'
 
-RADIO_LISTEN_MS     = 100           # check for received radio msg every...
 sleep_mins          = 60            # how long to sleep with XSHUT
 
 last_activity_time  = 0             # for sleepmode calcs
 # endregion
 # region Async_Comms
-RADIO_Q_SIZE        = 5             # way overkill... really, I don't expect even 5.
+pending_request     = {}            # to track what we are waiting for
+
+depthringindex      = 0             # testing linreg residual SD stuff...
 
 # endregion
 # region EMAIL
@@ -385,10 +392,10 @@ peak_pressure_dict = {
     '???': (0, 0, 0)
 }
 program_list = [
-              ("Cycle1", {"init" : 0, "run" : 22, "off" : 50}),
-              ("Cycle2", {"init" : 0, "run" : 22, "off" : 50}),
-              ("Cycle3", {"init" : 0, "run" : 22, "off" : 50}),
-              ("Cycle4", {"init" : 1, "run" : 24, "off" : 1})]
+              ("Cycle1", {"init" : 0, "run" : 22, "off" : 55}),
+              ("Cycle2", {"init" : 0, "run" : 22, "off" : 55}),
+              ("Cycle3", {"init" : 0, "run" : 22, "off" : 55}),
+              ("Cycle4", {"init" : 1, "run" : 22, "off" : 1})]
 
 # zone_list... zone ID, min, start-up, max pressures, SD multiplier, quadratic eq  a,b,c coefficients, and zone_max_drop
 # TODO need to test each zone's starting pressure...from full bore state, and adjust the min/max values accordingly.
@@ -1130,7 +1137,7 @@ def make_more_space()->None:
 
     hitList: list[tuple] = []
     device_files = uos.listdir()
-    tank_files = [x for x in device_files if x.endswith('.txt') and (x.startswith('tank') or x.startswith('HF'))]
+    tank_files = [x for x in device_files if x.endswith('.txt') and (x.startswith('tank') or x.startswith('HF') or x.startswith('pres ') or x.startswith('BPEV'))]
     for f in tank_files:
         ftuple = uos.stat(f)
         kb = int(ftuple[6] / 1024)
@@ -1139,7 +1146,7 @@ def make_more_space()->None:
         file_entry = tuple((f, kb, ts, tstr))
         hitList.append(file_entry)
 
-    sorted_by_date = sorted(hitList, key=lambda x: x[2], reverse=True)
+    sorted_by_date = sorted(hitList, key=lambda x: x[2])
     print(f"Files by date:\n{sorted_by_date}")
     starting_free = free_space()
     if starting_free < FREE_SPACE_LOWATER:
@@ -1159,7 +1166,7 @@ def make_more_space()->None:
         ending_free = free_space()
         reclaimed = ending_free - starting_free
         print(f"After cleanup: {ending_free} Kb")
-        ev_log.write(f"{now_time_long()} free space {ending_free}.  Reclaimed {reclaimed} Kb in {count} files\n")
+        ev_log.write(f"{now_time_long()} free space {ending_free} kb.  Reclaimed {reclaimed} Kb in {count} files\n")
         lcd.setCursor(0, 1)
         lcd.printout(f'Saved {reclaimed} Kb')
 
@@ -1176,6 +1183,9 @@ def enter_maint_mode_reason(reason:str)->None:
     info_display_mode = INFO_MAINT
     BlinkDelay        = FAST_BLINK              # fast LED flash to indicate maintenance mode
     maint_mode_time = now_time_long()
+    logstr = f'{now_time_long()} Entered MAINT mode - {reason}'
+    ev_log.write(logstr + '\n')
+    print(logstr)
 
 def enter_maint_mode()->None:
     enter_maint_mode_reason("(via menu)")
@@ -1797,10 +1807,11 @@ def updateData():
     global pressure_str
     global average_kpa, zone, avg_kpa_set
     global temp
-  
+    global depthringindex
+
     get_tank_depth()
 
-    # depthringbuf[depthringindex] = housetank.depth; depthringindex = (depthringindex + 1) % DEPTHRINGSIZE
+    depthringbuf[depthringindex] = housetank.depth; depthringindex = (depthringindex + 1) % DEPTHRINGSIZE
     depth_ring.add(housetank.depth)
     sma_depth = calc_SMA(depth_ring.buffer)            # this calculates average of non-zero values... regardless of how many entries in the ring
     time_factor = config_dict[DELAY] / 60
@@ -1809,12 +1820,12 @@ def updateData():
     housetank.last_depth = sma_depth				# track ROC since last reading using SMA_DEPTH... NOT raw depth
     depth_str = f"{housetank.depth/1000:.2f}m " + tank_is
 
-    if read_count_since_ON >= AVG_KPA_COUNT:
+    if kpa_sensor_found and read_count_since_ON >= AVG_KPA_COUNT:
         tmp = int(calc_average_HFpressure(0, AVG_KPA_COUNT))  # get average of last AVG_KPA_COUNT readings.
         if tmp > 0:
             average_kpa = tmp
             avg_kpa_set = True
-            kpa_ring.add(average_kpa)         # kpa_ring values are ONLY used to view history vua menu... no other function
+            kpa_ring.add(average_kpa)         # kpa_ring values are ONLY used to view history via menu... no other function
             # print(f"Average kPa set in UpdateData to: {average_kpa}")
         else:
             print("Yikes!! HF_B full, but average_kpa is 0")
@@ -1838,33 +1849,28 @@ def log_switch_error(new_state):
     ev_log.write(f"{now_time_long()} ERROR on switching to state {new_state}\n")
     event_ring.add(f"ERR swtch {new_state}")
     
-def parse_reply(rply):
-    if DEBUGLVL > 1: print(f"{now_time_long()} in parse_reply, arg is {rply}")
-    if isinstance(rply, tuple):			# good...
-        key = rply[0].upper()
-        val = rply[1]
-        # if DEBUGLVL > 1: print(f"in parse: key={key}, val={val}")
-        if key == MSG_STATUS_ACK:
-            return True, val
-        elif MSG_ERROR in key:          # TODO Fix radio MSG_ERR receipts
-            resp = key.split(" ")
-            return False, -1
-        else:
-            print(f"{now_time_long()} Unknown tuple: key {key}, val {val}")
-            return False, -1
-    else:
-        print(f"Expected tuple... didn't get one.  Got {rply}")
-        return False, False
+# def parse_reply(rply):
+#     if DEBUGLVL > 1: print(f"in parse arg is {rply}")
+#     if isinstance(rply, tuple):			# good...
+#         key = rply[0].upper()
+#         val = rply[1]
+# #        print(f"in parse: key={key}, val={val}")
+#         if key == MSG_STATUS_ACK:       # *** THIS IS NO LONGER VALID... Slave no longer returns a tuple... either ACK or NAK.
+#             return True, val
+#         elif MSG_ERROR in key:
+#             resp = key.split(" ")
+#             return False, -1
+#         else:
+#             print(f"Unknown tuple: key {key}, val {val}")
+#             return False, -1
+#     else:
+#         print(f"Expected tuple... didn't get one.  Got {rply}")
+#         return False, False
 
-def transmit_and_pause(msg, delay):
-    not_ready_count = 0
-    while not radio.transceiver_ready:
-        not_ready_count += 1
-        sleep_ms(5)
-    if not_ready_count > 0: print(f'{not_ready_count=}')    
-    if DEBUGLVL > 1: print(f"{now_time_long()} TX Sending {msg}, sleeping for {delay} ms")
-    radio.send(msg)
-    sleep_ms(delay)
+# def transmit_and_pause(msg, delay):
+#     if DEBUGLVL > 1: print(f"tx_and_pause: Sending {msg}, sleeping for {delay} ms")
+#     radio.device.send(msg)
+#     sleep_ms(delay)
 
 def confirm_solenoid():
     solenoid_state = sim_detect()
@@ -1877,47 +1883,6 @@ def confirm_solenoid():
 def radio_time(local_time):
     return local_time + clock_adjust_ms
 
-def borepump_ON(reason:str):
-    global last_ON_time, LOGHFDATA, average_timer, zone_timer
-
-    if SIMULATE_PUMP:
-        print(f"{now_time_long()} SIM Pump ON")
-    else:
-        tup = (MSG_REQ_ON, radio_time(time.time()))   # was previosuly counter... now, time
-    #            print(tup)
-        system.on_event(SimpleDevice.SM_EV_ON_REQ)
-        wait_ms = 3 * RADIO_PAUSE
-        transmit_and_pause(tup, wait_ms)    # TODO test R_P - what is typical?
-    # try implicit CHECK... which should happen in my RX module as state_changed
-    #            radio.send(MSG_CHECK)
-    #            sleep_ms(RADIO_PAUSE)
-        if radio.receive():
-            rply = radio.message
-        #                print(f"radio.message (rm): {rm}")
-            if DEBUGLVL > 1: print(f"{now_time_long()} received response: {rply}")
-            valid_response, new_state = parse_reply(rply)
-        #                print(f"in ctlBP: rply is {valid_response} and {new_state}")
-            if valid_response and new_state > 0:
-                borepump.switch_pump(True)
-                last_ON_time = time.time()          # for easy calculation of runtime to DROP pressure OFF    
-                switch_ring.add("PUMP ON")
-                # print(f"***********Setting timer for average_kpa at {now_time_long()}")    
-                ev_log.write(f"{now_time_long()} ON {reason}\n")
-                system.on_event(SimpleDevice.SM_EV_ON_ACK)
-                # print(f"***********Setting timer for avg & set_zone at {now_time_long()}")
-                if kpa_sensor_found:
-                    reset_state()
-                    # timer_mgr.create_timer(name=AVG_KPA_TIMER_NAME, period=AVG_KPA_DELAY * 1000, callback=set_average_kpa)
-                    # timer_mgr.create_timer(name=ZONE_TIMER_NAME, period=ZONE_DELAY * 1000, callback=set_zone)
-                    average_timer = Timer(period=AVG_KPA_DELAY  * 1000, mode=Timer.ONE_SHOT, callback=set_average_kpa)      # type:ignore # start timer to record average after 5 seconds
-                    zone_timer    = Timer(period=ZONE_DELAY * 1000,     mode=Timer.ONE_SHOT, callback=set_zone)      # type:ignore # start timer to record zone after 30 seconds
-        # change_logging(True)
-                    LOGHFDATA = True
-            else:
-                log_switch_error(new_state)
-        else:
-            print(f'{now_time_long()} No reply to REQ ON after {wait_ms} ms')
-
 def reset_state():
     global read_count_since_ON, stable_pressure, avg_kpa_set, kpa_peak, kpa_low
 
@@ -1927,36 +1892,77 @@ def reset_state():
     kpa_peak = 0
     kpa_low = 1000
 
+def borepump_ON(reason:str):
+    global last_ON_time, LOGHFDATA, average_timer, zone_timer
+
+    system.on_event(SimpleDevice.SM_EV_ON_REQ)
+    pump_action_queue.put_nowait(('ON', reason))
+
+    # tup = (MSG_REQ_ON, radio_time(time.time()))   # was previosuly counter... now, time
+
+#            print(tup)
+    # system.on_event(SimpleDevice.SM_EV_ON_REQ)
+    # transmit_and_pause(tup, 2 * RADIO_PAUSE)
+    # transmit_and_pause(MSG_REQ_ON, RADIO_PAUSE)
+# try implicit CHECK... which should happen in my RX module as state_changed
+#            radio.device.send(MSG_CHECK)
+#            sleep_ms(RADIO_PAUSE)
+    # if radio.device.receive():
+    #     rply = radio.device.message
+    # #                print(f"radio.device.message (rm): {rm}")
+    #     print(f"BPO: received response: rply is {rply}")
+    #     # valid_response, new_state = parse_reply(rply)
+    #     if rply == MSG_ON_ACK:
+    #                print(f"in ctlBP: rply is {valid_response} and {new_state}")
+        # if valid_response and new_state > 0:
+    # borepump.switch_pump(True)
+    # switch_ring.add("PUMP ON")
+    # last_ON_time = time.time()          # for easy calculation of runtime to DROP pressure OFF    
+    # LOGHFDATA = True
+    # # print(f"***********Setting timer for average_kpa at {now_time_long()}")    
+    # # print(f"***********Setting timer for avg & set_zone at {now_time_long()}")
+    # if kpa_sensor_found:
+    #     reset_state()
+    #     # timer_mgr.create_timer(name=AVG_KPA_TIMER_NAME, period=AVG_KPA_DELAY * 1000, callback=set_average_kpa)
+    #     # timer_mgr.create_timer(name=ZONE_TIMER_NAME, period=ZONE_DELAY * 1000, callback=set_zone)
+    #     average_timer = Timer(period=AVG_KPA_DELAY  * 1000, mode=Timer.ONE_SHOT, callback=set_average_kpa)      # type:ignore # start timer to record average after 5 seconds
+    #     zone_timer    = Timer(period=ZONE_DELAY * 1000,     mode=Timer.ONE_SHOT, callback=set_zone)      # type:ignore # start timer to record zone after 30 seconds
+        
+    # ev_log.write(f"{now_time_long()} ON {reason}\n")
+    # system.on_event(SimpleDevice.SM_EV_ON_ACK)
+        # else:
+            # log_switch_error(1)
+
 def borepump_OFF(reason:str):
     global LOGHFDATA
-    if SIMULATE_PUMP:
-        print(f"{now_time_long()} SIM Pump OFF")
-    else:
-        tup = (MSG_REQ_OFF, radio_time(time.time()))
-    #            print(tup)
-        system.on_event(SimpleDevice.SM_EV_OFF_REQ)
-        wait_ms = 3 * RADIO_PAUSE
-        transmit_and_pause(tup, wait_ms)    # that's two sleeps... as expecting immediate reply
-    # try implicit CHECK... which should happen in my RX module as state_changed
-    #            radio.send(MSG_CHECK)
-    #            sleep_ms(RADIO_PAUSE)
-        if radio.receive():
-            rply = radio.message
-            valid_response, new_state = parse_reply(rply)
-    #                print(f"in ctlBP: rply is {valid_response} and {new_state}")
-            if valid_response and not new_state:        # this means I received confirmation that pump is OFF...
-                borepump.switch_pump(False)
-                switch_ring.add("PUMP OFF")
-                # change_logging(False)
-                LOGHFDATA = False
-                ev_log.write(f"{now_time_long()} OFF {reason}\n")
-                system.on_event(SimpleDevice.SM_EV_OFF_ACK)
-                if DEBUGLVL > 1: print("borepump_OFF: Closing valve")
-                solenoid.value(1)               # wait until pump OFF confirmed before closing valve !!!
-            else:
-                log_switch_error(new_state)
-        else:
-            print(f'{now_time_long()} No reply to REQ OFF after {wait_ms} ms')
+
+    # if DEBUGLVL>0: print(f'{tank_is=} {borepump.state=}... SM.on_event {SimpleDevice.SM_EV_OFF_REQ}')
+    system.on_event(SimpleDevice.SM_EV_OFF_REQ)
+    pump_action_queue.put_nowait(('OFF', reason))
+#     success, response = await send_command_with_timeout(MSG_REQ_OFF, MSG_OFF_ACK)
+#     if success:
+#         borepump_OFF("Tank FULL")
+#         # borepump.switch_pump(False)
+#         # switch_ring.add("PUMP OFF")
+#         # LOGHFDATA = False
+#         if DEBUGLVL > 1: print("borepump_OFF: Closing valve")
+#         solenoid.value(1)
+#         if DEBUGLVL>0: print(f'SUCCESS: {tank_is=} {borepump.state=}... SM.on_event {SimpleDevice.SM_EV_OFF_ACK}')
+#         system.on_event(SimpleDevice.SM_EV_OFF_ACK)
+#     else:
+#         ev_log.write(f"{now_time_long()} AUTO_FILL FAIL OFF\n")
+# # alt code: log_switch_error(0)                    
+#         if DEBUGLVL>0: print(f'FAIL:    {tank_is=} {borepump.state=}... SM.on_event {SimpleDevice.SM_EV_OFF_NAK}')
+#         system.on_event(SimpleDevice.SM_EV_OFF_NAK)
+
+
+
+#     borepump.switch_pump(False)
+#     switch_ring.add("PUMP OFF")
+#     LOGHFDATA = False
+#     ev_log.write(f"{now_time_long()} OFF {reason}\n")
+    # system.on_event(SimpleDevice.SM_EV_OFF_ACK)
+               # wait until pump OFF confirmed before closing valve !!!
 
 def manage_tank_fill():
     global tank_is
@@ -1967,7 +1973,7 @@ def manage_tank_fill():
     if tank_is == housetank.fill_states[len(housetank.fill_states) - 1]:		# Empty
         if not borepump.state:		# pump is off, we need to switch on
             if op_mode == OP_MODE_AUTO:
-                if DEBUGLVL > 1: print("manage_tank_fill: Opening valve")
+                if DEBUGLVL > 1: print("Opening valve b4 ON")
                 solenoid.value(0)
             if confirm_solenoid():
                 if DEBUGLVL > 1: print("manage_tank_fill: calling borepump_ON")
@@ -2008,6 +2014,8 @@ def cancel_deadtime(timer:Timer)->None:
         event_ring.add("Disabled mode cancelled")
         op_mode = previous_op_mode
         borepump_ON("Resuming after pause")       # this is really the critical bit !!
+        # print(f'{now_time_long()} cancel_deadtime: setting pump_on_event')
+        # pump_on_event.set()
 
 def kpadrop_cb(timer:Timer)->None:
     global beeper, op_mode, previous_op_mode, last_ON_time
@@ -2051,7 +2059,6 @@ def kpadrop_cb(timer:Timer)->None:
         ev_log.write(drop_str + "\n")
         print(drop_str)
     # else:
-    #     change_logging(False)
     #     abort_pumping("kPa drop - sucking air?")    # STOP pumping, and enter maintenance mode
 
 def find_menu_path(menu: dict, target_title: str) -> list[int]:
@@ -2094,7 +2101,15 @@ def find_menu_index(param_name: str) -> int:
             
     print(f"Did not find {param_name} in config menu")
     return -1
-           
+
+def copy_dr_to_list():
+    global dr_yvalues
+
+    start = depthringindex
+    for i in range(DEPTHRINGSIZE):
+        modidx = (start - i) % DEPTHRINGSIZE
+        dr_yvalues[i] = depthringbuf[modidx]
+
 def quad(a: float, b: float, c: int, x: int) -> int:
     """Calculate the pressure at a given point using a quadratic equation"""
     return int(a * x*x + b * x + c)
@@ -2103,41 +2118,45 @@ def checkForAnomalies()->None:
     global borepump, tank_is, average_kpa, stdev_Depth, stdev_Press
 
     if borepump.state:                          # pump is ON
-        if avg_kpa_set and read_count_since_ON > (LOOKBACKCOUNT + HI_FREQ_AVG_COUNT):   # == HI_FREQ_RINGSIZE - 1: # this ensures we get a valid average kPa reading
+        if kpa_sensor_found:        # only check for kPa stuff if we have kPa readings...
+            if avg_kpa_set and read_count_since_ON > (LOOKBACKCOUNT + HI_FREQ_AVG_COUNT):   # == HI_FREQ_RINGSIZE - 1: # this ensures we get a valid average kPa reading
 
-# NOTE: calc_average_HFpressure behaves differently to other stats methods lin_reg and mean_stddev
-            av_p_prior  = calc_average_HFpressure(LOOKBACKCOUNT, HI_FREQ_AVG_COUNT) # get average of readings LOOKBACK seconds ago.
-            av_p_now    = calc_average_HFpressure(0, HI_FREQ_AVG_COUNT)             # zero offset == immediately prior values
-            actual_pressure_drop = round(av_p_prior - av_p_now, 2)     # Important!  Avoid rounding errors.. avg drop of 0.3 on HT triggered alarm without int()!
-            # if isRapidDrop(LOOKBACKCOUNT, expected_drop):   # check for rapid drop... if so, then set alarm and turn off pump
-# NOTE: the startidx param is CRITICAL!!  we need to do LR on the data BEFORE pressure dropped...
-            idx =  (hi_freq_kpa_index - 1 - (LOOKBACKCOUNT - P_STD_DEV_COUNT)) % HI_FREQ_RINGSIZE
-            k_slope, k_intercept, prio_stdev_Press, r2 = linear_regression(hf_xvalues, hi_freq_kpa_ring, P_STD_DEV_COUNT, idx, HI_FREQ_RINGSIZE)
-            slope_drop = round(abs(k_slope) * LOOKBACKCOUNT, 2)     # changed from incorrect P_STD_DEV_COUNT 19/7/25
-            SD_drop = round(prio_stdev_Press * kPa_sd_multiple)
-            max_drop = slope_drop + SD_drop
-            # max_drop = abs(k_slope * LOOKBACKCOUNT) + stdev_Press * float(config_dict[KPASTDEVMULT])
-            # if actual_pressure_drop > zone_max_drop:     # This needs to be zone-specific - even if I don't use quad
-# TODO remove zone_max_drop from zone dict... assuming linreg thing works out
-            if actual_pressure_drop > max_drop:         # replaced zone=specific const with calculated value from linreg
-                if not timer_mgr.is_pending(KPA_DROP_TIMER_NAME):
-                    runtime = time.time() - last_ON_time
-                    _, H, M, S = secs_to_DHMS(runtime)
-                    run_str = f'{H}:{M:02}:{S:02}'
-                    # raiseAlarm(f"Pressure DROP after {runmins}:{runseconds:02}. Expected:{expected_drop}", actual_pressure_drop)
-                    raiseAlarm(f"kPa DROP {run_str} after ON  Exceeds max drop:{max_drop:.1f} {k_slope=:.4f} {r2=:.3f} {slope_drop=:.1f} {SD_drop=:.1f}", actual_pressure_drop)
-                    error_ring.add(TankError.PRESSUREDROP)
-                    beeper.value(1)                              # this might change... to ONLY if not in TWM/IRRIGATE    
-                    # kpa_drop_timer = Timer(period=ALARMTIME * 1000, mode=Timer.ONE_SHOT, callback=kpadrop_cb)
-                    timer_mgr.create_timer(KPA_DROP_TIMER_NAME, ALARMTIME * 1000, kpadrop_cb)
+    # NOTE: calc_average_HFpressure behaves differently to other stats methods lin_reg and mean_stddev
+                av_p_prior  = calc_average_HFpressure(LOOKBACKCOUNT, HI_FREQ_AVG_COUNT) # get average of readings LOOKBACK seconds ago.
+                av_p_now    = calc_average_HFpressure(0, HI_FREQ_AVG_COUNT)             # zero offset == immediately prior values
+                actual_pressure_drop = round(av_p_prior - av_p_now, 2)     # Important!  Avoid rounding errors.. avg drop of 0.3 on HT triggered alarm without int()!
+                # if isRapidDrop(LOOKBACKCOUNT, expected_drop):   # check for rapid drop... if so, then set alarm and turn off pump
+    # NOTE: the startidx param is CRITICAL!!  we need to do LR on the data BEFORE pressure dropped...
+                idx =  (hi_freq_kpa_index - 1 - (LOOKBACKCOUNT - P_STD_DEV_COUNT)) % HI_FREQ_RINGSIZE
+                k_slope, k_intercept, _, prior_stdev_Press, r2 = linear_regression(hf_xvalues, hi_freq_kpa_ring, P_STD_DEV_COUNT, idx, HI_FREQ_RINGSIZE)
+                slope_drop = round(abs(k_slope) * LOOKBACKCOUNT, 2)     # changed from incorrect P_STD_DEV_COUNT 19/7/25
+                SD_drop = round(prior_stdev_Press * kPa_sd_multiple)
+                max_drop = slope_drop + SD_drop
+                # max_drop = abs(k_slope * LOOKBACKCOUNT) + stdev_Press * float(config_dict[KPASTDEVMULT])
+                # if actual_pressure_drop > zone_max_drop:     # This needs to be zone-specific - even if I don't use quad
+    # TODO remove zone_max_drop from zone dict... assuming linreg thing works out
+                if actual_pressure_drop > max_drop and op_mode != OP_MODE_DISABLED:         # replaced zone=specific const with calculated value from linreg
+                    if not timer_mgr.is_pending(KPA_DROP_TIMER_NAME):
+                        runtime = time.time() - last_ON_time
+                        _, H, M, S = secs_to_DHMS(runtime)
+                        run_str = f'{H}:{M:02}:{S:02}'
+                        # raiseAlarm(f"Pressure DROP after {runmins}:{runseconds:02}. Expected:{expected_drop}", actual_pressure_drop)
+                        raiseAlarm(f"kPa DROP {run_str} after ON  Exceeds max drop:{max_drop:.1f} {k_slope=:.4f} {r2=:.3f} {slope_drop=:.1f} {SD_drop=:.1f}", actual_pressure_drop)
+                        error_ring.add(TankError.PRESSUREDROP)
+                        beeper.value(1)                              # this might change... to ONLY if not in TWM/IRRIGATE    
+                        # kpa_drop_timer = Timer(period=ALARMTIME * 1000, mode=Timer.ONE_SHOT, callback=kpadrop_cb)
+                        timer_mgr.create_timer(KPA_DROP_TIMER_NAME, ALARMTIME * 1000, kpadrop_cb)
+            # now get the CURRENT stdev_Press... which will go higher on kpadrop, but for alarm purposes, only interested in residual SD
+                _,_, _, stdev_Press, _ = linear_regression(hf_xvalues, hi_freq_kpa_ring, P_STD_DEV_COUNT, hi_freq_kpa_index, HI_FREQ_RINGSIZE)
+                if stdev_Press > PRESS_SD_MAX:      # now ignores trend...
+                    raiseAlarm("XS P SDEV", stdev_Press)
+                    error_ring.add(TankError.HI_VAR_PRES)
 
-            # if op_mode == OP_MODE_IRRIGATE and  kpa_sensor_found and average_kpa < zone_minimum:
-            if kpa_sensor_found and average_kpa < zone_minimum:   # this could happen in AUTO/HT tank-fill mode also...
-                raiseAlarm("Below Zone Min Pressure", average_kpa)
-                error_ring.add(TankError.BELOW_ZONE_MIN)
-                if PRODUCTION_MODE: abort_pumping("kPa below Zone min")
-
-        # if op_mode == OP_MODE_AUTO:                         # assumes we only fill tank in AUTO mode... not always true.
+                # if op_mode == OP_MODE_IRRIGATE and  kpa_sensor_found and average_kpa < zone_minimum:
+                if average_kpa < zone_minimum:   # this could happen in AUTO/HT tank-fill mode also...
+                    raiseAlarm("Below Zone Min Pressure", average_kpa)
+                    error_ring.add(TankError.BELOW_ZONE_MIN)
+                    if PRODUCTION_MODE: abort_pumping("kPa below Zone min")
 
         if not CALIBRATE_MODE:                              # easy way to prevent pesky alarms while testing
             if tank_is == "Overflow":                       # ideally, refer to a Tank object... but this will work for now
@@ -2155,17 +2174,14 @@ def checkForAnomalies()->None:
                 error_ring.add(TankError.MAX_ROC_EXCEEDED)
 
         # now, check standard deviation for high values...    
-        mean_D, stdev_Depth = mean_stddev(depth_ring.buffer, D_STD_DEV_COUNT, depth_ring.index, DEPTHRINGSIZE)
+        # mean_D, stdev_Depth = mean_stddev(depth_ring.buffer, D_STD_DEV_COUNT, depth_ring.index, DEPTHRINGSIZE)
+        # changed to get SD of residulas after removing trend... which is significant on normal depth change during tank fill
+        # TODO replace this...
+        copy_dr_to_list()
+        _,_,_, stdev_Depth, r2 = linear_regression(dr_xvalues, dr_yvalues, D_STD_DEV_COUNT, depthringindex, DEPTHRINGSIZE)
         if stdev_Depth > DEPTH_SD_MAX:
             raiseAlarm("XS D SDEV", stdev_Depth)
             error_ring.add(TankError.HI_VAR_DIST)
-        # this records the CURRENT stdev_Press... which will go higher on kpadrop.
-        if kpa_sensor_found and read_count_since_ON > P_STD_DEV_COUNT:
-            mean_P, stdev_Press = mean_stddev(hi_freq_kpa_ring, P_STD_DEV_COUNT, hi_freq_kpa_index, HI_FREQ_RINGSIZE)
-            # k_slope, k_intercept, stdev_Press, r2 = linear_regression(hi_freq_kpa_ring, hi_freq_kpa_ring, P_STD_DEV_COUNT,(hi_freq_kpa_index - LOOKBACKCOUNT) % HI_FREQ_RINGSIZE, HI_FREQ_RINGSIZE)
-            if stdev_Press > PRESS_SD_MAX:
-                raiseAlarm("XS P SDEV", stdev_Press)
-                error_ring.add(TankError.HI_VAR_PRES)
 
     else:                                       # pump is OFF
         if op_mode == OP_MODE_AUTO:
@@ -2275,7 +2291,7 @@ def DisplayInfo()->None:
             lcd4x20.putstr(rstr)
 
             lcd4x20.move_to(11, 0)
-            lcd4x20.putstr(f"S{1 if stable_pressure else 0} ")
+            lcd4x20.putstr(f"{'S' if stable_pressure else 'U'}P ")
 
             lcd4x20.move_to(14, 0)
             lcd4x20.putstr(f"HF:{' ON' if LOGHFDATA else 'OFF'}")
@@ -2474,55 +2490,58 @@ def LogData()->None:
     # tank_log.write(logstr)          # *** REMOVE AFTER kPa TESTING ***
     print(dbgstr)
 
-def init_radio()->bool:
-    global radio
+# def init_radio_nowait():
+#     global radio, system
     
-    print("Init radio...")
-    if radio.receive():
-        msg = radio.message
-        print(f"Read and discarded {msg}")
+#     print("Init radio...")
 
-    while not ping_RX():
-        print("Waiting for RX...")
-        sleep(1)
+#     radio.device.off()
+#     radio.device.on()       # should clear receive buffers
+#     if radio.device.receive():
+#         msg = radio.device.message
+#         print(f"Read & discarded {msg}.  Should not happen if rcv buffer cleared")
+    
+
+# def init_radio()->bool:
+#     global radio, system
+    
+#     print("Init radio...")
+#     if radio.device.receive():
+#         msg = radio.device.message
+#         print(f"Read & discarded {msg}")
+
+#     while not ping_RX():
+#         print("Waiting for RX...")
+#         sleep(1)
 
 # if we get here, my RX is responding.
     # print("RX responded to ping... comms ready")
-    return True
+    # return True
     # system.on_event(SimpleDevice.SM_EV_RADIO_ACK)
 
-def ping_RX() -> bool:           # at startup, test if RX is listening
-#    global radio
+# def ping_RX() -> bool:           # at startup, test if RX is listening
+# #    global radio
 
-    ping_acknowleged = False
-    wait_ms = 2 * RADIO_PAUSE
-    transmit_and_pause(MSG_PING_REQ, wait_ms)
-    if radio.receive():                     # depending on time relative to RX Pico, may need to pause more here before testing?
-        msg = radio.message
-        if DEBUGLVL > 1: print(f'{now_time_long()} ping_RX received {msg}')
-        if isinstance(msg, str):
-            if msg == MSG_PING_RSP:
-                ping_acknowleged = True
-    else:
-        if DEBUGLVL > 1: print(f'{now_time_long()} ping_RX received NO REPLY!')
+#     ping_acknowleged = False
+#     transmit_and_pause(MSG_PING_REQ, RADIO_PAUSE)
+#     if radio.device.receive():                     # depending on time relative to RX Pico, may need to pause more here before testing?
+#         msg = radio.device.message
+#         if isinstance(msg, str):
+#             if msg == MSG_PING_RSP:
+#                 ping_acknowleged = True
 
-    return ping_acknowleged
+#     return ping_acknowleged
 
-def get_initial_pump_state() -> bool:
+# def get_initial_pump_state() -> bool:
 
-    initial_state = False
-    wait_ms = 3 * RADIO_PAUSE
-    transmit_and_pause(MSG_STATUS_CHK,  wait_ms)
-    if radio.receive():
-        rply = radio.message
-        if DEBUGLVL > 1: print(f'{now_time_long()} get_initial_pump_state received: {rply}')
-        valid_response, new_state = parse_reply(rply)
-        if valid_response and new_state > 0:
-            initial_state = True
-    else:
-        print(f'{now_time_long()} get_initial_pump_state: did NOT receive reply after {wait_ms} ms !!')
-
-    return initial_state
+#     initial_state = False
+#     transmit_and_pause(MSG_STATUS_CHK,  RADIO_PAUSE)
+#     if radio.device.receive():
+#         rply = radio.device.message
+#         valid_response, new_state = parse_reply(rply)
+#         if valid_response and new_state > 0:
+#             initial_state = True
+#     return initial_state
 
 def calc_pump_runtime(p:Pump) -> str:
     dc_secs = p.cum_seconds_on
@@ -2554,7 +2573,6 @@ def init_wifi()->bool:
 # Connect to Wi-Fi
     wlan = network.WLAN(network.STA_IF)
     wlan.active(True)
-    print("connect_wifi..")
     if not wlan.isconnected():
         print('Connecting to network...')
         wlan.connect(SSID, PASSWORD)
@@ -2571,6 +2589,7 @@ def set_time():
  # Set time using NTP server
     print("Syncing time with NTP...")
     ntptime.settime()  # This will set the system time to UTC
+    print('Time set to ntp time')
     
 def init_clock()->bool:
 
@@ -2581,16 +2600,27 @@ def init_clock()->bool:
     return True
     # system.on_event(SimpleDevice.SM_EV_NTP_ACK)
 
+# def calibrate_clock():
+#     global radio
+
+#     delay=500
+# #   for i in range(1):
+#     p = ticks_ms()
+#     s = MSG_CLOCK
+#     t=(s, p)
+#     transmit_and_pause(t, delay)
+
 def init_ringbuffers():
     global hi_freq_kpa_ring, hi_freq_kpa_index
     global event_ring, error_ring, switch_ring, kpa_ring, depth_ring
+    global depthringbuf, depthringindex     # revert to old style for linreg/residual analysis of SD
 
-    # depthringbuf = [0]                # start with a list containing zero...
-    # if DEPTHRINGSIZE > 1:             # expand it as needed...
-    #     for _ in range(DEPTHRINGSIZE - 1):
-    #         depthringbuf.append(0)
-    # if DEBUGLVL > 0: print("Ringbuf is ", depthringbuf)
-    # depthringindex = 0
+    depthringbuf = [0]                # start with a list containing zero...
+    if DEPTHRINGSIZE > 1:             # expand it as needed...
+        for _ in range(DEPTHRINGSIZE - 1):
+            depthringbuf.append(0)
+    if DEBUGLVL > 0: print("Ringbuf is ", depthringbuf)
+    depthringindex = 0
 
     switch_ring = RingBuffer(
         size=SWITCHRINGSIZE, 
@@ -2678,8 +2708,8 @@ def init_all():
     display.show()   
 
 # Get the current pump state and init my object    
-    init_state          = get_initial_pump_state()
-    borepump            = Pump("BorePump", init_state)
+    # borepump            = Pump("BorePump", get_initial_pump_state())
+    borepump            = Pump("BorePump", context.ini_pump_state)
 
 # On start, valve should now be open... but just to be sure... and to verify during testing...
     if borepump.state:
@@ -2735,7 +2765,7 @@ def init_all():
     zone_minimum        = 0
     zone_maximum        = 0
     zone_max_drop       = 15            # check after more tests
-    kPa_sd_multiple      = float(config_dict[KPASTDEVMULT])      # this is now just default starting value... overwritten in set_zone
+    kPa_sd_multiple     = float(config_dict[KPASTDEVMULT])      # this is now just default starting value... overwritten in set_zone
     last_ON_time        = 0
     ut_short            = ""
     ut_long             = ""
@@ -2781,21 +2811,15 @@ def init_all():
         print("setMeasurementTimingBudget not available in this driver.")
     
     last_activity_time = now    # start now... check "regularly" - whatever that is
+    # pump_on_event.clear()       # ensure we start out with this unset
 
-def heartbeat() -> bool:
-    global borepump
-# heartbeat... if pump is on, send a regular heartbeat to the RX end
-# On RX, if a max time has passed... turn off.
-# Need a mechanism to alert T... and reset
+# def heartbeat() -> bool:
+#     global borepump
 
-# Doing this inline as it were to avoid issues with async, buffering yada yada.
-# The return value indicates if we need to sleep before continuing the main loop
-
-# only do heartbeat if the pump is running
-    if borepump.state:
-        # print("sending HEARTBEAT")
-        transmit_and_pause(MSG_HEARTBEAT, RADIO_PAUSE)       # this might be a candidate for a shorter delay... if no reply expected
-    return borepump.state
+#     if borepump.state:
+#         # print("sending HEARTBEAT")
+#         transmit_and_pause(MSG_HEARTBEAT, RADIO_PAUSE)       # this might be a candidate for a shorter delay... if no reply expected
+#     return borepump.state
 
 def switch_valve(state):
     global solenoid
@@ -2862,6 +2886,7 @@ class AppContext:
         self.wlan = None
         self.my_IP = None
         self.lcd = RGB1602.RGB1602(16,2)        # type ignore
+        self.ini_pump_state:bool = False        # assume pump is OFF to start... will update as required in init_all
         # Add references to functions if needed
         # self.log_event = log_event
         # self.update_ringbuffer = update_ringbuffer
@@ -2872,21 +2897,6 @@ context.lcd         = lcd
 system              = SimpleDevice(context)       
 # endregion
 # region ASYNCIO defs
-async def listen_to_radio():
-    """
-    Listen for incoming comms, save to a msg queue
-    """
-    # For full asynchronous comms this must be running as a task.
-    # Full-monty version should probably put received messages in a queue for comsumption.
-
-    # First cut... dont parse... just put whatever was received on the incoming queue
-    global last_msg
-
-    while True:
-        if radio.receive():
-            msg = radio.message
-
-        await asyncio.sleep_ms(RADIO_LISTEN_MS)
 
 async def monitor_vbus()->None:
     """
@@ -2964,7 +2974,8 @@ async def read_pressure()->None:
             lcd4x20.putstr(f"{bpp:>3}")
             if LOGHFDATA:       # conditionally, write to logfile... but note I ALWAYS add to the ring buffer
                                 # This gets switched On/OFF depending on pump state... but NOTE: buffer updates happen ALWAYS!
-                error_bar = bpp - round(stdev_Press * float(config_dict[KPASTDEVMULT] / 10 ), 2)
+                # error_bar = bpp - round(stdev_Press * float(config_dict[KPASTDEVMULT] / 10 ), 2)
+                error_bar = bpp - round(stdev_Press, 2)
                 hf_log.write(f"{now_time_long()} {bpp:>3} {hi_freq_avg} {error_bar}\n")
             if ui_mode == UI_MODE_NORM:
                 if op_mode ==  OP_MODE_AUTO: 
@@ -2978,7 +2989,8 @@ async def read_pressure()->None:
                 error_ring.add(TankError.EXCESS_KPA)                        
                 # borepump_OFF()
                 abort_pumping("Max kPa exceeded")       # this is safer
-                solenoid.value(1)
+                confirm_and_switch_solenoid(False)      # TODO Problem !! Turning solenoid off needs to aysnc confirm pump is OFF so... also needs to be async.
+                # solenoid.value(1)
 
             await asyncio.sleep_ms(PRESSURE_PERIOD_MS)
 
@@ -3169,50 +3181,311 @@ async def blinkx2():
         led.value(0)
         await asyncio.sleep_ms(BlinkDelay)     # adjust so I get a 1 second blink... or faster in maintenacne mode
 
-async def do_main_loop():
-    global ev_log, rec_num, housetank, system, op_mode
+# async def pump_action_processor():
+#     """
+#     Key component of async ops... get commands from queue and action them by sending to slave RX,
+#     then await for ACK/NAK
+#     """
+#     global average_timer, zone_timer, last_ON_time, LOGHFDATA
 
-    # start doing stuff
+#     while True:
+#         act_tuple = await pump_action_queue.get()
+#         qlen = pump_action_queue.qsize()
+#         print(f'{now_time_long()} pap after get {qlen=}')
+#         cmd = act_tuple[0]
+#         reason = act_tuple[1]
+#         if DEBUGLVL > 0: print(f'{now_time_long()} waiting on SCWT {cmd}')
+#         success, response = await send_command_with_timeout(cmd, MSG_ANY_ACK)
+#         if success:     # TODO refactor, transposing if success & if cmd == [ON | OFF]
+#             if cmd == MSG_REQ_ON:
+#                 borepump.switch_pump(True)
+#                 LOGHFDATA = True
+#                 switch_ring.add("PUMP ON")
+#                 last_ON_time = time.time()          # for easy calculation of runtime to DROP pressure OFF    
+#                 if kpa_sensor_found:
+#                     reset_state()
+#                     # timer_mgr.create_timer(name=AVG_KPA_TIMER_NAME, period=AVG_KPA_DELAY * 1000, callback=set_average_kpa)
+#                     # timer_mgr.create_timer(name=ZONE_TIMER_NAME, period=ZONE_DELAY * 1000, callback=set_zone)
+#                     average_timer = Timer(period=AVG_KPA_DELAY  * 1000, mode=Timer.ONE_SHOT, callback=set_average_kpa)      # type:ignore # start timer to record average after 5 seconds
+#                     zone_timer    = Timer(period=ZONE_DELAY * 1000,     mode=Timer.ONE_SHOT, callback=set_zone)      # type:ignore # start timer to record zone after 30 seconds
+                    
+#                 logstr = f'{now_time_long()} p_a_p {cmd} processed {reason}, pump switched ON'
+#                 ev_log.write(f'{logstr}\n')
+#                 print(logstr)
+#                 event_ring.add("PUMP ON")
+#                 system.on_event(SimpleDevice.SM_EV_ON_ACK)
+
+#             elif cmd == MSG_REQ_OFF:
+#                 borepump.switch_pump(False)
+# # TODO do solenoid stuff here...
+#                 LOGHFDATA = False
+#                 switch_ring.add("PUMP OFF")
+#                 logstr = f'{now_time_long()} p_a_p {cmd} processed {reason}, pump switched OFF'
+#                 ev_log.write(f'{logstr}\n')
+#                 print(logstr)
+#                 event_ring.add("PUMP OFF")
+#                 system.on_event(SimpleDevice.SM_EV_OFF_ACK)
+#             else:
+#                 logstr = f'Unknown command {cmd}'
+#                 ev_log.write(f'{logstr}\n')
+#                 print(logstr) 
+#         else:       # looks like a failed request...
+#             if response == None:    # this is bad...  drop into MAINTENENACE mode
+#                 enter_maint_mode_reason("PAP Timeout")
+#             else:
+#                 logstr = f'{now_time_long()} {cmd} FAIL'
+#                 ev_log.write(f'{logstr}\n')
+#                 print(logstr)        
+
+async def pump_action_processor():
+    """Process pump actions from queue, handle success/failure differently for ON/OFF"""
+    global average_timer, zone_timer, last_ON_time, LOGHFDATA
+
+    while True:
+        act_tuple = await pump_action_queue.get()
+        cmd = act_tuple[0]
+        reason = act_tuple[1]
+        qlen = pump_action_queue.qsize()
+        if DEBUGLVL > 1: print(f'{now_time_long()} pap after get {qlen=}')
+        if DEBUGLVL > 0: print(f'{now_time_long()} waiting on SCWT {cmd}')
+
+        success, response = await send_command_with_timeout(cmd, MSG_ANY_ACK)
+
+        if cmd == MSG_REQ_ON:
+            if success:
+                # Handle successful ON request
+                borepump.switch_pump(True)
+                LOGHFDATA = True
+                switch_ring.add("PUMP ON")
+                last_ON_time = time.time()
+                if kpa_sensor_found:
+                    reset_state()
+                    average_timer   = Timer(period=AVG_KPA_DELAY * 1000, mode=Timer.ONE_SHOT, callback=set_average_kpa)  # type:ignore
+                    zone_timer      = Timer(period=ZONE_DELAY * 1000,    mode=Timer.ONE_SHOT, callback=set_zone)  # type:ignore
+                logstr = f'{now_time_long()} p_a_p {cmd} processed {reason}, pump switched ON'
+                ev_log.write(f'{logstr}\n')
+                print(logstr)
+                event_ring.add("PUMP ON")
+                system.on_event(SimpleDevice.SM_EV_ON_ACK)
+            else:
+                # Handle failed ON request
+                if response is None:
+                    enter_maint_mode_reason("PAP Timeout on ON request")
+                else:
+                    logstr = f'{now_time_long()} ON request FAILED'
+                    ev_log.write(f'{logstr}\n')
+                    print(logstr)
+                    system.on_event(SimpleDevice.SM_EV_ON_NAK)
+
+        elif cmd == MSG_REQ_OFF:
+            if success:
+                # Handle successful OFF request
+                borepump.switch_pump(False)
+                LOGHFDATA = False
+                switch_ring.add("PUMP OFF")
+                logstr = f'{now_time_long()} p_a_p {cmd} processed {reason}, pump switched OFF'
+                ev_log.write(f'{logstr}\n')
+                print(logstr)
+                event_ring.add("PUMP OFF")
+                system.on_event(SimpleDevice.SM_EV_OFF_ACK)
+            else:
+                # Handle failed OFF request - potentially more serious
+                if response is None:
+                    logstr = f'{now_time_long()} PAP Timeout on OFF request'
+                    ev_log.write(f'{logstr}\n')
+                    print(logstr)                
+                    enter_maint_mode_reason("PAP Timeout on OFF request")
+                    error_ring.add(TankError.PUMP_OFF_FAILED)
+                else:
+                    logstr = f'{now_time_long()} OFF request FAILED - pump state uncertain'
+                    ev_log.write(f'{logstr}\n')
+                    print(logstr)
+                    error_ring.add(TankError.PUMP_OFF_FAILED)
+                    system.on_event(SimpleDevice.SM_EV_OFF_NAK)
+
+        else:
+            logstr = f'Unknown command {cmd}'
+            ev_log.write(f'{logstr}\n')
+            print(logstr)
+                 
+# ============================================
+# Task 1: Radio Receiver (producer)
+# ============================================
+async def radio_receive_task():
+    """Continuously listen for radio messages and put them in queue"""
+    global last_comms_time
+
+    while True:
+        if radio.device.receive():  # Check if message waiting
+            radio.status = True     # update status, needed for heartbeat check
+            message = radio.device.message
+            if DEBUGLVL > 1: print(f'{now_time_long()} MASTER rrt: {message=}')
+            last_comms_time = time.time()
+            await radio.incoming_queue.put(message)
+        await asyncio.sleep_ms(200)  # Don't hog CPU
+
+# ============================================
+# Task 2: Response Handler
+# ============================================
+async def response_handler_task():
+    """Process received responses and match them to pending requests"""
+    while True:
+        response = await radio.incoming_queue.get()
+        if DEBUGLVL > 1: print(f"RHT: Received: {response}")
+        
+        # Store the response so other tasks can check for it
+        if 'expected_response' in pending_request:
+            if response == pending_request['expected_response']:    # TODO this if seems pointless...
+                pending_request['received'] = True
+                pending_request['response'] = response
+            elif response.endswith(' NAK'):
+                pending_request['received'] = True
+                pending_request['response'] = response
+        
+        # TODO R_H_T: and the else clause is ???
+
+        # Could also handle unsolicited messages here if needed
+# ============================================
+# Helper: Send command and wait for response
+# ============================================
+async def send_command_with_timeout(command, expected_response, timeout=5, max_retries=4):
+    """
+    Send a command and wait for expected response with timeout and retries.
+    Returns: (success, response)
+
+    Note:  RX slave takes about 7-8 seconds to boot from power-off to ready to receive... So...
+    If I want to allow TX to cater for a brief power outage on RX (with no LiPo), need to cope with
+    timeout of say 15 seconds??
+
+    """
+
+    if DEBUGLVL > 0: print(f'{now_time_long()} Entered S_C_W_T cmd {command}')
+
+    for attempt in range(max_retries):
+        # Set up pending request tracker
+        pending_request.clear()
+        pending_request['command'] = command
+        pending_request['expected_response'] = expected_response
+        pending_request['received'] = False
+        pending_request['response'] = None
+        
+        # Send the command
+        await radio.outgoing_queue.put(command)
+        
+        # Wait for response with timeout
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            if pending_request.get('received'):
+                response = pending_request['response']
+                if response == expected_response:
+                    if DEBUGLVL > 0: print(f'{now_time_long()} SCWT: received expected response {response} on {attempt=}')
+                    return (True, response)
+                else:
+                    # Got NAK or unexpected response
+                    return (False, response)
+            await asyncio.sleep_ms(250)
+        
+        # Timeout occurred
+        print(f"{now_time_long()} Timeout on {command}, attempt {attempt + 1}/{max_retries}")
+    
+    # All retries failed.  
+    return (False, None)
+
+# ============================================
+# Task 3: Radio Transmitter (consumer)
+# ============================================
+async def radio_transmit_task():
+    """Send responses from outgoing queue"""
+    while True:
+        message = await radio.outgoing_queue.get()  # Blocks until response ready
+        radio.device.send(message)
+        if DEBUGLVL > 1: print(f'radio_tx_task: sent {message}')
+        await asyncio.sleep_ms(RADIO_PAUSE)  # Small delay between transmissions
+
+# ============================================
+# Task 4: Main Control Loop (your existing logic)
+# ============================================
+async def main_control_task():
+    """Main control logic - initialise SM, then reads sensors, control pump, manage auto mode operations"""
+    global borepump, last_ON_time, LOGHFDATA, rec_num
+
     screamer.value(0)			    # turn alarm off
-    beeper.value(0)			    # turn beeper off
+    beeper.value(0)			        # turn beeper off
     lcd.clear()
     lcd_on()
 
-    # BEFORE we init_radio, create radio in/out queues...
-    radio_incoming  = RingbufQueue(RADIO_Q_SIZE)
-    radio_outgoing  = RingbufQueue(RADIO_Q_SIZE)
-    
-    if not system:              # yikes... don't have a SM ??
-        if DEBUGLVL > 0:
-            print("GAK... no State Machine")
-    else:
-        while  str(system.state) != SimpleDevice.STATE_PICO_READY:      # TODO add a "standby" state... requires wiring XSHUT to VL53L1X
-            current_state = str(system.state)       # NOTE: BY caching system.state this forces only one state transition per loop
-            # print(current_state)        
-            if current_state == SimpleDevice.STATE_PICO_RESET:
-                # system.on_event(SimpleDevice.SM_EV_SYS_INIT)
-                if init_wifi():
-                    system.on_event(SimpleDevice.SM_EV_WIFI_ACK)
+    if DEBUGLVL > 0: print('Entered main_control_task')
 
-            if current_state == SimpleDevice.STATE_WIFI_READY:
-                if init_clock():
-                    system.on_event(SimpleDevice.SM_EV_NTP_ACK)
+    asyncio.create_task(radio_receive_task())
+    asyncio.create_task(response_handler_task())
+    asyncio.create_task(radio_transmit_task())                 # the missing piece...
 
-            if current_state == SimpleDevice.STATE_CLOCK_SET:
-                if init_radio():
-                    system.on_event(SimpleDevice.SM_EV_RADIO_ACK)
+    while str(system.state) != SimpleDevice.STATE_PICO_READY:      # TODO add a "standby" state... requires wiring XSHUT to VL53L1X
+        current_state = str(system.state)
+        print(f'in MCT: {current_state=}')
 
-            if current_state == SimpleDevice.STATE_RADIO_READY:
-                system.on_event(SimpleDevice.SM_EV_SYS_START)
-                
-            await asyncio.sleep(1)
+        # Startup sequence
+        if current_state == SimpleDevice.STATE_PICO_RESET:
+            # system.on_event(SimpleDevice.SM_EV_SYS_INIT)
+            if init_wifi():
+                system.on_event(SimpleDevice.SM_EV_WIFI_ACK)
+        
+        if current_state == SimpleDevice.STATE_WIFI_READY:
+            if init_clock():
+                system.on_event(SimpleDevice.SM_EV_NTP_ACK)
+        
+        if current_state == SimpleDevice.STATE_CLOCK_SET:
+            radio.device.off()
+            radio.device.on()       # this should clear send/receive buffers
+            success, response = await send_command_with_timeout(MSG_PING_REQ, MSG_PING_RSP, timeout=2)
+            if success:
+                system.on_event(SimpleDevice.SM_EV_RADIO_ACK)
+            else:
+                print('SLAVE not responding')
+                continue
+        
+        if current_state == SimpleDevice.STATE_RADIO_READY:
+            success, response = await send_command_with_timeout(MSG_STATUS_CHK, MSG_STATUS_ACK, timeout=2)
+            if success:
+                context.ini_pump_state = True
+                system.on_event(SimpleDevice.SM_EV_INI_ACK)
+            else:
+                context.ini_pump_state = False
+                system.on_event(SimpleDevice.SM_EV_INI_NAK)
+            # continue
+
+        if current_state == SimpleDevice.STATE_INITIALPUMP:
+            # print(f'in MCT INITIALPUMP: {current_state=}')
+            system.on_event(SimpleDevice.SM_EV_SYS_START)
+            # print(f'...and now... {system.state=}')
+        
+        await asyncio.sleep_ms(750)  # initial/start-up loop cycle time
+
+    print('Woohoo.. we made it to READY!')
 
     start_time = time.time()
     print(f"Main TX starting {format_secs_long(start_time)} SM version:{system.version} TX version:{SW_VERSION}")
     init_logging()          # needs correct time first!
     
-    get_tank_depth()
-    init_all()
+    asyncio.create_task(blinkx2())                              # visual indicator we are running
+    # asyncio.create_task(check_lcd_btn())                       # start up lcd_button widget
+    asyncio.create_task(regular_flush(FLUSH_PERIOD))            # flush data every FLUSH_PERIOD minutes
+    asyncio.create_task(check_rotary_state(ROTARY_PERIOD_MS))   # check rotary every ROTARY_PERIOD_MS milliseconds
+    asyncio.create_task(processemail_queue())                   # check email queue
+    asyncio.create_task(monitor_vbus())
+    if kpa_sensor_found:
+        asyncio.create_task(read_pressure())                    # read pressure every PRESSURE_PERIOD_MS milliseconds    
+    
+    asyncio.create_task(heartbeat_task())                       # send heartbeats independent of other stuff: DELAY until async Comms running
+    # asyncio.create_task(resume_pumping())                       # if pump stopped by kpa_drop... resume when event triggered
+    asyncio.create_task(pump_action_processor())                # a generic handler for async ON/OFF actions
+
+    gc.collect()
+    gc.threshold(gc.mem_free() // 4 + gc.mem_alloc())
+    # micropython.mem_info()
+
+    init_all()              # includes device config...
+    get_tank_depth()        # defer until after devices configured.  First reading might be more accurate now...
 
     _ = Timer(period=config_dict[LCD] * 1000, mode=Timer.ONE_SHOT, callback=lcd_off)    # type:ignore
 
@@ -3224,53 +3497,77 @@ async def do_main_loop():
     elif (borepump.state and (housetank.state == "Full" or housetank.state == "Overflow")):     # pump is ON... but...
         print(str_msg + "OFF required")
     else:
-        print("No action required")
+        print("No action required") 
 
-    # start coroutines..
-    asyncio.create_task(blinkx2())                             # visual indicator we are running
-    # asyncio.create_task(check_lcd_btn())                       # start up lcd_button widget
-    asyncio.create_task(regular_flush(FLUSH_PERIOD))           # flush data every FLUSH_PERIOD minutes
-    asyncio.create_task(check_rotary_state(ROTARY_PERIOD_MS))  # check rotary every ROTARY_PERIOD_MS milliseconds
-    asyncio.create_task(processemail_queue())                  # check email queue
-    asyncio.create_task(monitor_vbus())                        # watch for power every second
-    if kpa_sensor_found:
-        asyncio.create_task(read_pressure())                   # read pressure every PRESSURE_PERIOD_MS milliseconds    
-    
-    gc.collect()
-    gc.threshold(gc.mem_free() // 4 + gc.mem_alloc())
-    # micropython.mem_info()
+# Now the real monitoring loop begins...
 
     rec_num=0
     while True:
         if op_mode != OP_MODE_MAINT:
-            updateData()			                # monitor water depth
+            updateData()			                    # monitor water depth in tank, also sets tank_is
             if borepump.state and read_count_since_ON > FAST_AVG_COUNT:     # stable_pressure set when we have required number of readings to get average_kpa
-                check_for_critical_states()         # fast acting check - mainly for XS KPA
-            if op_mode == OP_MODE_AUTO:             # changed, do nothing if OP_MODE_DISABLED or IRRIGATE
-                manage_tank_fill()		            # do nothing if in IRRIGATE mode
-    #        listen_to_radio()		                # check for badness
-            # display.text(pressure_str, 0, 20)
-            # display.show()  
+                check_for_critical_states()             # fast acting check - mainly for XS KPA
+            if op_mode == OP_MODE_AUTO:                 # changed, do nothing if OP_MODE_DISABLED or IRRIGATE
+                if tank_is == housetank.fill_states[0]:		# Overfull
+                    screamer.value(1)			        # raise alarm
+                else:
+                    screamer.value(0)
+
+                if tank_is == housetank.fill_states[len(housetank.fill_states) - 1] and not borepump.state:		# Empty
+                    pump_action_queue.put_nowait(("ON", "Tank Empty"))
+                    if DEBUGLVL > 0:
+                        print(f'{now_time_long()} after putting ON in PA queue... qlen: {pump_action_queue.qsize()}')
+                
+                elif (tank_is == housetank.fill_states[0] or tank_is == housetank.fill_states[1]) and borepump.state:	# Full or Overfull
+                    pump_action_queue.put_nowait(("OFF", "Tank FULL"))
+
             DisplayData()
             DisplayInfo()		                    # info display... one of several views
             DisplayGraph()
-    # experimental...
-            # if op_mode != OP_MODE_IRRIGATE and rec_num % LOG_FREQ == 0:
+
             if stable_pressure:
                 checkForAnomalies()	                # test for weirdness
             if rec_num % LOG_FREQ == 0:           
                 LogData()			                # record it
             rec_num += 1
-            delay_ms = config_dict[DELAY] * 1000
-            if heartbeat():                         # send heartbeat if ON... not if OFF.  For now, anyway
-                delay_ms -= RADIO_PAUSE
-            # print(f"{now_time_long()} main loop: {rec_num=}, {opmode_dict[op_mode]}, {delay_ms=}")
+
         else:   # we are in OP_MODE_MAINT ... don't do much at all.  Respond to interupts... show stuff on LCD.  Permits examination of buffers etc
             DisplayData()
             DisplayInfo()  
             DisplayGraph()
         
-        await asyncio.sleep_ms(delay_ms)
+        await asyncio.sleep_ms(config_dict[DELAY] * 1000)
+
+# ============================================
+# Task 5: Heartbeat Sender
+# ============================================
+async def heartbeat_task():
+    """Send periodic heartbeat to slave"""
+    while True:
+        await radio.outgoing_queue.put(MSG_HEARTBEAT)
+        await asyncio.sleep(5)  # Every 5 seconds
+
+# async def get_to_ready_state():
+#     while  str(system.state) != SimpleDevice.STATE_PICO_READY:
+#         current_state = str(system.state)       # NOTE: BY caching system.state this forces only one state transition per loop
+#         # print(current_state)        
+#         if current_state == SimpleDevice.STATE_PICO_RESET:
+#             # system.on_event(SimpleDevice.SM_EV_SYS_INIT)
+#             if init_wifi():
+#                 system.on_event(SimpleDevice.SM_EV_WIFI_ACK)
+
+#         if current_state == SimpleDevice.STATE_WIFI_READY:
+#             if init_clock():
+#                 system.on_event(SimpleDevice.SM_EV_NTP_ACK)
+
+#         if current_state == SimpleDevice.STATE_CLOCK_SET:
+#             if init_radio():
+#                 system.on_event(SimpleDevice.SM_EV_RADIO_ACK)
+
+#         if current_state == SimpleDevice.STATE_RADIO_READY:
+#             system.on_event(SimpleDevice.SM_EV_SYS_START)
+            
+#         await asyncio.sleep(1)
 
 # endregion
 # region MAIN
@@ -3282,13 +3579,14 @@ def main() -> None:
         # send_email_msg(TO_EMAIL, "Test email 15", "Almost done...")    
         # print('...sent')
 
-        asyncio.run(do_main_loop())
+        # asyncio.run(do_main_loop())
+        asyncio.run(main_control_task())        # new way of living...
 
     except OSError:
         print("OSError... ")
         
     except KeyboardInterrupt:
-        ui_mode = UI_MODE_NORM      # no point calling CHaneg... as I turn B/L off straight after anyway...
+        ui_mode = UI_MODE_NORM      # no point calling Change... as I turn B/L off straight after anyway...
         lcd_off('')	                # turn off backlight
         lcd4x20.backlight_off()
         lcd4x20.display_off()
@@ -3296,9 +3594,10 @@ def main() -> None:
         if op_mode == OP_MODE_IRRIGATE:
             cancel_program()
     # turn everything OFF
-        if borepump is not None:                # in case i bail before this is defined...
+        if borepump is not None:                # in case I bail before this is defined...
             if borepump.state:
-                borepump_OFF("Kbd interupt")
+                borepump_OFF("Kbd interupt")    # TODO cant await SCWT - MAIN is not async
+                                    # so pump time/DC will be a bit wrong... since we must wait for Rx to time out to turn OFF
 
     #    confirm_and_switch_solenoid(False)     #  *** DO NOT DO THIS ***  If live, this will close valve while pump.
     #           to be real sure, don't even test if pump is off... just leave it... for now.

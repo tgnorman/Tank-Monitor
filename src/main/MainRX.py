@@ -32,7 +32,7 @@ password    = wf.password
 DEBUGLVL    = 2                       # Multi-level debug for better analysis. 0:None, 1: Some, 2:Lots
 
 # region  initial declarations
-RADIO_PAUSE = 500
+# RADIO_PAUSE = 500
 LOOP_DELAY  = 400
 CHECK_MS    = 500                       # how long to listen for power cross interupts
 MAX_NON_COMM_PERIOD = 60                # maximum seconds allowed between heartbeats, turn pump off if exceeded.  FAIL-SAFE
@@ -98,6 +98,7 @@ def check_state(period_ms) -> bool:
 
 def switch_relay(state):
     global pump_state, state_changed
+    
     if state:
         bore_ctl.value(1)			        # turn borepump ON to start
         led.value(1)
@@ -123,7 +124,7 @@ def init_radio():
                 resp_txt = MSG_PING_RSP
                 transmit_and_pause(resp_txt, RADIO_PAUSE)
             else:
-                print(f"Read unknown message: {msg}")
+                print(f"Discarding unknown message: {msg}")
     else:
         if DEBUGLVL > 0: print("nothing received in init")
 
@@ -199,6 +200,19 @@ def housekeeping(close_files: bool):
         if DEBUGLVL > 0:print('Before close()')
         event_log.close()
         if DEBUGLVL > 0:print('After close()')
+
+def process_radio_silence(radio_silence_secs):
+    global state_changed
+    
+    if DEBUGLVL > 1:
+        print(f"Radio silence period: {radio_silence_secs} seconds")
+    logstr = f"{now_time_long()} Max radio silence period exceeded! Turning pump OFF"
+    print(logstr)
+    event_log.write(logstr + "\n")
+    switch_relay(False)         # pump_state now OFF
+    state_changed = False       # effectively go to starting loop, waiting for incoming ON/OFF or whatever
+    if DEBUGLVL > 1:
+        print("Resetting to initial state")
 
 def main():
     global bore_ctl, detect, led, pump_state, state_changed, last_ON_time, last_comms_time
@@ -277,7 +291,7 @@ def main():
                     else:                           # unrecognised tuple received...
                         print(f"WTF is message[0]? <{message[0]}>")
             else:
-                message = ""         
+                message = ""         # Why ??
 
             if state_changed:			                # test if the request is reflected in the detect circuit
                 confirm_state(pump_state, CHECK_MS)     # implied sleep...

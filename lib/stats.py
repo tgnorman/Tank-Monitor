@@ -3,7 +3,7 @@ import math     # type: ignore
 def mean_stddev(buff:list, count:int, startidx:int, ringlen:int)->tuple[float, float]:
     """
         Args:
-            buff:   list of values, stored in a ring buffer
+            buff:   list of values, stored in a ring buffer.  Either scalar or tuple...
             count:  number of values to use
             startidx: position in ring to begin at... and then...
             look BACKWARDS from ABSOLUTE index startidx... NOT relative to hf_index
@@ -16,23 +16,39 @@ def mean_stddev(buff:list, count:int, startidx:int, ringlen:int)->tuple[float, f
         count = ringlen     # should probably raise an exception...
     if count < 2:
         return 0, 0
+    
     s = 0.0
-    for i in range(count):
-        mod_index = (startidx - 1 - i) % ringlen
-        s += buff[mod_index]    
-    mean: float = s / count
-
     ss_diffs = 0.0
-    for i in range(count):
-        mod_index = (startidx - 1 - i) % ringlen
-        x = buff[mod_index]
-        diff = (x - mean)
-        ss_diffs += diff * diff
+
+    tuplebuf:bool = isinstance(buff[0], tuple)      # let's see what we have here...
+    if not tuplebuf:
+        for i in range(count):
+            mod_index = (startidx - 1 - i) % ringlen
+            s += buff[mod_index]    
+        mean: float = s / count
+
+        for i in range(count):
+            mod_index = (startidx - 1 - i) % ringlen
+            x = buff[mod_index]
+            diff = (x - mean)
+            ss_diffs += diff * diff
+    else:       # tuples, (timestamp, value)
+        for i in range(count):
+            mod_index = (startidx - 1 - i) % ringlen
+            s += buff[mod_index][1]    
+        mean: float = s / count
+
+        for i in range(count):
+            mod_index = (startidx - 1 - i) % ringlen
+            x = buff[mod_index][1]
+            diff = (x - mean)
+            ss_diffs += diff * diff
+
     v = ss_diffs / (count - 1)
     sd = math.sqrt(v)
     return mean, sd
 
-def linear_regression(x: list, y: list, count:int, startidx:int, ringlen:int) -> tuple[float, float, float, float]:
+def linear_regression(x: list, y: list, count:int, startidx:int, ringlen:int) -> tuple[float, float, float, float, float]:
     """
     Calculate linear regression coefficients (slope, intercept) and other stats (std dev and r-squared).
     
@@ -66,7 +82,7 @@ def linear_regression(x: list, y: list, count:int, startidx:int, ringlen:int) ->
     y_mean = ring_ybar / count
 
     sum_xy = sum_xx = sum_yy = 0.0
-    ss_res = ss_tot = 0.0  # For R-squared calculation
+    ss_reg = ss_tot = 0.0  # For R-squared calculation
 
     my_x = count
     for i in range(count):
@@ -110,13 +126,14 @@ def linear_regression(x: list, y: list, count:int, startidx:int, ringlen:int) ->
         y_pred = slope * my_x + intercept
         # 
         # print(f'{xi} {y_pred} {yi}')
-        # Sum of squares of residuals
-        ss_res += (y_pred - y_mean) ** 2
+        # Sum of squares of due to regression
+        ss_reg += (y_pred - y_mean) ** 2
         # Total sum of squares
         ss_tot += (yi - y_mean) ** 2
     
-    r_squared = (ss_res / ss_tot) if ss_tot != 0 else 0
-    std_dev = math.sqrt(sum_yy / (count-1))  # Using sum_yy we calculated earlier
-    
+    ss_dev      = ss_tot - ss_reg        # SS due to deviations ref... page 7-3 of my DAES lecture notes !!
+    r_squared   = (ss_reg / ss_tot) if ss_tot != 0 else 0
+    std_dev     = math.sqrt(sum_yy / (count-1))  # Using sum_yy we calculated earlier
+    sd_resids   = math.sqrt(ss_dev / (count-1))
     # print(f'{x_mean=} {y_mean=} {sum_xy=} {sum_xx=}')
-    return slope, intercept, std_dev, r_squared
+    return slope, intercept, std_dev, sd_resids, r_squared
