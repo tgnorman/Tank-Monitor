@@ -47,7 +47,7 @@ from queue import Queue
 # endregion
 
 # region INITIALISE
-SW_VERSION          = "7/11/25 18:19"      # post-merge of async branch
+SW_VERSION          = "25/11/25 23:36"      # post-merge of async branch
 DEBUGLVL            = 1
 
 # micropython.mem_info()
@@ -70,6 +70,11 @@ INFO_AUTO           = 0             # TODO make this more pythonic... use a list
 INFO_IRRIG          = 1
 INFO_DIAG           = 2
 INFO_MAINT          = -1            # special case... cannot cycle to here, only set explicitly as required
+
+GRAPH_BAR           = 0             # OLED bar graph
+GRAPH_DEPTH         = 1
+GRAPH_KPA           = 2
+GRAPH_COUNT         = 3             # feels unpythonic...
 
 op_mode             = OP_MODE_AUTO
 ui_mode             = UI_MODE_NORM
@@ -161,10 +166,9 @@ level_init          = False 		# to get started
 # endregion
 # region PHYSICAL_DEVICES
 # Pins
-#vsys                = ADC(3)                            # one day I'll monitor this for over/under...
 temp_sensor         = ADC(4)			                # Internal temperature sensor is connected to ADC channel 4
 solenoid            = Pin(2, Pin.OUT, value=0)          # MUST ensure we don't close solenoid on startup... pump may already be running !!!  Note: Low == Open
-lcdbtn 	            = Pin(6, Pin.IN, Pin.PULL_UP)		# soon to be replaced with 5X double-click UP
+lcdbtn 	            = Pin(5, Pin.IN, Pin.PULL_UP)		# soon to be replaced with 5X double-click UP
 presspmp            = Pin(15, Pin.IN, Pin.PULL_UP)      # prep for pressure pump monitor.  Needs output from opamp circuit
 screamer 		    = Pin(16, Pin.OUT)                  # emergency situation !! Needs action taken...
 vbus_sense          = Pin('WL_GPIO2', Pin.IN)           # external power monitoring of VBUS
@@ -196,12 +200,13 @@ TEMP_CONV_FACTOR 	= 3.3 / 65535   # looks like 3.3V / max res of 16-bit ADC ??
 I2C_ADDR            = 0x27
 I2C_NUM_ROWS        = 4
 I2C_NUM_COLS        = 20
-i2c                 = I2C(0, sda=Pin(8), scl=Pin(9), freq=400000)
-lcd4x20             = I2cLcd(i2c, I2C_ADDR, I2C_NUM_ROWS, I2C_NUM_COLS)
+i2c0                = I2C(0, sda=Pin(8), scl=Pin(9), freq=400000)
+i2c1                = I2C(1, sda=Pin(6), scl=Pin(7), freq=100000)
+lcd4x20             = I2cLcd(i2c0, I2C_ADDR, I2C_NUM_ROWS, I2C_NUM_COLS)
 display             = create_PiicoDev_SSD1306()
 
 # Create PiicoDev sensor objects
-distSensor          = TN_PiicoDev_VL53L1X()             # use my custom driver, with extra snibbo's
+distSensor          = TN_PiicoDev_VL53L1X(bus=1, freq=100000, sda=6, scl=7)         # use my custom driver, with extra snibbo's
 lcd 		        = RGB1602.RGB1602(16,2)
 radio_dev           = PiicoDev_Transceiver()
 radio               = My_Radio(radio_dev)
@@ -220,6 +225,7 @@ SSID                = wf.ssid
 PASSWORD            = wf.password
 
 BAR_THICKNESS       = 15            # OLED display bargraph
+graph_mode          = GRAPH_BAR
 
 program_cancelled   = False         # to provide better reporting
 DO_NEXT_IN_CB       = True          # this could be a config param... but probably not worth it
@@ -1425,6 +1431,11 @@ def enc_cb(pos, delta):
 def enc_press()->None:
     do_enter_process()
 
+def toggle_graph()->None:
+    global graph_mode
+    graph_mode = (graph_mode + 1) % GRAPH_COUNT
+    DisplayGraph()
+
 def btn_OK()->None:
     if btn_click : click()
     lcd_on()                        # but set no OFF timer...stay on until I exit menu 
@@ -1573,7 +1584,8 @@ def enable_controls():
     # move to wider use of PH's great stuff!
     pb_enc = Pushbutton(enc_btn, ())            # type: ignore
 
-    pb_enc.press_func(enc_press, ())            # type: ignore
+    # pb_enc.press_func(enc_press, ())            # type: ignore
+    pb_enc.press_func(toggle_graph, ())            # type: ignore
 
     # nav_up.irq(trigger=Pin.IRQ_FALLING, handler=nav_up_cb)
     # nav_dn.irq(trigger=Pin.IRQ_FALLING, handler=nav_dn_cb)
@@ -2467,14 +2479,28 @@ def DisplayData()->None:
         lcd.printout(f"{display_str:<16}")
 
 def DisplayGraph():
-    scaled_bar   = int(housetank.depth * WIDTH / housetank.height)
-    # print(f'{scaled_bar=}')
-    percent      = int(100 * housetank.depth/housetank.height)
-    display.fill(0)
-    display.text(f"Depth {housetank.depth/1000:<.2f}M {percent:>2}%", 0, 0, 1)
+# TODO Display historic values first, then switch to RT for depth & kPA... NOT for bar graph
+    if graph_mode == GRAPH_BAR:
+        scaled_bar   = int(housetank.depth * WIDTH / housetank.height)
+        # print(f'{scaled_bar=}')
+        percent      = int(100 * housetank.depth/housetank.height)
+        display.fill(0)
+        display.text(f"Depth {housetank.depth/1000:<.2f}M {percent:>2}%", 0, 0, 1)
 
-    # display.updateGraph2D(graphkPa, scaled_press)
-    display.fill_rect(0, HEIGHT-BAR_THICKNESS, scaled_bar, BAR_THICKNESS, 1)
+        # display.updateGraph2D(graphkPa, scaled_press)
+        display.fill_rect(0, HEIGHT-BAR_THICKNESS, scaled_bar, BAR_THICKNESS, 1)
+    elif graph_mode == GRAPH_DEPTH:
+        scaled_dist  = int(housetank.depth * HEIGHT / housetank.height)
+        display.fill(0)
+        display.text("Depth", 0, 0, 1)
+
+        display.updateGraph2D(graphdst, scaled_dist)
+    else:
+        scaled_press = int(average_kpa * HEIGHT / config_dict[MAXPRESSURE])
+        display.fill(0)
+        display.text("Pressure", 0, 0, 1)
+        display.updateGraph2D(graphkPa, scaled_press)
+
     display.show()
 
 def LogData()->None:
@@ -2696,6 +2722,7 @@ def init_all():
     global LOGHFDATA, read_count_since_ON
     global btn_click
     global last_activity_time
+    global graphkPa, graphdst
 
     PS_ND               = "Pressure sensor not detected"
     str_msg             = "At startup, BorePump is "
@@ -2720,7 +2747,9 @@ def init_all():
     lcd4x20.display_on()
     lcd4x20.backlight_on()
     display.fill(0)
-    display.show()   
+    display.show()
+    graphkPa = display.graph2D(maxValue=HEIGHT)
+    graphdst = display.graph2D(maxValue=HEIGHT)
 
 # Get the current pump state and init my object    
     # borepump            = Pump("BorePump", get_initial_pump_state())
@@ -3494,7 +3523,7 @@ async def main_control_task():
         else:   # we are in OP_MODE_MAINT ... don't do much at all.  Respond to interupts... show stuff on LCD.  Permits examination of buffers etc
             DisplayData()
             DisplayInfo()  
-            DisplayGraph()
+            DisplayGraph()      # TODO change maint_mode so I continue to measure depth/kPa ??
         
         await asyncio.sleep_ms(config_dict[DELAY] * 1000)
 
