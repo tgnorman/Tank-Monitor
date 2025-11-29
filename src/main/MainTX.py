@@ -47,8 +47,8 @@ from queue import Queue
 # endregion
 
 # region INITIALISE
-SW_VERSION          = "25/11/25 23:36"      # post-merge of async branch
-DEBUGLVL            = 1
+SW_VERSION          = "28/11/25 14:12"      # post-merge of async branch
+DEBUGLVL            = 0
 
 # micropython.mem_info()
 # gc.collect()
@@ -99,8 +99,9 @@ EVENTRINGSIZE       = 30            # max log ringbuffer length
 SWITCHRINGSIZE      = 20
 KPARINGSIZE         = 20            # size of ring buffer for pressure logging... NOT for calculation of average
 ERRORRINGSIZE       = 20            # max error log ringbuffer length
-HI_FREQ_RINGSIZE    = 120           # for high frequency pressure logging.  At 1 Hz that's 2 minutes of data
+HI_FREQ_RINGSIZE    = 128           # for high frequency pressure logging.  At 1 Hz that's 2 minutes of data... increase for graphing
 DEPTHRINGSIZE       = 12            # since adding fast_average in critical_states, this no longer is a concern, but is used for ROC SMA calc
+DEPTHGRAPHSIZE      = 128           # for plotting depth
 
 # endregion
 # region COUNTERS
@@ -408,7 +409,7 @@ program_list = [
 zone_list:list[tuple[str, int, int, int, float, float, float, int, int]] = [
     (P0, 0,   0,   5,    3.0, 2E-5, -0.1021, 0,   0),     # ZERO 
     (P1, 6,   15,  20,   3.0, 2E-5, -0.1021, 2,   0),     # AIR
-    (P2, 10,  20,  40,   3.0, 8E-7, -0.0042, 30,  5),     # HT: don't make this min higher... I want to resume from a cancelled cycle, not abort in HT mode
+    (P2, 10,  20,  35,   3.0, 8E-7, -0.0042, 30,  5),     # HT: don't make this min higher... I want to resume from a cancelled cycle, not abort in HT mode
     (P3, 70,  35,  350,  3.5, 1E-5, -0.1021, 340, 20),    # Z45
     (P4, 300, 350, 450,  3.5, 2E-5, -0.1021, 445, 20),    # Z3
     (P5, 350, 420, 580,  3.5, 2E-5, -0.1021, 575, 20),    # Z2
@@ -1434,7 +1435,7 @@ def enc_press()->None:
 def toggle_graph()->None:
     global graph_mode
     graph_mode = (graph_mode + 1) % GRAPH_COUNT
-    DisplayGraph()
+    DisplayGraph(True)          # display history
 
 def btn_OK()->None:
     if btn_click : click()
@@ -1807,7 +1808,7 @@ def set_average_kpa(timer: Timer):
             print("set_average_kpa: Yikes!! Buffer has data, but average_kpa is 0")
             for i in range(5): print(f"{hi_freq_kpa_ring[hi_freq_kpa_index - i - 1]} ", end=" ")
     else:
-        print('set_average_kpa: rcso <= AVG_KPA_COUNT.  Should not happen')
+        print(f'set_average_kpa: rcso ({read_count_since_ON}) <= AVG_KPA_COUNT.  Should not happen')
         event_ring.add('set_average_kpa: rcso <= AVG_KPA_COUNT.  Should not happen')
         timer.init(period=15 * 1000, mode=Timer.ONE_SHOT, callback=set_average_kpa)   # type: ignore
 
@@ -1821,7 +1822,7 @@ def updateData():
 
     get_tank_depth()
 
-    # depthringbuf[depthringindex] = housetank.depth; depthringindex = (depthringindex + 1) % DEPTHRINGSIZE
+    depthringbuf[depthringindex] = housetank.depth; depthringindex = (depthringindex + 1) % DEPTHGRAPHSIZE  # restored old buffer for plot
     depth_ring.add(housetank.depth)
     sma_depth = calc_SMA(depth_ring.buffer)            # this calculates average of non-zero values... regardless of how many entries in the ring
     time_factor = config_dict[DELAY] / 60               # dont move this - DELAY may be changed on the fly
@@ -2478,7 +2479,7 @@ def DisplayData()->None:
         lcd.setCursor(0, 1)
         lcd.printout(f"{display_str:<16}")
 
-def DisplayGraph():
+def DisplayGraph(showhist:bool):
 # TODO Display historic values first, then switch to RT for depth & kPA... NOT for bar graph
     if graph_mode == GRAPH_BAR:
         scaled_bar   = int(housetank.depth * WIDTH / housetank.height)
@@ -2490,15 +2491,32 @@ def DisplayGraph():
         # display.updateGraph2D(graphkPa, scaled_press)
         display.fill_rect(0, HEIGHT-BAR_THICKNESS, scaled_bar, BAR_THICKNESS, 1)
     elif graph_mode == GRAPH_DEPTH:
-        scaled_dist  = int(housetank.depth * HEIGHT / housetank.height)
         display.fill(0)
-        display.text("Depth", 0, 0, 1)
+        display.text(f"{housetank.height}   Depth", 0, 0, 1)
 
+        if showhist:
+            for i in range(len(depthringbuf)):
+                mod_index = (depth_ring.index - 1 - i) % DEPTHGRAPHSIZE
+                d = depthringbuf[mod_index]
+                scaled_dist  = int(d * HEIGHT / housetank.height)
+                display.updateGraph2D(graphdst, scaled_dist)
+                # display.show()
+        scaled_dist  = int(housetank.depth * HEIGHT / housetank.height)
         display.updateGraph2D(graphdst, scaled_dist)
+
+        display.show()
     else:
-        scaled_press = int(average_kpa * HEIGHT / config_dict[MAXPRESSURE])
         display.fill(0)
-        display.text("Pressure", 0, 0, 1)
+        zone_max_kpa = zone_maximum if zone_maximum > 0 else  config_dict[MAXPRESSURE]
+        display.text(f"{zone_max_kpa}  Pressure", 0, 0, 1)
+        if showhist:
+            for i in range(len(hi_freq_kpa_ring)):
+                mod_index = (hi_freq_kpa_index - 1 - i) % HI_FREQ_RINGSIZE
+                p = hi_freq_kpa_ring[mod_index]
+                scaled_dist  = int(p * HEIGHT / zone_max_kpa)
+                display.updateGraph2D(graphdst, scaled_dist)
+                # display.show()
+        scaled_press = int(average_kpa * HEIGHT / zone_max_kpa)
         display.updateGraph2D(graphkPa, scaled_press)
 
     display.show()
@@ -2654,14 +2672,13 @@ def init_clock()->bool:
 def init_ringbuffers():
     global hi_freq_kpa_ring, hi_freq_kpa_index
     global event_ring, error_ring, switch_ring, kpa_ring, depth_ring
-    # global depthringbuf, depthringindex     # revert to old style for linreg/residual analysis of SD
+    global depthringbuf, depthringindex     # revert to old style for linreg/residual analysis of SD
 
-    # depthringbuf = [0]                # start with a list containing zero...
-    # if DEPTHRINGSIZE > 1:             # expand it as needed...
-    #     for _ in range(DEPTHRINGSIZE - 1):
-    #         depthringbuf.append(0)
-    # if DEBUGLVL > 0: print("Ringbuf is ", depthringbuf)
-    # depthringindex = 0
+    depthringbuf = [0]                # start with a list containing zero...
+    if DEPTHGRAPHSIZE > 1:             # expand it as needed...
+        for _ in range(DEPTHGRAPHSIZE - 1):
+            depthringbuf.append(0)
+    depthringindex = 0
 
     switch_ring = RingBuffer(
         size=SWITCHRINGSIZE, 
@@ -3019,7 +3036,7 @@ async def read_pressure()->None:
             if LOGHFDATA:       # conditionally, write to logfile... but note I ALWAYS add to the ring buffer
                                 # This gets switched On/OFF depending on pump state... but NOTE: buffer updates happen ALWAYS!
                 # error_bar = bpp - round(stdev_Press * float(config_dict[KPASTDEVMULT] / 10 ), 2)
-                error_bar = bpp - round(stdev_Press * kPa_sd_multiple, 1)   # make consistent with calc max_drop in checkforanomalies
+                error_bar = bpp - stdev_Press * kPa_sd_multiple   # make consistent with calc max_drop in checkforanomalies
                 hf_log.write(f"{now_time_long()} {bpp:>3} {hi_freq_avg:.1f} {error_bar:.1f}\n")
             if ui_mode == UI_MODE_NORM:
                 if op_mode ==  OP_MODE_AUTO: 
@@ -3512,7 +3529,7 @@ async def main_control_task():
 
             DisplayData()
             DisplayInfo()		                    # info display... one of several views
-            DisplayGraph()
+            DisplayGraph(False)
 
             if stable_pressure:
                 checkForAnomalies()	                # test for weirdness
@@ -3523,7 +3540,7 @@ async def main_control_task():
         else:   # we are in OP_MODE_MAINT ... don't do much at all.  Respond to interupts... show stuff on LCD.  Permits examination of buffers etc
             DisplayData()
             DisplayInfo()  
-            DisplayGraph()      # TODO change maint_mode so I continue to measure depth/kPa ??
+            DisplayGraph(False)      # TODO change maint_mode so I continue to measure depth/kPa ??
         
         await asyncio.sleep_ms(config_dict[DELAY] * 1000)
 
