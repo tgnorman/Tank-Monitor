@@ -165,7 +165,7 @@ class SimpleDevice(object):
     """
 # region constants
 
-# TODO None of these consts are actually referred to ... ANYWHERE!
+# TODO Review these string constants.  Low priority
     STATE_PICO_RESET    = 'PICO_RESET'
     STATE_CONNECTING    = 'WIFI_CONNECTING'
     STATE_WIFI_READY    = 'WIFI_READY'

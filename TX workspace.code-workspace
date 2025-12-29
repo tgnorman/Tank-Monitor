@@ -6,6 +6,10 @@
 		{
 			"path": "../Libraries",
 			"name": "PicoDev libs"
+		},
+		{
+			"name": "TX Remote Workspace",
+			"uri": "pico:"
 		}
 	],
 	"settings": {

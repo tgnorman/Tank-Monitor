@@ -23,13 +23,13 @@ from utils import now_time_long, now_time_tuple
 from TM_Protocol import *
 
 # Configure your WiFi SSID and password
-SW_VERSION  = "21/09/2025"
+SW_VERSION  = "29/12/2025 16:44"      # removed ON/OFF tuple code.  ONLY use strings now...
 
 wf          = MyWiFi()
 ssid        = wf.ssid
 password    = wf.password
 
-DEBUGLVL    = 2                       # Multi-level debug for better analysis. 0:None, 1: Some, 2:Lots
+DEBUGLVL    = 0                       # Multi-level debug for better analysis. 0:None, 1: Some, 2:Lots
 
 # region  initial declarations
 # RADIO_PAUSE = 500
@@ -53,8 +53,9 @@ def pulse_count(ch):
     global count
     count += 1
 
-def count_next_period(mili):		# count how many crossings in the specified period in milliseconds
+def count_next_period(mili) -> int:		# count how many crossings in the specified period in milliseconds
     global count, detect
+
     count = 0
     detect.irq(handler=pulse_count, trigger=Pin.IRQ_FALLING)	# turn on interupt handler
     sleep_ms(mili)
@@ -67,19 +68,21 @@ def send_fail(req):
     if DEBUGLVL > 0: print(f"sending fail msg {msg}")
     transmit_and_pause(msg, RADIO_PAUSE)
     
-def confirm_state(req, period_ms):		            # test if reality agrees with last request
-    expected_crosses = (period_ms / 1000) * 50		# corrected formula 21/9/25
+def confirm_state(cmd_ON, period_ms):		            # test if reality agrees with last request
+    expected_crosses = int((period_ms / 1000) * 50)		# corrected formula 21/9/25
     min_crosses     = int(expected_crosses / 2)		    # allow for some inaccuracies...
     period_count    = count_next_period(period_ms)
-    if req:				# request was to switch ON... count better be well above zero!
+    if cmd_ON:				# request was to switch ON... count better be well above zero!
         if period_count > min_crosses:
             if DEBUGLVL > 1: print(f'Counted {period_count} pulses in {period_ms}ms.. confirmed pump is indeed ON')
             msg = (MSG_STATUS_ACK, 1)
             transmit_and_pause(msg, RADIO_PAUSE)
         else:
-            if DEBUGLVL > 1: print(f'Gak!... Only saw {period_count} pulses in {period_ms} milliseconds.  FAIL')
+            if DEBUGLVL > 1: print(f'Gak!... Only saw {period_count} pulses in {period_ms} milliseconds, expected {expected_crosses} FAIL')
 #            sleep_ms(RADIO_PAUSE)
-            send_fail(req)
+            # send_fail(req)
+            msg = (MSG_STATUS_ACK, 0)
+            transmit_and_pause(msg, RADIO_PAUSE)
     else:				# request was to switch OFF... count should be close to zero...
         if period_count < min_crosses:
             if DEBUGLVL > 1: print(f'Counted {period_count} pulses in {period_ms}ms.. confirmed pump is indeed OFF')
@@ -87,8 +90,10 @@ def confirm_state(req, period_ms):		            # test if reality agrees with la
             transmit_and_pause(msg, RADIO_PAUSE)
         else:
             if DEBUGLVL > 1: print(f'Zounds!... Saw {period_count} pulses in {period_ms} milliseconds.  FAIL')
+            msg = (MSG_STATUS_ACK, 1)
+            transmit_and_pause(msg, RADIO_PAUSE)
 #            sleep_ms(RADIO_PAUSE)
-            send_fail(req)
+            # send_fail(req)
              
 def check_state(period_ms) -> bool:
     expected_crosses = (period_ms / 1000) * 50	# changed - now has correct formula  21/9/25
@@ -110,6 +115,7 @@ def switch_relay(state):
     event_log.write(logstr) 
     state_changed = pump_state != state     # definitive relay state change status
     pump_state = state			            # keep track of new state... for confirmation tests
+    if DEBUGLVL > 0: print(f'{now_time_long()} switch_relay: {pump_state=}')
 
 def init_radio():
     global radio, last_comms_time
@@ -234,6 +240,8 @@ def main():
         last_ON_time = start_time
     else:                           # pump is OFF at start...normal
         pump_state = False
+        print("Pump is OFF at start-up")
+        event_log.write("Pump is OFF at start-up\n")
         last_ON_time = 0            # fudge...
   
     init_radio()
@@ -259,29 +267,56 @@ def main():
                         if DEBUGLVL > 1: print(f"{now_time_long()} REPLY: {resp_txt}")
                     elif message == MSG_HEARTBEAT:
                         if DEBUGLVL > 2: print("TX Heartbeat received")
-                elif isinstance(message, tuple):
-                    if DEBUGLVL > 1:
-                        print(f"{now_time_long()} RX received tuple:  {message[0]}, {message[1]}")
-                    if message[0] == MSG_REQ_OFF:
+                    elif message == MSG_REQ_OFF:
                         if pump_state:		        # pump is ON.. take action
                             switch_relay(False)
                             if DEBUGLVL > 0:
-                                logstr = f'{now_time_long()} Request {message[0]}'
+                                logstr = f'{now_time_long()} main loop: Request {message}'
                                 event_log.write(logstr + '\n')
-                                # print(logstr)
+                                print(logstr)
                         else:
-                            if DEBUGLVL > 1: print("Ignoring OFF... already OFF")
-                    elif message[0] == MSG_REQ_ON:
+                            if DEBUGLVL > 1: print("Confirming OFF... already OFF")
+                            confirm_state(pump_state, CHECK_MS)     # implied sleep...
+                    elif message == MSG_REQ_ON:
                         if not pump_state:		    # pump is OFF.. take action
                             switch_relay(True)
                             if DEBUGLVL > 0:
-                                logstr = f'{now_time_long()} Request {message[0]}'
+                                logstr = f'{now_time_long()} main loop: Request {message}'
                                 event_log.write(logstr + '\n')
-                                # print(logstr)
-                            last_ON_time = message[1]
+                                print(logstr)
+                            last_ON_time = time.time()
+                            # last_ON_time = message[1]
                         else:
-                            if DEBUGLVL > 1: print("Ignoring ON... already ON")
-                    elif message[0] == MSG_CLOCK:
+                            if DEBUGLVL > 1: print("Confirming ON... already ON")
+                            confirm_state(pump_state, CHECK_MS)     # implied sleep...
+
+                elif isinstance(message, tuple):
+                    if DEBUGLVL > 1:
+                        print(f"{now_time_long()} RX received tuple:  {message[0]}, {message[1]}")
+                    # if message[0] == MSG_REQ_OFF:
+                    #     if pump_state:		        # pump is ON.. take action
+                    #         switch_relay(False)
+                    #         if DEBUGLVL > 0:
+                    #             logstr = f'{now_time_long()} Request {message[0]}'
+                    #             event_log.write(logstr + '\n')
+                    #             # print(logstr)
+                    #     else:
+                    #         if DEBUGLVL > 1: print("Confirming OFF... already OFF")
+                    #         confirm_state(pump_state, CHECK_MS)     # implied sleep...
+
+                    # elif message[0] == MSG_REQ_ON:
+                    #     if not pump_state:		    # pump is OFF.. take action
+                    #         switch_relay(True)
+                    #         if DEBUGLVL > 0:
+                    #             logstr = f'{now_time_long()} Request {message[0]}'
+                    #             event_log.write(logstr + '\n')
+                    #             # print(logstr)
+                    #         last_ON_time = message[1]
+                    #     else:
+                    #         if DEBUGLVL > 1: print("Confirming ON... already ON")
+                    #         confirm_state(pump_state, CHECK_MS)     # implied sleep...
+
+                    if message[0] == MSG_CLOCK:
                         if DEBUGLVL > 1: print("Got CLK: ", message)
                         rcv_time = time.ticks_ms()
                         rp = message[1]
@@ -289,7 +324,7 @@ def main():
                         if DEBUGLVL > 1: print(f"time_diff: {time_diff} ms")
                         transmit_and_pause((MSG_CLOCK, time_diff), RADIO_PAUSE)
                     else:                           # unrecognised tuple received...
-                        print(f"WTF is message[0]? <{message[0]}>")
+                        print(f"{now_time_long()} WTF is message[0]? <{message=}>")
             else:
                 message = ""         # Why ??
 
@@ -321,7 +356,7 @@ def main():
             sleep_ms(LOOP_DELAY)		    # if we did NOT do implied sleep in confirm_state... delay a bit.
 
     except KeyboardInterrupt:
-        logstr = "\n***Turning pump OFF on KeyboardInterupt"
+        logstr = "\n{now_time_long()}  ***Turning pump OFF on KeyboardInterupt"
         print(logstr)
         event_log.write(logstr + "\n")
         switch_relay(False)

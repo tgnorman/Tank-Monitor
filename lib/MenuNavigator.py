@@ -27,6 +27,7 @@ from TMErrors import TankError
 
 class MenuNavigator:
     NAVMODE_MENU    = 'menu'
+    NAVMODE_VIEW    = 'view'
     NAVMODE_VALUE   = 'value_change'
     MENU_TITLE      = "title"
     MENU_ITEMS      = "items"
@@ -52,7 +53,6 @@ class MenuNavigator:
         # self.current_level = [menu]  # Stack to keep track of menu levels
         self.current_level = [{'submenu': menu, 'index': 0}]  # Stack to keep track of menu levels
         self.current_menuindex = 0
-        # self.prev_index = 0
         self.LCD2R = dev2
         # self.LCD4R = lcd4x20
         self.mode = MenuNavigator.NAVMODE_MENU
@@ -260,16 +260,15 @@ class MenuNavigator:
     def go_back(self):
         if len(self.current_level) > 1:
             self.current_level.pop()  # Go up one level in the menu
-            # self.current_index = self.prev_index
                 # Restore previous level's index
             self.current_menuindex = self.current_level[-1]['index']
             self.mode = MenuNavigator.NAVMODE_MENU
             self.new_value = 0
-#            print(f"Going back to previous menu level {len(self.current_level)}")
+
+            print(f"Going back to previous menu level {len(self.current_level)}")
             self.display_current_item()
         else:
-            # print("Already at the top-level menu.  This should not happen...")
-            # print("Exiting nav menu from go_back")
+            print("Already at the top-level menu.  This should not happen...")
             self.LCD2R.setCursor(0, 1)
             self.LCD2R.printout(f'{"Exiting nav menu":<16}')
             self.exit_nav_menu()            # exit menu nav, and call exit_menu() in the menu structure
@@ -278,7 +277,6 @@ class MenuNavigator:
         item = self.get_current_item()
         if MenuNavigator.MENU_ITEMS in item:
             # self.current_level.append(item)  # Go deeper into the submenu
-            # self.prev_index = self.current_index
             # Save both menu and current index
             self.current_level.append({
                 'submenu': item,
@@ -305,6 +303,10 @@ class MenuNavigator:
             print(f"Unknown type in item... check menu def.  {item}")
     
         # print(f"In ENTER, mode is now {self.mode}")
+
+    def return_to_menu(self):
+        self.mode = MenuNavigator.NAVMODE_MENU
+        self.display_current_item()
 
     def set(self):
         item = self.get_current_item()
@@ -335,7 +337,7 @@ class MenuNavigator:
         self.new_value = def_val          # reset this, or we copy previous remnant value
         # self.mode = "wait"          # wait for a 2nd press so that changed value is displayed before going back to menu
         # self.go_back()              # go back to previous menu level
-              
+
     def goto_first(self):
         self.goto_position(True)
 
@@ -368,74 +370,3 @@ class MenuNavigator:
         if self.filelist is not None:
             del self.filelist           # clean up old stuff...
         self.filelist = mylist
-
-    # def set_event_list(self, myeventlist):
-    #     self.eventlist = myeventlist
-
-    # def set_switch_list(self, myswitchlist):
-    #     self.switchlist = myswitchlist
-
-    # def set_kpa_list(self, mylist):
-    #     # if self.kpalist is not None:
-    #     #     del self.kpalist           # clean up old stuff...  
-    #     self.kpalist = mylist
-
-    # def set_error_list(self, mylist):
-    #     self.errorlist = mylist
-
-    # def goto_position(self, first=True):
-    #     if "view_" in self.mode:  #self.mode == "view_events" or self.mode == "view_switch":
-    #         # print(f'In goto_position {self.mode=}, {first=}')
-    #         if self.mode == "view_ring":
-    #             if self.displaylist is not None:
-    #                 if len(self.displaylist) > 0:
-    #                     pos = 0 if first else len(self.displaylist) - 1
-    #                     self.display_navindex = pos
-    #                     hist_str = self.displaylist[self.display_navindex]
-    #                 else:
-    #                     hist_str = "Eventlist: Empty"
-    #             else:
-    #                 hist_str = "Eventlist: None"     
-    #         elif self.mode == "view_prgrm":
-    #             if self.programlist is not None:
-    #                 if len(self.programlist) > 0:
-    #                     pos = 0 if first else len(self.programlist) - 1
-    #                     self.program_navindex = pos
-    #                     prog_name = self.programlist[self.program_navindex][0]
-    #                     prog_duration = self.programlist[self.program_navindex][1]["run"]
-    #                     prog_wait = self.programlist[self.program_navindex][1]["off"]
-    #                     prog_str = f'Run {prog_duration} Off {prog_wait}'
-    #                     hist_str = tuple((prog_name, prog_str))
-    #                 else:
-    #                     hist_str = "Prog list: Empty"                        
-    #                 # print(f'In goto_position {hist_str=}')
-    #             else:
-    #                 hist_str = "Prog list: None"
-    #         elif self.mode == "view_files":
-    #             if self.filelist is not None:
-    #                 if len(self.filelist) > 0:
-    #                     pos = 0 if first else len(self.filelist) - 1
-    #                     self.file_navindex = pos
-    #                     hist_str = self.filelist[self.file_navindex]
-    #                 else:
-    #                     hist_str = "File list: Empty"                        
-    #             else:
-    #                 hist_str = "File list: None"
-    #         if type(hist_str) == tuple:
-    #             if(len(hist_str) > 0):
-    #                 datestamp = hist_str[0]
-    #                 log_txt   = hist_str[1]
-    #             else:
-    #                 datestamp = f'{self.mode:<16}'
-    #                 log_txt   = "Nothing here"
-    #         else:
-    #             datestamp = f"Err in {'FIRST' if first else 'LAST'}"
-    #             log_txt   = "hist not a tuple"
-    #         self.LCD2R.setCursor(0, 0)
-    #         self.LCD2R.printout(f'{datestamp:<16}')
-    #         self.LCD2R.setCursor(0, 1)
-    #         self.LCD2R.printout(f'{log_txt:<16}')
-    #     else:
-    #         self.LCD2R.setCursor(0, 1)
-    #         self.LCD2R.printout("Not in VIEW mode")
-
