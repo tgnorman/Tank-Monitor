@@ -39,16 +39,14 @@ from TM_Protocol import *
 # from ringbuf_queue import RingbufQueue
 
 from Radio import My_Radio
-
-# from uasyncio import Event
 from queue import Queue
+# from micropython import const
 #import aioprof
-from micropython import const
 # endregion
 
 # region INITIALISE
-SW_VERSION          = "28/12/25 17:04"      # Simplified RHT
-DEBUGLVL            = 0
+SW_VERSION          = "9/1/26 21:55"      # Tweaked zone pressure settings
+DEBUGLVL            = 1
 
 # micropython.mem_info()
 # gc.collect()
@@ -99,7 +97,7 @@ DEBOUNCE_ROTARY     = 10            # determined from trial... see test_rotary_i
 DEBOUNCE_BUTTON     = 400           # 50 was still registering spurious presses... go real slow.
 ROTARY_PERIOD_MS    = 200           # needs to be short... check rotary ISR variables
 PRESSURE_PERIOD_MS  = 1000          # ms
-PUMP_OFF_PERIOD_MS  = 300_000       # 5 minutes
+# PUMP_OFF_PERIOD_MS  = 300_000       # 5 minutes
 SLOW_BLINK          = 850           # ms
 FAST_BLINK          = 300           # ms
 BlinkDelay          = SLOW_BLINK    # for blinking LED... 1 second, given LED is on for 150ms, off for 850ms
@@ -118,7 +116,7 @@ DEPTHGRAPHSIZE      = 128           # for plotting depth
 # region COUNTERS
 # Counters... for averaging or event timing
 HI_FREQ_AVG_COUNT   = 7             # for high frequency pressure check
-ZONE_AVG_COUNT      = 10            # for zone pressure calculation
+ZONE_AVG_COUNT      = 12            # for zone pressure calculation
 AVG_KPA_COUNT       = 30
 LOOKBACKCOUNT       = 75            # for looking back at pressure history... to see if kPa drop is normal or not
 MAX_OUTAGE          = 30            # seconds of no power
@@ -127,7 +125,7 @@ STABLE_KPA_COUNT    = 75            # time to allow kPa to settle
 FAST_AVG_COUNT      = 3             # for checking critical pressure states
 # D_STD_DEV_COUNT     = 10            # standard deviation calcs
 P_STD_DEV_COUNT     = 60
-ZONE_DELAY          = 60            # seconds to wait before taking zone pressure.  Needs to be large enough to ensure calc_average doesn't crap out
+ZONE_DELAY          = 6             # seconds to wait AFTER setting avg_kpa before determining zone.  Could be zero ??
 AVG_KPA_DELAY       = AVG_KPA_COUNT + 5   # seconds to wait before taking average pressure, ensures enough values recorded
 # endregion
 # region PRESSURE
@@ -154,7 +152,7 @@ dr_yvalues          = [0 for i in range(DEPTHRINGSIZE)]
 # region SYSTEM
 FREE_SPACE_LOWATER  = 300           # in KB...
 FREE_SPACE_HIWATER  = 800
-MAX_CONTIN_RUNMINS  = 360           # 3 hours max runtime.  More than this looks like trouble
+MAX_CONTIN_RUNMINS  = 40            # max runtime.  More than this looks like trouble
 
 SIMULATE_PUMP       = False         # debugging aid...replace pump switches with a PRINT
 SIMULATE_KPA        = False         # debugging aid...replace pressure sensor with a PRINT
@@ -395,22 +393,34 @@ P6 = "Z1"
 P7 = "Z4"
 P8 = "XP"
 # this dict needed to store individual zone peak pressure. Can't do it in immutable zone_list tuple...
-peak_pressure_dict = {
-    P0: (0, 0, 0),
-    P1: (0, 0, 0),
-    P2: (0, 0, 0),
-    P3: (0, 0, 0),
-    P4: (0, 0, 0),
-    P5: (0, 0, 0),
-    P6: (0, 0, 0),
-    P7: (0, 0, 0),
-    P8: (0, 0, 0),
-    '???': (0, 0, 0)
+zone_pressure_dict = {
+    P0: (0, 0, 0, 0),
+    P1: (0, 0, 0, 0),
+    P2: (0, 0, 0, 0),
+    P3: (0, 0, 0, 0),
+    P4: (0, 0, 0, 0),
+    P5: (0, 0, 0, 0),
+    P6: (0, 0, 0, 0),
+    P7: (0, 0, 0, 0),
+    P8: (0, 0, 0, 0),
+    '???': (0, 0, 0, 0)
+}
+zone_runtime_dict = {
+    P0:0,
+    P1:0,
+    P2:0,
+    P3:0,
+    P4:0,
+    P5:0,
+    P6:0,
+    P7:0,
+    P8:0,
+    '???':0
 }
 program_list = [
-              ("Cycle1", {"init" : 0, "run" : 22, "off" : 55}),
-              ("Cycle2", {"init" : 0, "run" : 22, "off" : 55}),
-              ("Cycle3", {"init" : 0, "run" : 22, "off" : 55}),
+              ("Cycle1", {"init" : 0, "run" : 22, "off" : 50}),
+              ("Cycle2", {"init" : 0, "run" : 22, "off" : 50}),
+              ("Cycle3", {"init" : 0, "run" : 22, "off" : 50}),
               ("Cycle4", {"init" : 1, "run" : 22, "off" : 1})]
 
 # zone_list... zone ID, min, start-up, max pressures, SD multiplier, quadratic eq  a,b,c coefficients, and zone_max_drop
@@ -420,12 +430,12 @@ program_list = [
 zone_list:list[tuple[str, int, int, int, float, float, float, int, int]] = [
     (P0, 0,   0,   5,    3.0, 2E-5, -0.1021, 0,   0),     # ZERO 
     (P1, 6,   15,  20,   3.0, 2E-5, -0.1021, 2,   0),     # AIR
-    (P2, 10,  20,  35,   3.0, 8E-7, -0.0042, 30,  5),     # HT: don't make this min higher... I want to resume from a cancelled cycle, not abort in HT mode
-    (P3, 70,  35,  350,  4.5, 1E-5, -0.1021, 340, 20),    # Z45
-    (P4, 300, 350, 450,  4.5, 2E-5, -0.1021, 445, 20),    # Z3
-    (P5, 350, 420, 580,  5.0, 2E-5, -0.1021, 575, 20),    # Z2
+    (P2, 10,  20,  35,   2.5, 8E-7, -0.0042, 30,  5),     # HT: don't make this min higher... I want to resume from a cancelled cycle, not abort in HT mode
+    (P3, 240, 300, 350,  4.5, 1E-5, -0.1021, 340, 20),    # Z45
+    (P4, 300, 350, 520,  4.5, 2E-5, -0.1021, 445, 20),    # Z3
+    (P5, 350, 420, 530,  5.0, 2E-5, -0.1021, 575, 20),    # Z2
     (P6, 390, 550, 580,  5.0, 2E-5, -0.1021, 585, 20),    # Z1
-    (P7, 450, 650, 680,  5.0, 2E-5, -0.1021, 620, 20),    # Z4
+    (P7, 420, 650, 680,  5.0, 2E-5, -0.1021, 620, 20),    # Z4
     (P8, 600, 700, 800,  3.5, 2E-5, -0.1021, 650, 20)     # XP
 ]
 # endregion
@@ -520,8 +530,9 @@ def apply_duty_cycle()-> None:
     # print(f"Duty cycle: {dc} ...{adjusted_dc=}\nadjusted water_list: {water_list}")
     
 def start_irrigation_schedule():
-    global timer_state, op_mode, slist, sl_index, ON_cycle_end_time, num_cycles, program_pending, program_start_time, program_end_time, program_cancelled        # cycle mod 3
-
+    global timer_state, op_mode, slist, sl_index, ON_cycle_end_time, num_cycles, program_pending
+    global program_start_time, program_end_time, program_cancelled        # cycle mod 3
+    
     try:
         if op_mode == OP_MODE_IRRIGATE:
             print(f"Can't start program... already in mode {op_mode}")
@@ -776,6 +787,12 @@ def display_depth():
     lcd.setCursor(0,1)
     lcd.printout(f'{"Display depth":<16}')
 
+def manual_stop():
+    if op_mode == OP_MODE_IRRIGATE:
+        cancel_program()
+    timer_mgr.cancel_all()
+    abort_pumping("Manual stop")        # How to stop pumping WITHOUT invoking RESET.  Will go to MAINT mode...
+
 def display_pressure():
     global display_mode
 
@@ -900,23 +917,34 @@ def housekeeping(close_files: bool)->None:
         hf_log.close()
     print(f"Cleanup completed in {int(ticks_diff(end_time, start_time) / 1000)} ms")
 
+def dump_zone_runtimes():
+    print("\nZone Runtimes:")
+    ev_log.write("\nZone Runtimes:\n")
+    for z in zone_runtime_dict:
+        zrt_mins = zone_runtime_dict[z] / 60
+        if zrt_mins > 0:
+            logstr = f'{now_time_long()} Zone {z:3} {zrt_mins:.1f} mins total runtime'
+            ev_log.write(logstr + '\n')
+            print(logstr)
+
 def shutdown()->None:
     if op_mode == OP_MODE_IRRIGATE:
         cancel_program()
     if borepump is not None:                # in case i bail before this is defined...
         if borepump.state:                  # to be sure...
             borepump_OFF(SHUTDOWN_OFF)
+# Stop anything new starting...
+    ev_log.write(f"{now_time_long()} Cancelling all timers...\n")
+    timer_mgr.cancel_all()
+
     ev_log.write(f"{now_time_long()} STOP Monitor\n")
     if borepump is not None:
         if borepump.num_switch_events > 0:
             dump_pump_arg(borepump)
+            dump_zone_runtimes()
     if presspump is not None:
         if presspump.num_switch_events > 0:
             dump_pump_arg(presspump)
-
-# Stop anything new starting...
-    ev_log.write(f"{now_time_long()} Cancelling all timers...\n")
-    timer_mgr.cancel_all()
 
     dump_zone_peak()
 
@@ -1228,6 +1256,9 @@ def exit_maint_mode()->None:
     BlinkDelay = SLOW_BLINK
     lcd.setCursor(0, 1)
     lcd.printout(f'{"AUTO mode":<16}')
+    logstr = f'{now_time_long()} Exited MAINT mode'
+    ev_log.write(logstr + '\n')
+    print(logstr)
 
 def roll_logs()-> None:
 # close & reopen new log files, so nothing becomes real large... helps with managing space on the drive
@@ -1304,6 +1335,7 @@ new_menu = {
         Item_Str: [
           { Title_Str: "Pressure",      Action_Str: display_pressure},
           { Title_Str: "Depth",         Action_Str: display_depth},
+          { Title_Str: "Program",       Action_Str: show_program},
           { Title_Str: "Files",         Action_Str: show_dir},
           { Title_Str: "Space",         Action_Str: show_space},
           { Title_Str: "Uptime",        Action_Str: show_uptime},
@@ -1320,7 +1352,6 @@ new_menu = {
           { Title_Str: "Pressure",      Action_Str: show_pressure},
           { Title_Str: "Depth",         Action_Str: show_depth},
           { Title_Str: "Errors",        Action_Str: show_errors},
-          { Title_Str: "Program",       Action_Str: show_program},
           { Title_Str: "Stats",         Action_Str: show_duty_cycle},
           { Title_Str: "Go Back",       Action_Str: my_go_back}
         ]
@@ -1331,6 +1362,7 @@ new_menu = {
           { Title_Str: "Timed Water",   Action_Str: start_irrigation_schedule},
           { Title_Str: "Cancel Prog",   Action_Str: cancel_program},
           { Title_Str: "Flush",         Action_Str: flush_data},
+          { Title_Str: "STOP PUMP",     Action_Str: manual_stop},
           { Title_Str: "Email evlog",   Action_Str: send_log},
           { Title_Str: "Email tank",    Action_Str: send_last_tank},
           { Title_Str: "Email HFlog",   Action_Str: send_last_HF_data},
@@ -1459,7 +1491,9 @@ def enc_press()->None:
 def toggle_graph()->None:
     global graph_mode
     graph_mode = (graph_mode + 1) % GRAPH_COUNT
-    DisplayGraph(True)          # display history
+    display.fill(0)             # clear screen when we change mode
+    display.show()
+    DisplayGraph(False)          # display history
 
 def btn_OK()->None:
     if btn_click : click()
@@ -1703,14 +1737,24 @@ def lcd_on():
 # region MAIN METHODS
 def get_zone_from_list(pressure: int):
     """ Get zone, min and max by searching through the zone list for the first zone that exceeds the pressure """  
-    i = len(zone_list)
+    i = len(zone_list)              # search backwards
     szl = sorted(zone_list, key=lambda x: x[2], reverse=True)  # Sort by average pressure in descending order
     # print(szl)
     for _, _, avg_pressure, _, _, _, _, _, _ in szl:
         # print(avg_pressure)
         if pressure >= avg_pressure:
             # print(f'{pressure=} is >= {avg_pressure}')
-            return zone_list[i-1][0], zone_list[i-1][1], zone_list[i-1][2], zone_list[i-1][3], zone_list[i-1][4], zone_list[i-1][5], zone_list[i-1][6], zone_list[i-1][7], zone_list[i-1][8]
+            return (
+                zone_list[i - 1][0],
+                zone_list[i - 1][1],
+                zone_list[i - 1][2],
+                zone_list[i - 1][3],
+                zone_list[i - 1][4],
+                zone_list[i - 1][5],
+                zone_list[i - 1][6],
+                zone_list[i - 1][7],
+                zone_list[i - 1][8]
+                )
         else:
             # print(f'{pressure=} is <= {avg_pressure}')
             i -= 1
@@ -1802,12 +1846,12 @@ def set_zone(timer: Timer):
 
         new_zone, zone_minimum, _, zone_maximum, zsdm, qa, qb, qc, zone_max_drop  = get_zone_from_list(zone_pressure)
         if new_zone != zone:
-            if new_zone in peak_pressure_dict.keys():
-                peak_pressure_dict[new_zone] = (time_peak, kpa_peak, time_peak - last_ON_time)     # set in read_pressure
+            if new_zone in zone_pressure_dict.keys():
+                zone_pressure_dict[new_zone] = (time_peak, kpa_peak, time_peak - last_ON_time, kpa_low)     # set in read_pressure
             else:
                 error_ring.add(TankError.ZONE_NOTFOUND)
             kPa_sd_multiple = zsdm
-            z_str = f"{now_time_long()} Zone changed from {zone} to {new_zone}. Peak Pressure: {kpa_peak} SDM: {kPa_sd_multiple}"
+            z_str = f"{now_time_long()} Zone changed from {zone} to {new_zone} zoneavg {zone_pressure}. {kpa_peak=} SDM: {kPa_sd_multiple}"
             zone = new_zone
             print(z_str)
             ev_log.write(z_str + "\n")
@@ -1818,7 +1862,7 @@ def set_zone(timer: Timer):
         timer.init(period=15 * 1000, mode=Timer.ONE_SHOT, callback=set_zone)   # type: ignore
 
 def set_average_kpa(timer: Timer):
-    global average_kpa, avg_kpa_set
+    global average_kpa, avg_kpa_set, zone_timer
 
     if read_count_since_ON > AVG_KPA_COUNT:
         tmp = calc_average_HFpressure(0, AVG_KPA_COUNT)  # get average of last AVG_KPA_COUNT readings
@@ -1828,12 +1872,15 @@ def set_average_kpa(timer: Timer):
             avg_kpa_set = True
             kpa_ring.add(average_kpa)         # add to ring buffer for later use
             event_ring.add(f'Avg kpa set: {average_kpa}')
+            zone_timer = Timer(period=ZONE_DELAY * 1000,    mode=Timer.ONE_SHOT, callback=set_zone)  # type:ignore
         else:
             print("set_average_kpa: Yikes!! Buffer has data, but average_kpa is 0")
             for i in range(5): print(f"{hi_freq_kpa_ring[hi_freq_kpa_index - i - 1]} ", end=" ")
     else:
-        print(f'set_average_kpa: rcso ({read_count_since_ON}) <= AVG_KPA_COUNT.  Should not happen')
-        event_ring.add('set_average_kpa: rcso <= AVG_KPA_COUNT.  Should not happen')
+        logstr = f'{now_time_long()} set_average_kpa: ({read_count_since_ON=}) <= AVG_KPA_COUNT.  Should not happen'
+        print(logstr)
+        ev_log.write(logstr + '\n')
+        event_ring.add(logstr)
         timer.init(period=15 * 1000, mode=Timer.ONE_SHOT, callback=set_average_kpa)   # type: ignore
 
 def updateData():
@@ -1927,27 +1974,20 @@ def reset_state():
     kpa_peak = 0
     kpa_low = 1000
 
-def borepump_ON(reason:str):
-    global last_ON_time, LOGHFDATA, average_timer, zone_timer
-
+def borepump_ON(reason:str):        # REQUEST ON... TBC.  ALL actions deferred until confirmed in P_A_P
     system.on_event(SimpleDevice.SM_EV_ON_REQ)
     pump_action_queue.put_nowait(('ON', reason))
-    if not LOGHFDATA:
-        LOGHFDATA = True
 
-def borepump_OFF(reason:str):
-    global LOGHFDATA
-
-    # if DEBUGLVL>0: print(f'{tank_is=} {borepump.state=}... SM.on_event {SimpleDevice.SM_EV_OFF_REQ}')
+def borepump_OFF(reason:str):       # REQUEST OFF... TBC  ALL actions deferred until confirmed in P_A_P
     system.on_event(SimpleDevice.SM_EV_OFF_REQ)
     pump_action_queue.put_nowait(('OFF', reason))
 
 def dump_zone_peak()->None:
     print("\nZone Peak Pressures:")
-    ev_log.write("\nZone Peak Pressures:")
-    for z in peak_pressure_dict.keys():
-        if peak_pressure_dict[z][1] > 0:
-            lstr = f"{format_secs_long(peak_pressure_dict[z][0])}  Zone {z:<3}: peak {peak_pressure_dict[z][1]} kPa {peak_pressure_dict[z][2]:.1f} seconds after ON"
+    ev_log.write("\nZone Peak Pressures:\n")
+    for z in zone_pressure_dict.keys():
+        if zone_pressure_dict[z][1] > 0:
+            lstr = f"{format_secs_long(zone_pressure_dict[z][0])}  Zone {z:<3}: peak {zone_pressure_dict[z][1]:3} kPa {zone_pressure_dict[z][2]:2} seconds after ON zone_lo:{zone_pressure_dict[z][3]}"
             print(lstr)
             ev_log.write(lstr + "\n")
 
@@ -2277,7 +2317,7 @@ def DisplayInfo()->None:
 
             lcd4x20.move_to(0, 3)
             prev_index = (hi_freq_kpa_index - 1) % HI_FREQ_RINGSIZE
-            lcd4x20.putstr(f'ZP {peak_pressure_dict[zone][1]:>3} Av:{average_kpa:>3.0f} IP:{hi_freq_kpa_ring[prev_index]:>3.0f}')
+            lcd4x20.putstr(f'ZP {zone_pressure_dict[zone][1]:>3} Av:{average_kpa:>3.0f} IP:{hi_freq_kpa_ring[prev_index]:>3.0f}')
         
         elif info_display_mode == INFO_IRRIG:
         # elif op_mode == OP_MODE_IRRIGATE:
@@ -2300,7 +2340,7 @@ def DisplayInfo()->None:
             lcd4x20.putstr('Cycle       Remain')        # I could call time_mgr.get_remaining here... maybe later
 
             lcd4x20.move_to(0, 2)
-            lcd4x20.putstr(f'Z:{zone:<3} Min {zone_minimum:<3} ZP {peak_pressure_dict[zone][1]:<3}')
+            lcd4x20.putstr(f'Z:{zone:<3} Min {zone_minimum:<3} ZP {zone_pressure_dict[zone][1]:<3}')
 
     # can ONLY transition here from AUTO... no need to update row 3
        
@@ -2424,8 +2464,8 @@ def DisplayData()->None:
         lcd.printout(f"{display_str:<16}")
 
 def DisplayGraph(showhist:bool):
-# TODO Display historic values first, then switch to RT for depth & kPA... NOT for bar graph
     display.fill(0)                 # clear screen
+    # display.show()
     display.hline(0, 0,  127, 1)    # draw top&bottom hlines to fix dodgy display ghosting
     display.hline(0, HEIGHT-1, 127, 1)
 
@@ -2433,12 +2473,11 @@ def DisplayGraph(showhist:bool):
         scaled_bar   = int(housetank.depth * WIDTH / housetank.height)
         # print(f'{scaled_bar=}')
         percent      = int(100 * housetank.depth/housetank.height)
-
         display.text(f"Depth {housetank.depth/1000:<.2f}M {percent:>2}%", 0, 0, 1)
-
-        # display.updateGraph2D(graphkPa, scaled_press)
         display.fill_rect(0, HEIGHT-BAR_THICKNESS, scaled_bar, BAR_THICKNESS, 1)
+
     elif graph_mode == GRAPH_DEPTH:
+# TODO Display historic values first, then switch to RT for depth & kPA... NOT for bar graph
         display.text(f"{housetank.height}   Depth", 0, 0, 1)
 
         if showhist:
@@ -2450,8 +2489,6 @@ def DisplayGraph(showhist:bool):
                 # display.show()
         scaled_dist  = int(housetank.depth * HEIGHT / housetank.height)
         display.updateGraph2D(graphdst, scaled_dist)
-
-        display.show()
     else:
         if zone_maximum > 0:
             zone_max_kpa = zone_maximum
@@ -2459,12 +2496,15 @@ def DisplayGraph(showhist:bool):
         else:
             zone_max_kpa = config_dict[MAXPRESSURE]
             zone_min_kpa = 0
+
+        # display.fill_rect(0, HEIGHT-1, WIDTH-1, HEIGHT-1, 0)
+
         display.text(f"{zone_max_kpa}  Pressure", 0, 0, 1)
         display.text(f'{zone_min_kpa}', 0, HEIGHT - 8, 1)   # 8-pixel font???
         if showhist:
             for i in range(len(hi_freq_kpa_ring)):
                 mod_index = (hi_freq_kpa_index - 1 - i) % HI_FREQ_RINGSIZE
-                p = hi_freq_kpa_ring[mod_index]
+                p = max(hi_freq_kpa_ring[mod_index], zone_min_kpa)      # ensure no negatives in scaled_dist
                 scaled_dist  = int(HEIGHT * (p - zone_min_kpa) / (zone_max_kpa - zone_min_kpa))
                 display.updateGraph2D(graphdst, scaled_dist)
                 # display.show()
@@ -2692,7 +2732,7 @@ def init_all():
     global btn_click
     global last_activity_time
     global graphkPa, graphdst
-    global pr_period_ms
+    global hf_log_mod
 
     PS_ND               = "Pressure sensor not detected"
     str_msg             = "At startup, BorePump is "
@@ -2708,7 +2748,7 @@ def init_all():
 
     ev_log.write(f"\n\n{now_time_long()} Pump Monitor starting - SW ver:{SW_VERSION}  ")      # no \n...
     ev_log.write(f'params ({config_dict[DELAY]}s, {int(PRESSURE_PERIOD_MS/1000)}s, {DEPTHRINGSIZE=})\n')
-    pr_period_ms = PUMP_OFF_PERIOD_MS
+    hf_log_mod = 1         # increase for mod operator to reduce logging when pump is OFF
 
     slist=[]
 
@@ -2763,12 +2803,12 @@ def init_all():
     read_count_since_ON = 0
     now                 = time.time()
     if vbus_sense.value():
-        vbus_prev_status     = True
-        vbus_last_OFF_time    = now 
+        vbus_prev_status    = True
+        vbus_last_OFF_time  = now 
         report_max_outage   = True
     else:
-        vbus_prev_status     = False         # just in case we start up without main power, ie, running on battery
-        vbus_last_OFF_time    = now - 60 * 60        # looks like an hour ago
+        vbus_prev_status    = False         # just in case we start up without main power, ie, running on battery
+        vbus_last_OFF_time  = now - 60 * 60        # looks like an hour ago
         report_max_outage   = False
 
     display_mode        = DM_PRESSURE
@@ -2785,7 +2825,7 @@ def init_all():
     ut_short            = ""
     ut_long             = ""
     startup_raw_ADC, startup_calibrated_pressure = get_pressure()
-    kpa_sensor_found = startup_raw_ADC > BP_SENSOR_MIN    # are we seeing a valid pressure sensor reading?
+    kpa_sensor_found    = startup_raw_ADC > BP_SENSOR_MIN    # are we seeing a valid pressure sensor reading?
     
     stdev_Press         = 0
     stdev_Depth         = 0
@@ -2799,6 +2839,10 @@ def init_all():
     else:
         print(f"Pressure sensor detected - {startup_raw_ADC=} {startup_calibrated_pressure=}")
         ev_log.write(f"{now_time_long()} Pressure sensor detected - logging enabled\n")
+        if not borepump.state and startup_calibrated_pressure > zone_list[2][3]:
+            logstr = f'{now_time_long()} WARNING!  kPa sensor looks like it is in CALIBRATE mode!'
+            print(logstr)
+            ev_log.write(logstr + '\n')
 
     enable_controls()                   # enable rotary encoder, LCD B/L button etc
     ONESECBLINK         = 850           # 1 second blink time for LED
@@ -2965,19 +3009,19 @@ async def read_pressure()->None:
     """
     global hi_freq_kpa_ring, hi_freq_kpa_index, kpa_peak, time_peak, kpa_low, stable_pressure
     global read_count_since_ON
-    global pr_period_ms
+    global hf_log_mod
 
     try:
         while True:
-            if SIMULATE_KPA:
-                bpp = random.randint(100, 600)
-            else:
-                raw_val, bpp = get_pressure()
+            # if SIMULATE_KPA:
+            #     bpp = random.randint(100, 600)
+            # else:
+            raw_val, bpp = get_pressure()
             # print(f"Press: {bpp:>3} kPa, {hi_freq_kpa_index=}")
             if bpp > kpa_peak:
                 kpa_peak = bpp       # record peak value.  Will be reset on borepump_ON, and fixed in set_zone
                 time_peak = time.time()
-            if bpp < kpa_low:
+            if borepump.state and bpp < kpa_low:    # only cache lows if pump is ON...
                 kpa_low = bpp
             hi_freq_kpa_ring[hi_freq_kpa_index] = bpp
             hi_freq_kpa_index = (hi_freq_kpa_index + 1) % HI_FREQ_RINGSIZE
@@ -2988,8 +3032,8 @@ async def read_pressure()->None:
 
             lcd4x20.move_to(17, 3)
             lcd4x20.putstr(f"{bpp:>3}")
-            if LOGHFDATA:       # conditionally, write to logfile... but note I ALWAYS add to the ring buffer
-                                # This gets switched On/OFF depending on pump state... but NOTE: buffer updates happen ALWAYS!
+            if LOGHFDATA and read_count_since_ON % hf_log_mod == 0:       # conditionally, write to logfile... but note I ALWAYS add to the ring buffer
+                # This gets switched On/OFF depending on pump state... but NOTE: buffer updates happen ALWAYS!
                 # error_bar = bpp - round(stdev_Press * float(config_dict[KPASTDEVMULT] / 10 ), 2)
                 error_bar = bpp - stdev_Press * kPa_sd_multiple   # make consistent with calc max_drop in checkforanomalies
                 hf_log.write(f"{now_time_long()} {bpp:>3} {hi_freq_avg:.1f} {error_bar:.1f}\n")
@@ -3008,10 +3052,12 @@ async def read_pressure()->None:
                 confirm_and_switch_solenoid(False)      # TODO Problem !! Turning solenoid off needs to aysnc confirm pump is OFF so... also needs to be async.
                 # solenoid.value(1)
 
-            await asyncio.sleep_ms(pr_period_ms)
+            await asyncio.sleep_ms(PRESSURE_PERIOD_MS)
 
     except Exception as e:
-        print(f"read_pressure exception: {e}")
+        logstr = f"{now_time_long()} read_pressure exception: {e}"
+        print(logstr)
+        ev_log.write(logstr + '\n')
 
 async def regular_flush(flush_seconds)->None:
     while True:
@@ -3199,8 +3245,9 @@ async def blinkx2():
 
 async def pump_action_processor():
     """Process pump actions from queue, handle success/failure differently for ON/OFF"""
-    global average_timer, zone_timer, last_ON_time, LOGHFDATA
-    global pr_period_ms, LOG_FREQ
+    global average_timer, last_ON_time, LOGHFDATA, zone
+    global LOG_FREQ
+    global hf_log_mod
 
     while True:
         act_tuple = await pump_action_queue.get()
@@ -3215,20 +3262,22 @@ async def pump_action_processor():
         if cmd == MSG_REQ_ON:
             if success and bool(response):
                 # Handle successful ON request
-                borepump.switch_pump(True)
+                borepump.switch_pump(True)              # this will set state to ON
                 LOGHFDATA = True
-                pr_period_ms = PRESSURE_PERIOD_MS       # go hi frequency
                 LOG_FREQ = 1                            # log every depth reading
+                hf_log_mod = 1                          # and every kpa reading
                 switch_ring.add("PUMP ON")
                 last_ON_time = time.time()
                 if kpa_sensor_found:
                     reset_state()
                     average_timer   = Timer(period=AVG_KPA_DELAY * 1000, mode=Timer.ONE_SHOT, callback=set_average_kpa)  # type:ignore
-                    zone_timer      = Timer(period=ZONE_DELAY * 1000,    mode=Timer.ONE_SHOT, callback=set_zone)  # type:ignore
-                logstr = f'{now_time_long()} p_a_p {cmd} processed {reason}, pump switched ON'
+                    # zone_timer      = Timer(period=ZONE_DELAY * 1000,    mode=Timer.ONE_SHOT, callback=set_zone)  # type:ignore
+# moved create zone timer to set_average_kpa... 
+                logstr = f'{now_time_long()} PAP {cmd:3} processed {reason}, pump switched ON'
                 ev_log.write(f'{logstr}\n')
                 print(logstr)
                 event_ring.add("PUMP ON")
+
                 system.on_event(SimpleDevice.SM_EV_ON_ACK)
             else:
                 # Handle failed ON request
@@ -3236,26 +3285,43 @@ async def pump_action_processor():
                     logstr = f'{now_time_long()} PAP ON timeout'
                     ev_log.write(f'{logstr}\n')
                     error_ring.add(TankError.PUMP_ON_FAILED)
-                    enter_maint_mode_reason("PAP Timeout on ON request")
+                    enter_maint_mode_reason("PAP Timeout ON request")
                 else:
-                    logstr = f'{now_time_long()} ON request FAILED'
+                    logstr = f'{now_time_long()} ON request FAILED, {response=}'
                     ev_log.write(f'{logstr}\n')
+                    error_ring.add(TankError.PUMP_ON_FAILED)
                     print(logstr)
-                    system.on_event(SimpleDevice.SM_EV_ON_NAK)
+                    if op_mode == OP_MODE_IRRIGATE:
+                        cancel_program()
+                    enter_maint_mode_reason("PAP FAILed ON request")
 
+                system.on_event(SimpleDevice.SM_EV_ON_NAK)
         elif cmd == MSG_REQ_OFF:
             if success and not bool(response):
                 # Handle successful OFF request
+                # first... book-keeping...
+                if zone in zone_runtime_dict:
+                    rt = time.time() - last_ON_time     # should be how long this op had pump ON
+                    zone_runtime_dict[zone] += rt       # accumulate total runtime per zone
+                else:
+                    logstr = f'{now_time_long()} PAP {cmd} - zone {zone} not found in runtime dict'
+                    ev_log.write(f'{logstr}\n')
+                    print(logstr)
+                if zone in zone_pressure_dict:
+                    old_t = zone_pressure_dict[zone]
+                    new_t = (old_t[0], old_t[1], old_t[2], kpa_low)     # save kpa_low to report... and then adjust dict
+                    zone_pressure_dict[zone] = new_t
                 borepump.switch_pump(False)
         # TODO Do solenoid stuff here...
                 LOGHFDATA = False
-                pr_period_ms = PUMP_OFF_PERIOD_MS       # GO S L O W...
-                LOG_FREQ    = 120                        # at DELAY 5, that's every 10 minutes
+                LOG_FREQ    = 120                               # at DELAY 5, that's every 10 minutes
+                hf_log_mod = 300                                # GO S L O W...
                 switch_ring.add("PUMP OFF")
-                logstr = f'{now_time_long()} p_a_p {cmd} processed {reason}, pump switched OFF'
+                logstr = f'{now_time_long()} PAP {cmd} processed {reason}, pump switched OFF'
                 ev_log.write(f'{logstr}\n')
                 print(logstr)
                 event_ring.add("PUMP OFF")
+
                 system.on_event(SimpleDevice.SM_EV_OFF_ACK)
             else:
                 # Handle failed OFF request - potentially more serious
@@ -3266,12 +3332,13 @@ async def pump_action_processor():
                     error_ring.add(TankError.PUMP_OFF_FAILED)
                     enter_maint_mode_reason("PAP Timeout on OFF request")
                 else:
-                    logstr = f'{now_time_long()} PAP: OFF request FAILED - pump state uncertain'
+                    logstr = f'{now_time_long()} PAP: OFF request FAILED: {response=} - pump state uncertain'
                     ev_log.write(f'{logstr}\n')
                     print(logstr)
                     error_ring.add(TankError.PUMP_OFF_FAILED)
-                    system.on_event(SimpleDevice.SM_EV_OFF_NAK)
+                    enter_maint_mode_reason("PAP FAILed OFF request")
 
+                system.on_event(SimpleDevice.SM_EV_OFF_NAK)
         else:
             logstr = f'Unknown command {cmd}'
             ev_log.write(f'{logstr}\n')
@@ -3298,7 +3365,9 @@ async def radio_receive_task():
 # ============================================
 async def response_handler_task():
     """Process received responses and match them to pending requests"""
-# TODO this code does NOT do what the docstring promises!
+    
+    # Store the response so other tasks can check for it
+
     while True:
         response = await radio.incoming_queue.get()     # blocking get
         if DEBUGLVL > 1: print(f"RHT: Received: {response}")
@@ -3307,15 +3376,14 @@ async def response_handler_task():
         pending_request['response'] = response      # do NOT replace with str !!!  Keep tuple with value
         if DEBUGLVL > 1: print(f'{now_time_long()} RHT: updated pending_request dict with {response=}')
         
-        # Store the response so other tasks can check for it
         # if 'expected_resp_str' in pending_request:
         #     if isinstance(response, tuple):     # get first element of tuple
-        #         if response[0] == pending_request['expected_resp_str']:    # TODO this if seems pointless... probably should refactor this
+        #         if response[0] == pending_request['expected_resp_str']:
         #             pending_request['received'] = True
         #             pending_request['response'] = response      # do NOT replace with str !!!  Keep tuple with value
         #             if DEBUGLVL > 1: print(f'{now_time_long()} RHT: updated pending_request dict with {response=}')
         #     elif isinstance(response, str):
-        #         if response.endswith(' NAK'):               #TODO fix this protocol... what if NOT a NAK?
+        #         if response.endswith(' NAK'):
         #             pending_request['received'] = True
         #             pending_request['response'] = response
         #             if DEBUGLVL > 1: print(f'{now_time_long()} RHT: updated pending_request dict with {response=}')
@@ -3323,7 +3391,6 @@ async def response_handler_task():
         #             if DEBUGLVL > 1: print(f'{now_time_long()} RHT: unexpected str {response=}')
         # else:
         #     if DEBUGLVL > 1: print(f'{now_time_long()} RHT: "expected_response" NOT in pending_request !!')
-        # TODO Outer "if" seems silly... we create pending_request with an 'expected_resp_str' key...
 
         # Could also handle unsolicited messages here if needed
 # ============================================
@@ -3533,7 +3600,7 @@ async def main_control_task():
         else:   # we are in OP_MODE_MAINT ... don't do much at all.  Respond to interupts... show stuff on LCD.  Permits examination of buffers etc
             DisplayData()
             DisplayInfo()  
-            DisplayGraph(False)      # TODO change maint_mode so I continue to measure depth/kPa ??
+            DisplayGraph(False)
         
         await asyncio.sleep_ms(config_dict[DELAY] * 1000)
 

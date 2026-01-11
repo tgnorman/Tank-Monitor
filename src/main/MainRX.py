@@ -356,7 +356,7 @@ def main():
             sleep_ms(LOOP_DELAY)		    # if we did NOT do implied sleep in confirm_state... delay a bit.
 
     except KeyboardInterrupt:
-        logstr = "\n{now_time_long()}  ***Turning pump OFF on KeyboardInterupt"
+        logstr = f"\n{now_time_long()}  ***Turning pump OFF on KeyboardInterupt"
         print(logstr)
         event_log.write(logstr + "\n")
         switch_relay(False)

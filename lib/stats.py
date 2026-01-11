@@ -116,9 +116,6 @@ def linear_regression(x: list, y: list, count:int, startidx:int, ringlen:int) ->
     # den = sum((xi - x_mean) ** 2 for i in range(n))
     # std_dev = math.sqrt(sum((yi - y_mean) * (yi - y_mean) for i in range(n))) / (n-1)
     
-    # Calculate R-squared
-    my_x = count
-
     for i in range(count):
         # my_x -= 1
         mod_idx = (startidx - 1 - i) % ringlen
