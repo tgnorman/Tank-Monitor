@@ -5,6 +5,7 @@
 # Added to git 30/3/2025
 
 # Refactored 9/5/2025 to use structure advised by Claude
+# Added file_manager
 
 import time                         # type: ignore
 from RGB1602 import RGB1602         # type: ignore
@@ -29,6 +30,7 @@ class MenuNavigator:
     NAVMODE_MENU    = 'menu'
     NAVMODE_VIEW    = 'view'
     NAVMODE_VALUE   = 'value_change'
+    NAVMODE_FMGR    = 'file_manager'
     MENU_TITLE      = "title"
     MENU_ITEMS      = "items"
     MENU_ACTION     = "action"
@@ -214,6 +216,10 @@ class MenuNavigator:
             list_name = self.mode.split("_")[1]
             timestamp, message = self._handle_list_view(list_name, forward=True)
             self._update_display(timestamp, message[:16])
+        elif self.mode == MenuNavigator.NAVMODE_FMGR:
+            list_name = 'files'
+            timestamp, message = self._handle_list_view(list_name, forward=True)
+            self._update_display(timestamp, message[:16])
         # elif self.mode == "wait":
         #     self.go_back()
 
@@ -227,6 +233,10 @@ class MenuNavigator:
             self._update_display(*self._format_display_entry(hist_str))
         elif self.mode in [MenuNavigator.VIEWPROG, MenuNavigator.VIEWFILES]:
             list_name = self.mode.split("_")[1]
+            timestamp, message = self._handle_list_view(list_name, forward=False)
+            self._update_display(timestamp, message[:16])
+        elif self.mode == MenuNavigator.NAVMODE_FMGR:
+            list_name = 'files'
             timestamp, message = self._handle_list_view(list_name, forward=False)
             self._update_display(timestamp, message[:16])
         # elif self.mode == "wait":
@@ -246,7 +256,7 @@ class MenuNavigator:
                     pos = 0 if first else len(self.programlist) - 1
                     self.program_navindex = pos
                     hist_str = self.programlist[pos]
-        elif self.mode == MenuNavigator.VIEWFILES:
+        elif self.mode in [MenuNavigator.VIEWFILES, MenuNavigator.NAVMODE_FMGR]:
             if self.filelist is not None:
                 if len(self.filelist) > 0:
                     pos = 0 if first else len(self.filelist) - 1
@@ -268,9 +278,9 @@ class MenuNavigator:
             print(f"Going back to previous menu level {len(self.current_level)}")
             self.display_current_item()
         else:
-            print("Already at the top-level menu.  This should not happen...")
-            self.LCD2R.setCursor(0, 1)
-            self.LCD2R.printout(f'{"Exiting nav menu":<16}')
+            # print("Already at the top-level menu.  This should not happen...")
+            # self.LCD2R.setCursor(0, 1)
+            # self.LCD2R.printout(f'{"Exiting nav menu":<16}')
             self.exit_nav_menu()            # exit menu nav, and call exit_menu() in the menu structure
             
     def enter(self):

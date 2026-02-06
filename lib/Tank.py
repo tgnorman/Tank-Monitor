@@ -7,9 +7,9 @@ class Tank:
         self.last_depth:float     = 0.0
         self.height         = 2600
         self.radius         = 1620         # in millimetres...
-        self.overfull       = 300
-        self.min_dist       = 400
-        self.max_dist       = 1400         # was 1200.  1800 for test
+        self.min_dist       = 300
+        self.max_dist       = 1200         # was 1200.  1800 for test
+        self.overfull       = self.min_dist - 100
         self.delta          = 50
         self.depth_ROC      = 0
         self.min_ROC        = 10           # ROC changes in mm/minute

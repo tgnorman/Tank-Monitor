@@ -48,7 +48,7 @@ def mean_stddev(buff:list, count:int, startidx:int, ringlen:int)->tuple[float, f
     sd = math.sqrt(v)
     return mean, sd
 
-def linear_regression(x: list, y: list, count:int, startidx:int, ringlen:int) -> tuple[float, float, float, float, float]:
+def linear_regression(x: list, y: list, count:int, startidx:int, ringlen:int, dummy_x:bool) -> tuple[float, float, float, float, float]:
     """
     Calculate linear regression coefficients (slope, intercept) and other stats (std dev and r-squared).
     
@@ -58,6 +58,7 @@ def linear_regression(x: list, y: list, count:int, startidx:int, ringlen:int) ->
         count: how many values to go BACKWARDS
         startidx: absolute index of start of sample data in ring buffer.  NOT relative to buffer index !!
         ringlen: length of ring buffer
+        dummy_x: if True, ignore x buffer, fake x (assumes regular spaced samples)
         
     Returns:
         Tuple of (slope, intercept, std deviation, r-squared)
@@ -76,7 +77,10 @@ def linear_regression(x: list, y: list, count:int, startidx:int, ringlen:int) ->
     for i in range(count):
         # my_x -= 1
         mod_idx = (startidx - 1 - i) % ringlen
-        xi = x[mod_idx]
+        if dummy_x:
+            xi = count - i
+        else:
+            xi = x[mod_idx]
         yi = y[mod_idx]
         # ring_xbar += my_x
         ring_xbar += xi
@@ -92,7 +96,10 @@ def linear_regression(x: list, y: list, count:int, startidx:int, ringlen:int) ->
     for i in range(count):
         # my_x -= 1
         mod_idx = (startidx - 1 - i) % ringlen
-        xi = x[mod_idx]
+        if dummy_x:
+            xi = count - i
+        else:
+            xi = x[mod_idx]
         yi = y[mod_idx]
 
         # Differences from means
@@ -119,7 +126,10 @@ def linear_regression(x: list, y: list, count:int, startidx:int, ringlen:int) ->
     for i in range(count):
         # my_x -= 1
         mod_idx = (startidx - 1 - i) % ringlen
-        xi = x[mod_idx]
+        if dummy_x:
+            xi = count - i
+        else:
+            xi = x[mod_idx]        
         yi = y[mod_idx]
         
         # Predicted y value

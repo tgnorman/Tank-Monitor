@@ -22,7 +22,7 @@ class TimerManager:
     def is_pending(self, name: str) -> bool:
         """Check if timer exists and hasn't triggered yet"""
         return (name in self.schedules and 
-                self.schedules[name] > time.time())
+                self.schedules[name] >= time.time())
 
     def get_time_remaining(self, name: str) -> int:
         """Get seconds remaining until timer triggers"""
