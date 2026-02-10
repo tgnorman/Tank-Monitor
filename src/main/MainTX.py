@@ -45,7 +45,7 @@ from queue import Queue
 # endregion
 
 # region INITIALISE
-SW_VERSION          = "4/2/26 20:20"      # Added filemngr delete and email
+SW_VERSION          = "7/2/26 10:35"      # Added ChangeMode to btn_LL/RR
 DEBUGLVL            = 1
 
 # micropython.mem_info()
@@ -1035,8 +1035,9 @@ def show_dir():
 
 def set_nav_file_list():
     filelist: list[tuple] = []  
-    filenames = [x for x in uos.listdir() if x.endswith(".txt") and
-                 (x.startswith("tank") or x.startswith("pres") or x.startswith("HF") or x.startswith("BPEV")) ]
+    filenames = [x for x in uos.listdir() if x.startswith("DELETE") or 
+                 (x.endswith(".txt") and
+                 (x.startswith("tank") or x.startswith("pres") or x.startswith("HF") or x.startswith("BPEV"))) ]
 
     for f in filenames:
         fstat = uos.stat(f)
@@ -1642,7 +1643,7 @@ def btn_LL()->None:
 
     if btn_click : click()
     pending_delete = None
-    # navigator.mode =  MenuNavigator.NAVMODE_MENU    # not so fast - this will likely break VALUE/VIEW and FMGR modes!
+    Change_Mode(UI_MODE_MENU)
     navigator.previous()
     DisplayInfo()     # shouldn't be necessary, next/prev don'tchange mode... but might change IDX ???
 
@@ -1651,7 +1652,7 @@ def btn_RR()->None:
 
     if btn_click : click()
     pending_delete = None
-    # navigator.mode =  MenuNavigator.NAVMODE_MENU    # not so fast - this will likely break VALUE/VIEW and FMGR modes!
+    Change_Mode(UI_MODE_MENU)
     navigator.next()
     DisplayInfo()
 
@@ -2126,8 +2127,9 @@ def kpadrop_cb(timer:Timer)->None:
     #     kpa_drop_timer.deinit()
     #     kpa_drop_timer = None
     if timer_mgr.is_pending(KPA_DROP_TIMER_NAME):
-        logstr = f'{now_time_long()} Cancelling pending timer {KPA_DROP_TIMER_NAME}'
-        ev_log.write(f'{logstr}\n')
+        if DEBUGLVL > 0:
+            logstr = f'{now_time_long()} Cancelling pending timer {KPA_DROP_TIMER_NAME}'
+            ev_log.write(f'{logstr}\n')
         timer_mgr.cancel_timer(KPA_DROP_TIMER_NAME)
         
     # if op_mode == OP_MODE_IRRIGATE: # don't abort... just turn off pump, but let cycle continue
