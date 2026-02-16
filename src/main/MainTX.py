@@ -45,8 +45,8 @@ from queue import Queue
 # endregion
 
 # region INITIALISE
-SW_VERSION          = "7/2/26 10:35"      # Added ChangeMode to btn_LL/RR
-DEBUGLVL            = 1
+SW_VERSION          = "16/2/26 22:12"      # Added ChangeMode to btn_LL/RR
+DEBUGLVL            = 0
 
 # micropython.mem_info()
 # gc.collect()
@@ -95,7 +95,7 @@ lcd_on_time         = 90            # LCD time seconds
 FLUSH_PERIOD        = 7             # seconds ... should avoid clashes with most other processes
 DEBOUNCE_ROTARY     = 10            # determined from trial... see test_rotary_irq.py
 DEBOUNCE_BUTTON     = 400           # 50 was still registering spurious presses... go real slow.
-ROTARY_PERIOD_MS    = 200           # needs to be short... check rotary ISR variables
+ROTARY_PERIOD_MS    = 50            # needs to be short... check rotary ISR variables
 PRESSURE_PERIOD_MS  = 1000          # ms
 # PUMP_OFF_PERIOD_MS  = 300_000       # 5 minutes
 SLOW_BLINK          = 850           # ms
@@ -168,7 +168,8 @@ pump_action_queue   = Queue()       # Queue to hold async on/off requests, proce
 # region LOGGING
 # logging stuff...
 LOGHFDATA           = True          # log 1 second interval kPa data
-LOG_FREQ            = 1
+TANK_LOG_FREQ       = 1
+KPA_LOG_FREQ        = 2             # apply mod this for HF logging
 last_logged_depth   = 0
 last_logged_kpa     = 0
 LOG_MIN_DEPTH_CHANGE_MM  = 5        # reset after test run. to save space... only write to file if significant change in level
@@ -186,12 +187,12 @@ screamer 		    = Pin(16, Pin.OUT)                  # emergency situation !! Need
 vbus_sense          = Pin('WL_GPIO2', Pin.IN)           # external power monitoring of VBUS
 led                 = Pin('LED', Pin.OUT)
 
-# add buttons for 5-way nav control
-nav_UP 	            = Pin(10, Pin.IN, Pin.PULL_UP)		# UP button
-nav_DN 	            = Pin(11, Pin.IN, Pin.PULL_UP)		# DOWN button  
-nav_RR              = Pin(12, Pin.IN, Pin.PULL_UP)		# RIGHT button
-nav_LL              = Pin(13, Pin.IN, Pin.PULL_UP)		# LEFT button  
-nav_OK              = Pin(14, Pin.IN, Pin.PULL_UP)		# SELECT button
+# add buttons for 5-way nav control... reordered pins
+nav_DN 	            = Pin(10, Pin.IN, Pin.PULL_UP)		# DOWN button    Gr
+nav_UP 	            = Pin(11, Pin.IN, Pin.PULL_UP)		# UP button      Or
+nav_RR              = Pin(12, Pin.IN, Pin.PULL_UP)		# LEFT button    Y
+nav_LL              = Pin(13, Pin.IN, Pin.PULL_UP)		# RIGHT button   Wh
+nav_OK              = Pin(14, Pin.IN, Pin.PULL_UP)		# SELECT button  Red
 
 # Create pins for encoder lines and the onboard button
 
@@ -239,7 +240,7 @@ BAR_THICKNESS       = 15            # OLED display bargraph
 graph_mode          = GRAPH_BAR
 
 program_cancelled   = False         # to provide better reporting
-DO_NEXT_IN_CB       = True          # this could be a config param... but probably not worth it
+# DO_NEXT_IN_CB       = False          # this could be a config param... but probably not worth it
 TWM_TIMER_NAME      = 'TWM_timer'   # for consistent ref
 DISABLE_TIMER_NAME  = 'Disable_timer'
 KPA_DROP_TIMER_NAME = "DROP_TIMER"
@@ -287,8 +288,8 @@ FROM_PASSWORD       = wf.gmailAppPassword
 TO_EMAIL            = wf.toaddr
 
 # things for async SMTP file processing
-SMTPSLEEPMS = 100
-SMTPLINEGROUP = 100
+SMTPSLEEPMS         = 50        # reduced from 100
+SMTPLINEGROUP       = 10        # reduced from 100 - see if fixes blocking email 16/2/26
 
 EMAIL_QUEUE_SIZE    = 20  # Adjust size as needed
 email_queue         = ["" for _ in range(EMAIL_QUEUE_SIZE)]
@@ -425,20 +426,8 @@ program_list = [
               ("Cycle4", {"init" : 1, "run" : 25, "off" : 1})]
 
 # zone_list... zone ID, min, max pressures, SD multiplier
-# TODO need to test each zone's starting pressure...from full bore state, and adjust the min/max values accordingly.
 # TODO revisit SD multiplier lookups
 
-# zone_list:list[tuple[str, int, int, int, float, float, float, int, int]] = [
-#     (P0, 0,   0,   5,    3.0, 2E-5, -0.1021, 0,   0),     # ZERO 
-#     (P1, 6,   15,  20,   3.0, 2E-5, -0.1021, 2,   0),     # AIR
-#     (P2, 10,  20,  35,   2.1, 8E-7, -0.0042, 30,  5),     # HT: don't make this min higher... I want to resume from a cancelled cycle, not abort in HT mode
-#     (P3, 250, 300, 350,  2.5, 1E-5, -0.1021, 340, 20),    # Z45
-#     (P4, 300, 375, 520,  4.5, 2E-5, -0.1021, 445, 20),    # Z3
-#     (P5, 350, 420, 530,  5.0, 2E-5, -0.1021, 575, 20),    # Z2
-#     (P6, 390, 550, 580,  5.0, 2E-5, -0.1021, 585, 20),    # Z1
-#     (P7, 420, 650, 680,  5.0, 2E-5, -0.1021, 620, 20),    # Z4
-#     (P8, 600, 700, 800,  3.5, 2E-5, -0.1021, 650, 20)     # XP
-# ]
 zone_list:list[tuple[str, int, int, float]] = [
     (P0, 0,   5,    2.0),    # ZERO 
     (P1, 6,   20,   2.0),    # AIR
@@ -1529,17 +1518,17 @@ def pp_callback(pin):
 
 def enc_cb(pos, delta):
     global encoder_count
-    print('Encoder: ', pos, delta)
+    # print('Encoder: ', pos, delta)
     if delta > 0:
-        if DO_NEXT_IN_CB:
-            navigator.next()
-        else:
-            encoder_count += 1
+        # if DO_NEXT_IN_CB:
+        #     navigator.next()
+        # else:
+        encoder_count += 1
     elif delta < 0:
-        if DO_NEXT_IN_CB:
-            navigator.previous()
-        else:
-            encoder_count -= 1
+        # if DO_NEXT_IN_CB:
+        #     navigator.previous()
+        # else:
+        encoder_count -= 1
 
 def enc_press()->None:
     do_enter_process()
@@ -1750,14 +1739,8 @@ def enable_controls():
     # move to wider use of PH's great stuff!
     pb_enc = Pushbutton(enc_btn, ())            # type: ignore
 
-    # pb_enc.press_func(enc_press, ())            # type: ignore
-    pb_enc.press_func(toggle_graph, ())            # type: ignore
-
-    # nav_up.irq(trigger=Pin.IRQ_FALLING, handler=nav_up_cb)
-    # nav_dn.irq(trigger=Pin.IRQ_FALLING, handler=nav_dn_cb)
-    # nav_OK.irq(trigger=Pin.IRQ_FALLING, handler=nav_OK_cb)
-    # nav_L.irq(trigger=Pin.IRQ_FALLING, handler=nav_L_cb)
-    # nav_R.irq(trigger=Pin.IRQ_FALLING, handler=nav_R_cb)
+    # pb_enc.press_func(enc_press, ())          # type: ignore
+    pb_enc.press_func(toggle_graph, ())         # type: ignore
 
 # create button objects - Peter Hinch style
     pb_OK = Pushbutton(nav_OK, suppress=True)   # type:ignore
@@ -1775,7 +1758,8 @@ def enable_controls():
     pb_OK.long_func(exit_menu, ())              # type: ignore
     pb_UP.long_func(lcdbtn_new, (None, ))       # type: ignore 
     pb_UP.double_func(lcdbtn_new, (None, ))     # type: ignore
-    pb_DN.long_func(infobtn_cb, (None, ))       # type: ignore
+    # pb_DN.long_func(infobtn_cb, (None, ))       # type: ignore
+    pb_DN.long_func(toggle_graph, ())           # type: ignore
     pb_DN.double_func(infobtn_cb, (None, ))     # type: ignore
 
 # endregion
@@ -1788,18 +1772,7 @@ def lcdbtn_new(pin):
         lcd_timer.deinit()
     lcd_timer = Timer(period=config_dict[LCD] * 1000, mode=Timer.ONE_SHOT, callback=lcd_off)    # type:ignore
 
-# def lcdbtn_pressed(x):          # my lcd button ISR
-#     global lcdbtnflag
-#     lcdbtnflag = True
-#     sleep_ms(300)
-
 def lcd_off(pin):
-    # print(f'in lcd_off {ui_mode=}, called from timer={x}')
-    # print("Stack trace:")
-    # try:
-    #     raise Exception("Trace")
-    # except Exception as e:
-    #     sys.print_exception(e)      # type: ignore
     if ui_mode != UI_MODE_MENU:
         lcd.setRGB(0,0,0)
         lcd4x20.backlight_off()
@@ -1833,14 +1806,7 @@ def lcd_on():
 #             lcd_flag_lock.release()
 #         await asyncio.sleep(0.5)
 # endregion
-# region UNUSED methods
-# def Pico_RTC():
-#     tod   = rtc.timestamp()
-#     year  = tod.split()[0].split("-")[0]
-#     month = tod.split()[0].split("-")[1]
-#     day   = tod.split()[0].split("-")[2]
-#     shortyear = year[2:]
-# endregion
+
 # region MAIN METHODS
 def get_zone_from_list(pressure: int):
     """ Get zone, min and max by searching through the zone list for the first zone below the zone MAX pressure """  
@@ -2033,29 +1999,6 @@ def log_switch_error(new_state):
     ev_log.write(f"{now_time_long()} ERROR on switching to state {new_state}\n")
     event_ring.add(f"ERR swtch {new_state}")
     
-# def parse_reply(rply):
-#     if DEBUGLVL > 1: print(f"in parse arg is {rply}")
-#     if isinstance(rply, tuple):			# good...
-#         key = rply[0].upper()
-#         val = rply[1]
-# #        print(f"in parse: key={key}, val={val}")
-#         if key == MSG_STATUS_ACK:       # *** THIS IS NO LONGER VALID... Slave no longer returns a tuple... either ACK or NAK.
-#             return True, val
-#         elif MSG_ERROR in key:
-#             resp = key.split(" ")
-#             return False, -1
-#         else:
-#             print(f"Unknown tuple: key {key}, val {val}")
-#             return False, -1
-#     else:
-#         print(f"Expected tuple... didn't get one.  Got {rply}")
-#         return False, False
-
-# def transmit_and_pause(msg, delay):
-#     if DEBUGLVL > 1: print(f"tx_and_pause: Sending {msg}, sleeping for {delay} ms")
-#     radio.device.send(msg)
-#     sleep_ms(delay)
-
 def confirm_solenoid():
     solenoid_state = sim_detect()
 
@@ -2214,11 +2157,7 @@ def make_dr_lists():
         d_tup = depth_ring.buffer[modidx]       # get tuple from ring
         dr_xvalues[i] = d_tup[0] - offset_secs  # should be timestamp part of tuple
         dr_yvalues[i] = d_tup[1]                # should be depth 
-
-# def quad(a: float, b: float, c: int, x: int) -> int:
-#     """Calculate the pressure at a given point using a quadratic equation"""
-#     return int(a * x*x + b * x + c)
-    
+   
 def checkForAnomalies()->None:
     global borepump, tank_is, average_kpa, stdev_Depth, stdev_Press, drop_hiwat
 
@@ -2587,7 +2526,6 @@ def DisplayGraph(showhist:bool):
         display.fill_rect(0, HEIGHT-BAR_THICKNESS, scaled_bar, BAR_THICKNESS, 1)
 
     elif graph_mode == GRAPH_DEPTH:
-# TODO Display historic values first, then switch to RT for depth & kPA... NOT for bar graph
         display.text(f"{housetank.height}   Depth", 0, 0, 1)
 
         if showhist:
@@ -2623,14 +2561,14 @@ def DisplayGraph(showhist:bool):
 
     display.show()
 
-def LogData()->None:
+def LogTankData()->None:
     global level_init
     global last_logged_depth
     global last_logged_kpa
 
 # Now, do the print and logging
     tempstr = f"{temp:.2f} C"  
-    logstr  = now_time_short() + f" {housetank.depth/1000:.3f} {average_kpa:4}\n"
+    logstr  = now_time_long() + f" {housetank.depth/1000:.3f} {average_kpa:4}\n"
     dbgstr  = now_time_short() + f" {housetank.depth/1000:.3f}m {average_kpa:4}kPa"    
 
     enter_log = False
@@ -2648,61 +2586,7 @@ def LogData()->None:
             enter_log = True
 
         if enter_log: tank_log.write(logstr)
-    # tank_log.write(logstr)          # *** REMOVE AFTER kPa TESTING ***
     print(dbgstr)
-
-# def init_radio_nowait():
-#     global radio, system
-    
-#     print("Init radio...")
-
-#     radio.device.off()
-#     radio.device.on()       # should clear receive buffers
-#     if radio.device.receive():
-#         msg = radio.device.message
-#         print(f"Read & discarded {msg}.  Should not happen if rcv buffer cleared")
-    
-
-# def init_radio()->bool:
-#     global radio, system
-    
-#     print("Init radio...")
-#     if radio.device.receive():
-#         msg = radio.device.message
-#         print(f"Read & discarded {msg}")
-
-#     while not ping_RX():
-#         print("Waiting for RX...")
-#         sleep(1)
-
-# if we get here, my RX is responding.
-    # print("RX responded to ping... comms ready")
-    # return True
-    # system.on_event(SimpleDevice.SM_EV_RADIO_ACK)
-
-# def ping_RX() -> bool:           # at startup, test if RX is listening
-# #    global radio
-
-#     ping_acknowleged = False
-#     transmit_and_pause(MSG_PING_REQ, RADIO_PAUSE)
-#     if radio.device.receive():                     # depending on time relative to RX Pico, may need to pause more here before testing?
-#         msg = radio.device.message
-#         if isinstance(msg, str):
-#             if msg == MSG_PING_RSP:
-#                 ping_acknowleged = True
-
-#     return ping_acknowleged
-
-# def get_initial_pump_state() -> bool:
-
-#     initial_state = False
-#     transmit_and_pause(MSG_STATUS_CHK,  RADIO_PAUSE)
-#     if radio.device.receive():
-#         rply = radio.device.message
-#         valid_response, new_state = parse_reply(rply)
-#         if valid_response and new_state > 0:
-#             initial_state = True
-#     return initial_state
 
 def calc_pump_runtime(p:Pump) -> str:
     dc_secs = p.cum_seconds_on
@@ -2755,21 +2639,8 @@ def set_time():
 def init_clock()->bool:
 
     print("Initialising local clock")
-#   if time.localtime()[0] < 2024:  # if we reset, localtime will return 2021...
-#        connect_wifi()
     set_time()
     return True
-    # system.on_event(SimpleDevice.SM_EV_NTP_ACK)
-
-# def calibrate_clock():
-#     global radio
-
-#     delay=500
-# #   for i in range(1):
-#     p = ticks_ms()
-#     s = MSG_CLOCK
-#     t=(s, p)
-#     transmit_and_pause(t, delay)
 
 def init_ringbuffers():
     global hi_freq_kpa_ring, hi_freq_kpa_index
@@ -2838,11 +2709,10 @@ def init_all():
     global ONESECBLINK, lcd_timer
     global ut_long, ut_short
     global stdev_Depth, stdev_Press
-    global LOGHFDATA, read_count_since_ON
+    global LOGHFDATA, read_count_since_ON, hf_log_mod
     global btn_click
     global last_activity_time
     global graphkPa, graphdst
-    global hf_log_mod
 
     PS_ND               = "Pressure sensor not detected"
     str_msg             = "At startup, BorePump is "
@@ -2858,7 +2728,7 @@ def init_all():
 
     ev_log.write(f"\n\n{now_time_long()} Pump Monitor starting - SW ver:{SW_VERSION}  ")      # no \n...
     ev_log.write(f'params ({config_dict[DELAY]}s, {int(PRESSURE_PERIOD_MS/1000)}s, {DEPTHRINGSIZE=})\n')
-    hf_log_mod = 1         # increase for mod operator to reduce logging when pump is OFF
+    hf_log_mod = KPA_LOG_FREQ         # increase for mod operator to reduce logging when pump is OFF
 
     slist=[]
 
@@ -3120,7 +2990,6 @@ async def read_pressure()->None:
     """
     global hi_freq_kpa_ring, hi_freq_kpa_index, kpa_peak, time_peak, kpa_low, stable_pressure
     global read_count_since_ON
-    global hf_log_mod
 
     try:
         while True:
@@ -3322,22 +3191,20 @@ async def check_rotary_state(menu_sleep:int)->None:
                 encoder_btn_state = False
                 # DisplayDebug()
 
-        if not DO_NEXT_IN_CB:           # OK... so we need to call next/prev as required here.
-            if encoder_count != 0:
-                if encoder_count > 0:
-                    # print(f"CRS: {encoder_count=}")
-                    # for rc in range(encoder_count):
-                    while encoder_count > 0:
-                        navigator.next()
-                        encoder_count -= 1
-                elif encoder_count < 0:
-                    # print(f"CRS: {encoder_count=}")
-                    # for rc in range(encoder_count):
-                    while encoder_count < 0:
-                        navigator.previous()
-                        encoder_count += 1
+        # if not DO_NEXT_IN_CB:           # OK... so we need to call next/prev as required here.
+        if encoder_count != 0:
+            if encoder_count > 0:
+                # print(f"CRS: {encoder_count=}")
+                while encoder_count > 0:
+                    navigator.next()
+                    encoder_count -= 1
+            elif encoder_count < 0:
+                # print(f"CRS: {encoder_count=}")
+                while encoder_count < 0:
+                    navigator.previous()
+                    encoder_count += 1
 
-                # DisplayDebug()  # this updates 4x20 LCD on every rotary change
+            # DisplayDebug()  # this updates 4x20 LCD on every rotary change
 
         await asyncio.sleep_ms(menu_sleep)
 
@@ -3356,7 +3223,7 @@ async def blinkx2():
 async def pump_action_processor():
     """Process pump actions from queue, handle success/failure differently for ON/OFF"""
     global average_timer, last_ON_time, LOGHFDATA, zone
-    global LOG_FREQ
+    global TANK_LOG_FREQ
     global hf_log_mod
 
     while True:
@@ -3374,8 +3241,8 @@ async def pump_action_processor():
                 # Handle successful ON request
                 borepump.switch_pump(True)              # this will set state to ON
                 LOGHFDATA = True
-                LOG_FREQ = 1                            # log every depth reading
-                hf_log_mod = 1                          # and every kpa reading
+                TANK_LOG_FREQ = 1                       # log every depth reading
+                hf_log_mod = KPA_LOG_FREQ               # and every kpa reading
                 switch_ring.add("PUMP ON")
                 last_ON_time = time.time()
                 if kpa_sensor_found:
@@ -3424,7 +3291,7 @@ async def pump_action_processor():
                 borepump.switch_pump(False)
         # TODO Do solenoid stuff here...
                 LOGHFDATA = False
-                LOG_FREQ    = 120                               # at DELAY 5, that's every 10 minutes
+                TANK_LOG_FREQ    = 120                               # at DELAY 5, that's every 10 minutes
                 hf_log_mod = 300                                # GO S L O W...
                 switch_ring.add("PUMP OFF")
                 logstr = f'{now_time_long()} PAP {cmd} processed {reason}, pump switched OFF'
@@ -3570,7 +3437,7 @@ async def send_command_with_timeout(command, expected_response, timeout=5, max_r
 # Task 3: Radio Transmitter (consumer)
 # ============================================
 async def radio_transmit_task():
-    """Send responses from outgoing queue"""
+    """Send message from outgoing queue"""
     while True:
         message = await radio.outgoing_queue.get()  # Blocks until response ready
         radio.device.send(message)
@@ -3595,7 +3462,7 @@ async def main_control_task():
     asyncio.create_task(response_handler_task())
     asyncio.create_task(radio_transmit_task())                 # the missing piece...
 
-    while str(system.state) != SimpleDevice.STATE_PICO_READY:      # TODO add a "standby" state... requires wiring XSHUT to VL53L1X
+    while str(system.state) != SimpleDevice.STATE_PICO_READY:      # TODO add a "IDLE" state... for when no activity
         current_state = str(system.state)
         print(f'in MCT: {current_state=}')
 
@@ -3703,8 +3570,8 @@ async def main_control_task():
 
             if stable_pressure:
                 checkForAnomalies()	                # test for weirdness
-            if rec_num % LOG_FREQ == 0:           
-                LogData()			                # record it
+            if rec_num % TANK_LOG_FREQ == 0:           
+                LogTankData()			                # record it
             rec_num += 1
 
         else:   # we are in OP_MODE_MAINT ... don't do much at all.  Respond to interupts... show stuff on LCD.  Permits examination of buffers etc
@@ -3722,28 +3589,6 @@ async def heartbeat_task():
     while True:
         await radio.outgoing_queue.put(MSG_HEARTBEAT)
         await asyncio.sleep(5)  # Every 5 seconds
-
-# async def get_to_ready_state():
-#     while  str(system.state) != SimpleDevice.STATE_PICO_READY:
-#         current_state = str(system.state)       # NOTE: BY caching system.state this forces only one state transition per loop
-#         # print(current_state)        
-#         if current_state == SimpleDevice.STATE_PICO_RESET:
-#             # system.on_event(SimpleDevice.SM_EV_SYS_INIT)
-#             if init_wifi():
-#                 system.on_event(SimpleDevice.SM_EV_WIFI_ACK)
-
-#         if current_state == SimpleDevice.STATE_WIFI_READY:
-#             if init_clock():
-#                 system.on_event(SimpleDevice.SM_EV_NTP_ACK)
-
-#         if current_state == SimpleDevice.STATE_CLOCK_SET:
-#             if init_radio():
-#                 system.on_event(SimpleDevice.SM_EV_RADIO_ACK)
-
-#         if current_state == SimpleDevice.STATE_RADIO_READY:
-#             system.on_event(SimpleDevice.SM_EV_SYS_START)
-            
-#         await asyncio.sleep(1)
 
 # endregion
 # region MAIN
