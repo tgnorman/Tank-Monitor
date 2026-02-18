@@ -275,7 +275,7 @@ class MenuNavigator:
             self.mode = MenuNavigator.NAVMODE_MENU
             self.new_value = 0
 
-            print(f"Going back to previous menu level {len(self.current_level)}")
+            # print(f"Going back to previous menu level {len(self.current_level)}")
             self.display_current_item()
         else:
             # print("Already at the top-level menu.  This should not happen...")
@@ -300,7 +300,7 @@ class MenuNavigator:
             if callable(action):
                 action()                # do it...
             else:
-                print(f"Simulate Executing action: {item[MenuNavigator.MENU_ACTION]}")
+                print(f"Simulate Executing action: {item[MenuNavigator.MENU_ACTION]}")  # TODO display on LCD
         elif MenuNavigator.MENU_VALUE in item:
             self.mode = MenuNavigator.NAVMODE_VALUE
             param = item[MenuNavigator.MENU_TITLE]
@@ -310,7 +310,7 @@ class MenuNavigator:
             self.LCD2R.setCursor(0, 0)
             self.LCD2R.printout(f'{param} +-')
         else:
-            print(f"Unknown type in item... check menu def.  {item}")
+            print(f"Unknown type in item... check menu def.  {item}")       # TODO display on LCD also
     
         # print(f"In ENTER, mode is now {self.mode}")
 
@@ -341,7 +341,7 @@ class MenuNavigator:
         item = self.get_current_item()
         def_val = item[MenuNavigator.MENU_VALUE][MenuNavigator.MENU_DV]
         item[MenuNavigator.MENU_VALUE][MenuNavigator.MENU_WV] = def_val
-        print(f"Value set to Default: {def_val}")
+        # print(f"Value set to Default: {def_val}")
         self.LCD2R.setCursor(0, 1)
         self.LCD2R.printout(f"Set to DV {str(def_val):<6}")
         self.new_value = def_val          # reset this, or we copy previous remnant value

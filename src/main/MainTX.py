@@ -45,7 +45,7 @@ from queue import Queue
 # endregion
 
 # region INITIALISE
-SW_VERSION          = "16/2/26 22:12"      # Added ChangeMode to btn_LL/RR
+SW_VERSION          = "17/2/26 14:55"      # Removed gc from send_email
 DEBUGLVL            = 0
 
 # micropython.mem_info()
@@ -1563,7 +1563,7 @@ def btn_OK()->None:
                 lcd.printout("-OK to confirm-")
                 DisplayInfo()
                 return
-            else:
+            else:       # then this is after CONFIRM
                 if delete_file(pending_delete):
                     # remove file from list
                     navigator.filelist.remove(listitem)                 # type: ignore
@@ -3125,7 +3125,7 @@ async def send_file_list(to: str, subj: str, filenames: list):
                 del chunk
                 del encoded
                 # f.close()    do NOT do this... not needed in with context, and actually breaks things
-                gc.collect()
+                # gc.collect()
 
         smtp.write('\r\n')  # Add separation between attachments
 
@@ -3148,7 +3148,7 @@ async def processemail_queue():
     global email_queue_tail, email_queue_full, email_task_running
     while True:
         if email_task_running:
-            await asyncio.sleep_ms(2000)
+            await asyncio.sleep_ms(200)
             continue
             
         # Check if queue has items
@@ -3161,7 +3161,7 @@ async def processemail_queue():
                 print(f'Email queue: {non_zero_files}')
                 email_task_running = True
                 try:
-                    gc.collect()
+                    # gc.collect()
                     await send_file_list(TO_EMAIL, f"BPM Sending {files}...", non_zero_files)
                     # print(f"Email sent with result code {rc}")
                     lcd.setCursor(0,1)
