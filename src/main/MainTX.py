@@ -45,7 +45,7 @@ from queue import Queue
 # endregion
 
 # region INITIALISE
-SW_VERSION          = "17/2/26 14:55"      # Removed gc from send_email
+SW_VERSION          = "5/3/26 14:11"      #  depth_ROC graphing
 DEBUGLVL            = 0
 
 # micropython.mem_info()
@@ -53,7 +53,7 @@ DEBUGLVL            = 0
 
 # region MODES
 PRODUCTION_MODE     = False         # change to True when no longer in development cycle
-CALIBRATE_MODE      = True
+CALIBRATE_MODE      = False
 
 OP_MODE_AUTO        = 0
 OP_MODE_IRRIGATE    = 1
@@ -70,7 +70,7 @@ INFO_DIAG           = 2
 INFO_MAINT          = -1            # special case... cannot cycle to here, only set explicitly as required
 
 GRAPH_BAR           = 0             # OLED bar graph
-GRAPH_DEPTH         = 1
+GRAPH_DEPTH_ROC     = 1
 GRAPH_KPA           = 2
 GRAPH_COUNT         = 3             # feels unpythonic...
 
@@ -167,13 +167,15 @@ pump_action_queue   = Queue()       # Queue to hold async on/off requests, proce
 # endregion
 # region LOGGING
 # logging stuff...
-LOGHFDATA           = True          # log 1 second interval kPa data
+LOGHFDATA           = False         # this is reset in init_all
 TANK_LOG_FREQ       = 1
 KPA_LOG_FREQ        = 2             # apply mod this for HF logging
 last_logged_depth   = 0
 last_logged_kpa     = 0
-LOG_MIN_DEPTH_CHANGE_MM  = 5        # reset after test run. to save space... only write to file if significant change in level
+LOG_MIN_DEPTH_CHANGE_MM  = 10       # reset after test run. to save space... only write to file if significant change in level
 LOG_MIN_KPA_CHANGE  = 10            # update after pressure sensor active
+PP_SWITCH_NOISE     = 6             # ignore depth reading if instant change is more than this...
+
 level_init          = False 		# to get started
 # endregion
 # region PHYSICAL_DEVICES
@@ -433,7 +435,7 @@ zone_list:list[tuple[str, int, int, float]] = [
     (P1, 6,   20,   2.0),    # AIR
     (P2, 15,  45,   2.0),    # HT: don't make this min higher... I want to resume from a cancelled cycle, not abort in HT mode
     (P3, 250, 380,  2.4),    # Z45
-    (P4, 275, 450,  3.0),    # Z3
+    (P4, 275, 450,  3.2),    # Z3
     (P5, 335, 535,  3.0),    # Z2
     (P6, 390, 585,  3.0),    # Z1
     (P7, 420, 620,  3.0),    # Z4
@@ -447,6 +449,7 @@ def toggle_borepump(x:Timer):
     I need to document this logic better... next_ON_cycle_time is used in DisplayData, and at end of program,
     it falls down ... no idea of what to do.  Maybe I can refer to program_end_time??
     """
+    # TODO sort next_ON_cycle_time & DisplayData
     global timer_state, op_mode, sl_index, cyclename, ON_cycle_end_time, next_ON_cycle_time, program_pending
 
     program_pending = False
@@ -488,7 +491,7 @@ def toggle_borepump(x:Timer):
                 # nextcycle_ON_time = now + diff * TIMERSCALE
                 # print(f"{now_time_long()}: TOGGLE - Doing nothing")
             if sl_index == len(slist) - 2:              # we must be in penultimate cycle, or last cycle
-                next_ON_cycle_time = now - 2 * TIMERSCALE
+                next_ON_cycle_time = now - 2 * TIMERSCALE   # TODO explain this...
 
             # print(f" end cycle {format_time_short(secs_to_localtime(ON_cycle_end_time))}\nnext cycle {format_time_short(secs_to_localtime(next_ON_cycle_time))}")
             # now, set up next timer
@@ -1177,7 +1180,7 @@ def calc_uptime()-> None:
     # secs  = int(uptimesecs % 60)
     days, hours, mins, secs = secs_to_DHMS(uptimesecs)
     ut_long  = f'{days} d {hours:02}:{mins:02}:{secs:02}'
-    ut_short = f'{days}d {hours:02}:{mins:02}'
+    ut_short = f'{days:2}d{hours:02}:{mins:02}'
 
 def show_uptime():
     calc_uptime()
@@ -1293,6 +1296,7 @@ def roll_logs()-> None:
 # simple method avoids the need to mess with filenames...
 # All that remains is to ensure logs are saved/archived offline before DELETING in make-more-space... and to schedule roll_logs
 
+# TODO do log rolling properly - will require more than above.  May need to shutdown/restart to ensure everything is written to current BPEV
     if tank_log is not None:
         tank_log.flush()
         tank_log.close()
@@ -1303,7 +1307,8 @@ def roll_logs()-> None:
         ev_log.flush()
         ev_log.close()
 
-    init_logging()          # start a new series
+    init_logging()          # start a new series... except this doesn't achieve that!  Need to  think long-term... constant running
+                            # TODO refer to uptime...if > 24 hours... More thought needed.
 
 def add_to_email_queue(file:str)->None:
     global email_queue_head, email_queue_full
@@ -1880,7 +1885,7 @@ def calc_SMA(buff:list)-> float:
         return dsum / n
     else:
         return 0.0
-    
+  
 def calc_average_HFpressure(offset_back:int, length:int)->float:
     """
     This is a cut-down version of mean_stdev... and should probably be replaced.
@@ -1939,7 +1944,7 @@ def set_average_kpa(timer: Timer):
             print("set_average_kpa callback: Average kPa set: ", average_kpa)
             avg_kpa_set = True
             kpa_ring.add(average_kpa)         # add to ring buffer for later use
-            event_ring.add(f'Avg kpa set: {average_kpa}')
+            if DEBUGLVL > 0: event_ring.add(f'Avg kpa set: {average_kpa}')
             zone_timer = Timer(period=ZONE_DELAY * 1000,    mode=Timer.ONE_SHOT, callback=set_zone)  # type:ignore
         else:
             print("set_average_kpa: Yikes!! Buffer has data, but average_kpa is 0")
@@ -1958,15 +1963,22 @@ def updateData():
     global average_kpa, zone, avg_kpa_set
     global temp
     global depthringindex
+    global depth_ROC_index
 
     get_tank_depth()
 
-    depthringbuf[depthringindex] = housetank.depth; depthringindex = (depthringindex + 1) % DEPTHGRAPHSIZE  # restored old buffer for plot
+#  OK... try to filter out pressure pump switching noise
+    change_since_last = abs(housetank.last_depth - housetank.depth)
+    if change_since_last > PP_SWITCH_NOISE and rec_num > 1:     # ignore this reading.  Could smooth it with an average...
+        if DEBUGLVL > 0: print(f"{now_time_long()} fudging housetank depth!")
+        housetank.depth = housetank.last_depth                  # Why ref rec_num?  otherwise we are forever stuck on zero...
     depth_ring.add(housetank.depth)
-    sma_depth = calc_SMA(depth_ring.buffer)            # this calculates average of non-zero values... regardless of how many entries in the ring
-    time_factor = config_dict[DELAY] / 60               # dont move this - DELAY may be changed on the fly
+    sma_depth = calc_SMA(depth_ring.buffer)         # this calculates average of non-zero values... regardless of how many entries in the ring
+    time_factor = config_dict[DELAY] / 60           # dont move this - DELAY may be changed on the fly
     housetank.depth_ROC = int((sma_depth - housetank.last_depth) / time_factor)	# ROC in mm/minute.  Save negatives also...
-    if DEBUGLVL > 2: print(f"{sma_depth=} {housetank.last_depth=} {housetank.depth_ROC=}")
+    depth_ROC_ring[depth_ROC_index] = housetank.depth_ROC  # do this right... plot depth_ROC, not depth
+    if DEBUGLVL > 1: print(f"{sma_depth=} {housetank.last_depth=} {housetank.depth_ROC=} {depth_ROC_index=} {depth_ROC_ring[depth_ROC_index]=}")
+    depth_ROC_index = (depth_ROC_index + 1) % DEPTHGRAPHSIZE
     housetank.last_depth = sma_depth				# track ROC since last reading using SMA_DEPTH... NOT raw depth
     depth_str = f"{housetank.depth/1000:.2f}m " + tank_is
 
@@ -2220,16 +2232,16 @@ def checkForAnomalies()->None:
                     error_ring.add(TankError.MAX_ROC_EXCEEDED)
 
             # changed to get SD of residuals after removing trend... which is significant on normal depth change during tank fill
-            # if len(depth_ring.buffer) == DEPTHRINGSIZE:
-            #     make_dr_lists()         # pull (x, y) coordinates.  Should now work no matter time distribution of ring_buffer entries
-            #     _,_,_, stdev_Depth, r2 = linear_regression(dr_xvalues, dr_yvalues, DEPTHRINGSIZE, depth_ring.index, DEPTHRINGSIZE, False)
-            #     if stdev_Depth > DEPTH_SD_MAX:
-            #         raiseAlarm("XS D SDEV", stdev_Depth)
-            #         error_ring.add(TankError.HI_VAR_DIST)
+            if rec_num > DEPTHRINGSIZE:
+                make_dr_lists()         # pull (x, y) coordinates.  Should now work no matter time distribution of ring_buffer entries
+                _,_,_, stdev_Depth, r2 = linear_regression(dr_xvalues, dr_yvalues, DEPTHRINGSIZE, depth_ring.index, DEPTHRINGSIZE, False)
+                if stdev_Depth > DEPTH_SD_MAX:
+                    raiseAlarm("XS D SDEV", stdev_Depth)
+                    error_ring.add(TankError.HI_VAR_DIST)
 
         else:                                       # pump is OFF
             if op_mode == OP_MODE_AUTO:
-                if housetank.depth_ROC > housetank.min_ROC and not CALIBRATE_MODE:                         # pump is OFF but level is rising!
+                if housetank.depth_ROC > housetank.min_ROC and not CALIBRATE_MODE:         # pump is OFF but level is rising!
                     raiseAlarm("FILLING - OFF", housetank.depth_ROC)
                     error_ring.add(TankError.FILLWHILE_OFF)
                     if PRODUCTION_MODE:
@@ -2489,8 +2501,9 @@ def DisplayData()->None:
                         mins_to_end = 0
                         if secs_to_end > 60:
                             mins_to_end = int(secs_to_end / 60)
+                            hrs_to_end = int(mins_to_end / 60)
                             secs_to_end = secs_to_end % 60
-                        display_str = f"TWM end:   {mins_to_end}:{secs_to_end:02}"
+                        display_str = f"TWM end: {hrs_to_end:1}:{mins_to_end:2}:{secs_to_end:02}"
                         # display_str = "End TWM soon"
                         # print(f"{format_secs_long(now)}: {secs_to_next_ON=}")
                     else:
@@ -2515,8 +2528,8 @@ def DisplayData()->None:
 def DisplayGraph(showhist:bool):
     display.fill(0)                 # clear screen
     # display.show()
-    display.hline(0, 0,  127, 1)    # draw top&bottom hlines to fix dodgy display ghosting
-    display.hline(0, HEIGHT-1, 127, 1)
+    # display.hline(0, 0,  127, 1)    # draw top&bottom hlines to fix dodgy display ghosting
+    # display.hline(0, HEIGHT-1, 127, 1)
 
     if graph_mode == GRAPH_BAR:
         scaled_bar   = int(housetank.depth * WIDTH / housetank.height)
@@ -2525,17 +2538,22 @@ def DisplayGraph(showhist:bool):
         display.text(f"Depth {housetank.depth/1000:<.2f}M {percent:>2}%", 0, 0, 1)
         display.fill_rect(0, HEIGHT-BAR_THICKNESS, scaled_bar, BAR_THICKNESS, 1)
 
-    elif graph_mode == GRAPH_DEPTH:
-        display.text(f"{housetank.height}   Depth", 0, 0, 1)
+    elif graph_mode == GRAPH_DEPTH_ROC:
+        display.text(f"Depth ROC +-32", 0, 0, 1)
+        display.hline(0, int(HEIGHT / 2), 127, 1)        # y-axis zero
 
         if showhist:
-            for i in range(len(depthringbuf)):
-                mod_index = (depth_ring.index - 1 - i) % DEPTHGRAPHSIZE
-                d = depthringbuf[mod_index]
-                scaled_dist  = int(d * HEIGHT / housetank.height)
+            for i in range(len(depth_ROC_ring)):
+                mod_index = (depth_ROC_index + i) % DEPTHGRAPHSIZE
+                d = depth_ROC_ring[mod_index]
+                scaled_dist  = int(d + HEIGHT / 2)
+                display.fill(0)
+                display.text(f"Depth ROC +-32", 0, 0, 1)
                 display.updateGraph2D(graphdst, scaled_dist)
-                # display.show()
-        scaled_dist  = int(housetank.depth * HEIGHT / housetank.height)
+                display.show()
+        dr = depth_ROC_ring[(depth_ROC_index - 1) % DEPTHGRAPHSIZE]
+        scaled_dist  = int(dr + HEIGHT / 2)
+        if DEBUGLVL > 1: print(f"{now_time_long()} {dr=} {scaled_dist=}")
         display.updateGraph2D(graphdst, scaled_dist)
     else:
         if zone_maximum > 0:
@@ -2551,12 +2569,15 @@ def DisplayGraph(showhist:bool):
         display.text(f'{zone_min_kpa}', 0, HEIGHT - 8, 1)   # 8-pixel font???
         if showhist:
             for i in range(len(hi_freq_kpa_ring)):
-                mod_index = (hi_freq_kpa_index - 1 - i) % HI_FREQ_RINGSIZE
+                mod_index = (hi_freq_kpa_index + i) % HI_FREQ_RINGSIZE
                 p = max(hi_freq_kpa_ring[mod_index], zone_min_kpa)      # ensure no negatives in scaled_dist
                 scaled_dist  = int(HEIGHT * (p - zone_min_kpa) / (zone_max_kpa - zone_min_kpa))
+                display.fill(0)
+                display.text(f"{zone_max_kpa}  Pressure", 0, 0, 1)
+                display.text(f'{zone_min_kpa}', 0, HEIGHT - 8, 1)   # 8-pixel font???
                 display.updateGraph2D(graphdst, scaled_dist)
-                # display.show()
-        scaled_press = int(average_kpa * HEIGHT / zone_max_kpa)
+                display.show()
+        scaled_press = int(HEIGHT * (average_kpa - zone_min_kpa) / (zone_max_kpa - zone_min_kpa))
         display.updateGraph2D(graphkPa, scaled_press)
 
     display.show()
@@ -2594,7 +2615,7 @@ def calc_pump_runtime(p:Pump) -> str:
         dc_secs += (time.time() - p.last_time_switched)
     days, hours, mins, secs = secs_to_DHMS(dc_secs)
 
-    return f'{days}d {hours:02}:{mins:02}:{secs:02}'
+    return f'{days:2}d{hours:02}:{mins:02}:{secs:02}'
 
 def dump_pump_arg(p:Pump):
     global ev_log
@@ -2646,10 +2667,11 @@ def init_ringbuffers():
     global hi_freq_kpa_ring, hi_freq_kpa_index
     global event_ring, error_ring, switch_ring, kpa_ring, depth_ring
     global depthringbuf, depthringindex     # revert to old style for linreg/residual analysis of SD
+    global depth_ROC_ring, depth_ROC_index
 
     depthringbuf = [0]                # start with a list containing zero...
-    if DEPTHGRAPHSIZE > 1:             # expand it as needed...
-        for _ in range(DEPTHGRAPHSIZE - 1):
+    if DEPTHRINGSIZE > 1:             # expand it as needed...
+        for _ in range(DEPTHRINGSIZE - 1):
             depthringbuf.append(0)
     depthringindex = 0
 
@@ -2693,6 +2715,9 @@ def init_ringbuffers():
     # for now, this one is different...
     hi_freq_kpa_ring = [0 for _ in range(HI_FREQ_RINGSIZE)]
     hi_freq_kpa_index = 0
+
+    depth_ROC_ring = [0 for _ in range(DEPTHGRAPHSIZE)]     # change .. plot depth ROC, not actual depth
+    depth_ROC_index = 0
 
 def change_TB(newTB_ms):
     distSensor.stopRanging()
@@ -2748,10 +2773,12 @@ def init_all():
 
 # On start, valve should now be open... but just to be sure... and to verify during testing...
     if borepump.state:
+        LOGHFDATA = True
         if DEBUGLVL > 0:
             print(str_msg + "ON  ... opening valve")
         solenoid.value(0)           # be very careful... inverse logic!
     else:
+        LOGHFDATA = False
         if DEBUGLVL > 0:
             print(str_msg + "OFF ... closing valve")
         solenoid.value(1)           # be very careful... inverse logic!
@@ -2810,7 +2837,7 @@ def init_all():
     
     stdev_Press         = 0
     stdev_Depth         = 0
-    LOGHFDATA           = kpa_sensor_found
+    # LOGHFDATA           = kpa_sensor_found
 
     if not kpa_sensor_found:
         lcd4x20.move_to(0, 3)
@@ -2821,7 +2848,7 @@ def init_all():
         print(f"Pressure sensor detected - {startup_raw_ADC=} {startup_calibrated_pressure=}")
         ev_log.write(f"{now_time_long()} Pressure sensor detected - logging enabled\n")
         if not borepump.state and startup_calibrated_pressure > zone_list[2][3]:
-            logstr = f'{now_time_long()} WARNING!  kPa sensor looks like it is in CALIBRATE mode!'
+            logstr = f'{now_time_long()} WARNING!  kPa sensor in CALIBRATE mode? {startup_calibrated_pressure=} {zone_list[2][3]=}'
             print(logstr)
             ev_log.write(logstr + '\n')
 
@@ -3010,8 +3037,10 @@ async def read_pressure()->None:
             if read_count_since_ON > STABLE_KPA_COUNT: 
                 stable_pressure = True                  # need to reset in pump_ON
 
-            lcd4x20.move_to(17, 3)
-            lcd4x20.putstr(f"{bpp:>3}")
+            if info_display_mode == INFO_AUTO and ui_mode == UI_MODE_NORM:
+                lcd4x20.move_to(17, 3)
+                lcd4x20.putstr(f"{bpp:>3}")
+
             if LOGHFDATA and read_count_since_ON % hf_log_mod == 0:       # conditionally, write to logfile... but note I ALWAYS add to the ring buffer
                 # This gets switched On/OFF depending on pump state... but NOTE: buffer updates happen ALWAYS!
                 # error_bar = bpp - round(stdev_Press * float(config_dict[KPASTDEVMULT] / 10 ), 2)
