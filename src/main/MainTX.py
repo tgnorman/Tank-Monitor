@@ -41,11 +41,11 @@ from TM_Protocol import *
 from Radio import My_Radio
 from queue import Queue
 # from micropython import const
-#import aioprof
+#import aioprof1
 # endregion
 
 # region INITIALISE
-SW_VERSION          = "5/3/26 14:11"      #  depth_ROC graphing
+SW_VERSION          = "15/3/26 15:12"      #  depth_ROC graphing
 DEBUGLVL            = 0
 
 # micropython.mem_info()
@@ -390,12 +390,13 @@ opmode_dict         = {
 P0 = "00"
 P1 = "Air"
 P2 = "HT"
-P3 = "Z45"
-P4 = "Z3"
-P5 = "Z2"
-P6 = "Z1"
-P7 = "Z4"
-P8 = "XP"
+P3 = "FW"
+P4 = "Z45"
+P5 = "Z3"
+P6 = "Z2"
+P7 = "Z1"
+P8 = "Z4"
+P9 = "XP"
 # this dict needed to store individual zone peak pressure. Can't do it in immutable zone_list tuple...
 zone_pressure_dict = {
     P0: (0, 0, 0, 0),
@@ -407,6 +408,7 @@ zone_pressure_dict = {
     P6: (0, 0, 0, 0),
     P7: (0, 0, 0, 0),
     P8: (0, 0, 0, 0),
+    P9: (0, 0, 0, 0),
     '???': (0, 0, 0, 0)
 }
 zone_runtime_dict = {
@@ -419,6 +421,7 @@ zone_runtime_dict = {
     P6:0,
     P7:0,
     P8:0,
+    P9:0,
     '???':0
 }
 program_list = [
@@ -431,15 +434,16 @@ program_list = [
 # TODO revisit SD multiplier lookups
 
 zone_list:list[tuple[str, int, int, float]] = [
-    (P0, 0,   5,    2.0),    # ZERO 
-    (P1, 6,   20,   2.0),    # AIR
-    (P2, 15,  45,   2.0),    # HT: don't make this min higher... I want to resume from a cancelled cycle, not abort in HT mode
-    (P3, 250, 380,  2.4),    # Z45
-    (P4, 275, 450,  3.2),    # Z3
-    (P5, 335, 535,  3.0),    # Z2
-    (P6, 390, 585,  3.0),    # Z1
-    (P7, 420, 620,  3.0),    # Z4
-    (P8, 600, 800,  3.5)     # XP
+    (P0, 0,   5,    2.0),       # ZERO 
+    (P1, 6,   20,   2.0),       # AIR
+    (P2, 10,  35,   2.1),       # HT: don't make this min higher... I want to resume from a cancelled cycle, not abort in HT mode
+    (P3, 40,  80,   2.1),       # FW ... added 15/3/2026, after xfer H2O to HT to repair ballvalve
+    (P4, 250, 350,  2.5),       # Z45
+    (P5, 300, 440,  2.7),       # Z3
+    (P6, 350, 545,  3.0),       # Z2
+    (P7, 390, 580,  3.0),       # Z1
+    (P8, 420, 600,  3.0),       # Z4
+    (P9, 600, 800,  3.5)        # XP
 ]
 # endregion
 # region TIMED IRRIGATION
@@ -1543,7 +1547,7 @@ def toggle_graph()->None:
     graph_mode = (graph_mode + 1) % GRAPH_COUNT
     display.fill(0)             # clear screen when we change mode
     display.show()
-    DisplayGraph(False)          # display history
+    DisplayGraph(True)          # display history
 
 def btn_OK()->None:
     global pending_delete
@@ -1970,8 +1974,10 @@ def updateData():
 #  OK... try to filter out pressure pump switching noise
     change_since_last = abs(housetank.last_depth - housetank.depth)
     if change_since_last > PP_SWITCH_NOISE and rec_num > 1:     # ignore this reading.  Could smooth it with an average...
-        if DEBUGLVL > 0: print(f"{now_time_long()} fudging housetank depth!")
-        housetank.depth = housetank.last_depth                  # Why ref rec_num?  otherwise we are forever stuck on zero...
+        if DEBUGLVL > 0:
+            lstr = f"{now_time_long()} fudging housetank depth! {change_since_last=}\n"
+            ev_log.write(lstr)
+        housetank.depth = int(housetank.last_depth)                  # Why ref rec_num?  otherwise we are forever stuck on zero...
     depth_ring.add(housetank.depth)
     sma_depth = calc_SMA(depth_ring.buffer)         # this calculates average of non-zero values... regardless of how many entries in the ring
     time_factor = config_dict[DELAY] / 60           # dont move this - DELAY may be changed on the fly
@@ -1979,7 +1985,7 @@ def updateData():
     depth_ROC_ring[depth_ROC_index] = housetank.depth_ROC  # do this right... plot depth_ROC, not depth
     if DEBUGLVL > 1: print(f"{sma_depth=} {housetank.last_depth=} {housetank.depth_ROC=} {depth_ROC_index=} {depth_ROC_ring[depth_ROC_index]=}")
     depth_ROC_index = (depth_ROC_index + 1) % DEPTHGRAPHSIZE
-    housetank.last_depth = sma_depth				# track ROC since last reading using SMA_DEPTH... NOT raw depth
+    housetank.last_depth = int(sma_depth)           # track ROC since last reading using SMA_DEPTH... NOT raw depth
     depth_str = f"{housetank.depth/1000:.2f}m " + tank_is
 
     if kpa_sensor_found and read_count_since_ON >= AVG_KPA_COUNT:
@@ -2539,22 +2545,21 @@ def DisplayGraph(showhist:bool):
         display.fill_rect(0, HEIGHT-BAR_THICKNESS, scaled_bar, BAR_THICKNESS, 1)
 
     elif graph_mode == GRAPH_DEPTH_ROC:
-        display.text(f"Depth ROC +-32", 0, 0, 1)
-        display.hline(0, int(HEIGHT / 2), 127, 1)        # y-axis zero
 
         if showhist:
             for i in range(len(depth_ROC_ring)):
                 mod_index = (depth_ROC_index + i) % DEPTHGRAPHSIZE
                 d = depth_ROC_ring[mod_index]
-                scaled_dist  = int(d + HEIGHT / 2)
+                scaled_dist  = int(2 * d + HEIGHT / 2)
                 display.fill(0)
-                display.text(f"Depth ROC +-32", 0, 0, 1)
                 display.updateGraph2D(graphdst, scaled_dist)
                 display.show()
-        dr = depth_ROC_ring[(depth_ROC_index - 1) % DEPTHGRAPHSIZE]
-        scaled_dist  = int(dr + HEIGHT / 2)
-        if DEBUGLVL > 1: print(f"{now_time_long()} {dr=} {scaled_dist=}")
+        d = depth_ROC_ring[(depth_ROC_index - 1) % DEPTHGRAPHSIZE]
+        scaled_dist  = int(2 * d + HEIGHT / 2)
+        if DEBUGLVL > 1: print(f"{now_time_long()} {d=} {scaled_dist=}")
         display.updateGraph2D(graphdst, scaled_dist)
+        display.text(f"Depth ROCx2 +-32", 0, 0, 1)
+        display.hline(0, int(HEIGHT / 2), 127, 1)        # y-axis zero
     else:
         if zone_maximum > 0:
             zone_max_kpa = zone_maximum
@@ -2565,20 +2570,18 @@ def DisplayGraph(showhist:bool):
 
         # display.fill_rect(0, HEIGHT-1, WIDTH-1, HEIGHT-1, 0)
 
-        display.text(f"{zone_max_kpa}  Pressure", 0, 0, 1)
-        display.text(f'{zone_min_kpa}', 0, HEIGHT - 8, 1)   # 8-pixel font???
         if showhist:
             for i in range(len(hi_freq_kpa_ring)):
                 mod_index = (hi_freq_kpa_index + i) % HI_FREQ_RINGSIZE
                 p = max(hi_freq_kpa_ring[mod_index], zone_min_kpa)      # ensure no negatives in scaled_dist
                 scaled_dist  = int(HEIGHT * (p - zone_min_kpa) / (zone_max_kpa - zone_min_kpa))
                 display.fill(0)
-                display.text(f"{zone_max_kpa}  Pressure", 0, 0, 1)
-                display.text(f'{zone_min_kpa}', 0, HEIGHT - 8, 1)   # 8-pixel font???
                 display.updateGraph2D(graphdst, scaled_dist)
                 display.show()
         scaled_press = int(HEIGHT * (average_kpa - zone_min_kpa) / (zone_max_kpa - zone_min_kpa))
         display.updateGraph2D(graphkPa, scaled_press)
+        display.text(f"{zone_max_kpa}  Pressure", 0, 0, 1)
+        display.text(f'{zone_min_kpa}', 0, HEIGHT - 8, 1)   # 8-pixel font???
 
     display.show()
 
@@ -2847,8 +2850,8 @@ def init_all():
     else:
         print(f"Pressure sensor detected - {startup_raw_ADC=} {startup_calibrated_pressure=}")
         ev_log.write(f"{now_time_long()} Pressure sensor detected - logging enabled\n")
-        if not borepump.state and startup_calibrated_pressure > zone_list[2][3]:
-            logstr = f'{now_time_long()} WARNING!  kPa sensor in CALIBRATE mode? {startup_calibrated_pressure=} {zone_list[2][3]=}'
+        if not borepump.state and startup_calibrated_pressure > zone_list[2][2]:
+            logstr = f'{now_time_long()} WARNING!  kPa sensor in CALIBRATE mode? {startup_calibrated_pressure=} {zone_list[2][2]=}'
             print(logstr)
             ev_log.write(logstr + '\n')
 
