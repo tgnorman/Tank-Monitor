@@ -3,9 +3,7 @@
 # region IMPORTS
 import sys
 import time
-# import sys
 # import micropython
-import random
 import gc
 from secrets import MyWiFi
 from utime import sleep, ticks_us, ticks_diff, ticks_ms
@@ -22,7 +20,7 @@ from PiicoDev_Transceiver import PiicoDev_Transceiver
 from PiicoDev_SSD1306 import *
 from umachine import Timer, Pin, ADC, soft_reset, I2C
 from MenuNavigator import MenuNavigator
-from encoder import Encoder
+# from encoder import Encoder
 from ubinascii import b2a_base64 as b64
 from State_Machine import SimpleDevice
 from i2c_lcd import I2cLcd
@@ -33,19 +31,18 @@ from TimerManager import TimerManager
 from stats import linear_regression
 from ringbuffer import RingBuffer, DuplicateDetectingBuffer
 from utils import now_time_short, now_time_long, format_secs_short, format_secs_long, now_time_tuple
-from Pushbutton import Pushbutton
-
 from TM_Protocol import *
 # from ringbuf_queue import RingbufQueue
 
 from Radio import My_Radio
-from queue import Queue
-# from micropython import const
+
+# using Peter's mip-installed repo...
+from primitives import Pushbutton, Queue, Encoder
 #import aioprof1
 # endregion
 
 # region INITIALISE
-SW_VERSION          = "15/3/26 15:12"      #  depth_ROC graphing
+SW_VERSION          = "25/3/26 16:10"      #  Almost full test on PCB...
 DEBUGLVL            = 0
 
 # micropython.mem_info()
@@ -157,6 +154,7 @@ MAX_CONTIN_RUNMINS  = 40            # max runtime.  More than this looks like tr
 
 SIMULATE_PUMP       = False         # debugging aid...replace pump switches with a PRINT
 SIMULATE_KPA        = False         # debugging aid...replace pressure sensor with a PRINT
+TEMP_CONV_FACTOR 	= 3.3 / 65535   # looks like 3.3V / max res of 16-bit ADC ??
 
 report_max_outage   = True          # do I report next power outage?
 sys_start_time      = 0             # for uptime report
@@ -180,51 +178,122 @@ level_init          = False 		# to get started
 # endregion
 # region PHYSICAL_DEVICES
 # Pins      BREADBOARD Circuit !!
-bp_pressure         = ADC(0)                            # read line pressure
-temp_sensor         = ADC(4)			                # Internal temperature sensor is connected to ADC channel 4
-solenoid            = Pin(2,  Pin.OUT, value=0)         # MUST ensure we don't close solenoid on startup... pump may already be running !!!  Note: Low == Open
-lcdbtn 	            = Pin(5,  Pin.IN, Pin.PULL_UP)		# soon to be replaced with 5X double-click UP
-presspmp            = Pin(15, Pin.IN, Pin.PULL_UP)      # prep for pressure pump monitor.  Needs output from opamp circuit
-screamer 		    = Pin(16, Pin.OUT)                  # emergency situation !! Needs action taken...
-vbus_sense          = Pin('WL_GPIO2', Pin.IN)           # external power monitoring of VBUS
-led                 = Pin('LED', Pin.OUT)
-
-# add buttons for 5-way nav control... reordered pins
-nav_DN 	            = Pin(10, Pin.IN, Pin.PULL_UP)		# DOWN button    Gr
-nav_UP 	            = Pin(11, Pin.IN, Pin.PULL_UP)		# UP button      Or
-nav_RR              = Pin(12, Pin.IN, Pin.PULL_UP)		# LEFT button    Y
-nav_LL              = Pin(13, Pin.IN, Pin.PULL_UP)		# RIGHT button   Wh
-nav_OK              = Pin(14, Pin.IN, Pin.PULL_UP)		# SELECT button  Red
-
-# Create pins for encoder lines and the onboard button
-
-enc_btn             = Pin(18, Pin.IN, Pin.PULL_UP)
-# enc_a               = Pin(19, Pin.IN)
-# enc_b               = Pin(20, Pin.IN)
-px                  = Pin(20, Pin.IN)
-py                  = Pin(19, Pin.IN)
-last_time           = 0
-
-beeper              = Pin(21, Pin.OUT)                  # for audible feedback
-infomode            = Pin(27, Pin.IN, Pin.PULL_UP)      # for changing display mode ... replace with 5X double DOWN
-
-TEMP_CONV_FACTOR 	= 3.3 / 65535   # looks like 3.3V / max res of 16-bit ADC ??
-
-# new 2004 LCD...
 I2C_ADDR            = 0x27
 I2C_NUM_ROWS        = 4
 I2C_NUM_COLS        = 20
-i2c0                = I2C(0, sda=Pin(8), scl=Pin(9), freq=400000)
-i2c1                = I2C(1, sda=Pin(6), scl=Pin(7), freq=100000)
-lcd4x20             = I2cLcd(i2c0, I2C_ADDR, I2C_NUM_ROWS, I2C_NUM_COLS)
-display             = create_PiicoDev_SSD1306()
 
-# Create PiicoDev sensor objects
-distSensor          = TN_PiicoDev_VL53L1X(bus=1, freq=100000, sda=6, scl=7)         # use my custom driver, with extra snibbo's
-lcd 		        = RGB1602.RGB1602(16,2)
-radio_dev           = PiicoDev_Transceiver()
+bp_pressure         = ADC(0)                            # read line pressure
+temp_sensor         = ADC(4)			                # Internal temperature sensor is connected to ADC channel 4
+vbus_sense          = Pin('WL_GPIO2', Pin.IN)           # external power monitoring of VBUS
+led                 = Pin('LED', Pin.OUT)
+
+# PLATFORM            = "PCB"
+PLATFORM            = "PCB"
+
+
+if PLATFORM == "PCB":
+    # Create pins for encoder lines and the onboard button
+    px                  = Pin(1, Pin.IN)
+    py                  = Pin(2, Pin.IN)
+    enc_btn             = Pin(3, Pin.IN, Pin.PULL_UP)
+
+    # add buttons for 5-way nav control... reordered pins
+    nav_DN 	            = Pin(10, Pin.IN, Pin.PULL_UP)		# DOWN button    Gr
+    nav_UP 	            = Pin(11, Pin.IN, Pin.PULL_UP)		# UP button      Or
+    nav_RR              = Pin(12, Pin.IN, Pin.PULL_UP)		# LEFT button    Y
+    nav_LL              = Pin(13, Pin.IN, Pin.PULL_UP)		# RIGHT button   Wh
+    nav_OK              = Pin(14, Pin.IN, Pin.PULL_UP)		# SELECT button  Red
+
+    presspmp            = Pin(15, Pin.IN)      # prep for pressure pump monitor.  Needs output from opamp circuit
+    solenoid            = Pin(16, Pin.OUT, value=0)         # MUST ensure we don't close solenoid on startup... pump may already be running !!!  Note: Low == Open
+    relay_1 		    = Pin(17, Pin.OUT)                  # TBD..
+    screamer 		    = Pin(18, Pin.OUT)                  # emergency situation !! Needs action taken...
+    beeper              = Pin(19, Pin.OUT)                  # for audible feedback
+    infomode            = Pin(20, Pin.IN, Pin.PULL_UP)      # for changing display mode ... replace with 5X double DOWN
+    lcdbtn 	            = Pin(21, Pin.IN, Pin.PULL_UP)		# soon to be replaced with 5X double-click UP
+
+# review/remove
+    # enc_a = ''
+    # enc_b = ''
+
+    # new 2004 LCD...
+    SDA_0 = 4 ;     SCL_0 = 5
+    SDA_1 = 6 ;     SCL_1 = 7
+    i2c1                = I2C(1, sda=Pin(SDA_1), scl=Pin(SCL_1), freq=100000)
+    i2c0                = I2C(0, sda=Pin(SDA_0), scl=Pin(SCL_0), freq=400000)
+
+    # Create PiicoDev sensor objects
+    # distSensor          = TN_PiicoDev_VL53L1X(bus=1, freq=100000, sda=6, scl=7)         # use my custom driver, with extra snibbo's
+    # print('Created distsensor')
+else:
+    solenoid            = Pin(2,  Pin.OUT, value=0)         # MUST ensure we don't close solenoid on startup... pump may already be running !!!  Note: Low == Open
+    lcdbtn 	            = Pin(5,  Pin.IN, Pin.PULL_UP)		# soon to be replaced with 5X double-click UP
+    presspmp            = Pin(15, Pin.IN, Pin.PULL_UP)      # prep for pressure pump monitor.  Needs output from opamp circuit
+    screamer 		    = Pin(16, Pin.OUT)                  # emergency situation !! Needs action taken...
+
+    # add buttons for 5-way nav control... reordered pins
+    nav_DN 	            = Pin(10, Pin.IN, Pin.PULL_UP)		# DOWN button    Gr
+    nav_UP 	            = Pin(11, Pin.IN, Pin.PULL_UP)		# UP button      Or
+    nav_RR              = Pin(12, Pin.IN, Pin.PULL_UP)		# LEFT button    Y
+    nav_LL              = Pin(13, Pin.IN, Pin.PULL_UP)		# RIGHT button   Wh
+    nav_OK              = Pin(14, Pin.IN, Pin.PULL_UP)		# SELECT button  Red
+
+    # Create pins for encoder lines and the onboard button
+
+    enc_btn             = Pin(18, Pin.IN, Pin.PULL_UP)
+    # enc_a               = Pin(19, Pin.IN)
+    # enc_b               = Pin(20, Pin.IN)
+    px                  = Pin(20, Pin.IN)
+    py                  = Pin(19, Pin.IN)
+
+    beeper              = Pin(21, Pin.OUT)                  # for audible feedback
+    infomode            = Pin(27, Pin.IN, Pin.PULL_UP)      # for changing display mode ... replace with 5X double DOWN
+
+    # new 2004 LCD...
+
+    # i2c0                = I2C(0, sda=Pin(8), scl=Pin(9), freq=400000)
+    # i2c1                = I2C(1, sda=Pin(6), scl=Pin(7), freq=100000)
+
+    SDA_0 = 8 ;     SCL_0 = 9
+    SDA_1 = 6 ;     SCL_1 = 7
+    i2c1                = I2C(1, sda=Pin(SDA_1), scl=Pin(SCL_1), freq=100000)
+    i2c0                = I2C(0, sda=Pin(SDA_0), scl=Pin(SCL_0), freq=400000)
+    # Create PiicoDev sensor objects
+    # distSensor          = TN_PiicoDev_VL53L1X(bus=1, freq=100000, sda=6, scl=7)         # use my custom driver, with extra snibbo's
+
+sleep_ms(2000)
+
+lcd 		        = RGB1602.RGB1602(16,2, 400000)
+sleep_ms(500)
+lcd.clear()
+lcd.setCursor(0,0)
+lcd.printout("lcd lives...")
+print('Created lcd')
+
+lcd4x20             = I2cLcd(i2c0, I2C_ADDR, I2C_NUM_ROWS, I2C_NUM_COLS)
+sleep_ms(500)
+lcd4x20.clear()
+lcd4x20.move_to(0, 0)
+lcd4x20.putstr("4x20 lives...")
+print('Created lcd4x20')
+
+display             = create_PiicoDev_SSD1306(freq=400000, bus=0, sda=Pin(SDA_0), scl=Pin(SCL_0))
+sleep_ms(500)
+display.fill(0)
+display.text("OLED lives...", 0, 0, 1)
+display.show()
+print('Created OLED')
+
+distSensor          = TN_PiicoDev_VL53L1X(bus=1, freq=100000, sda=SDA_1, scl=SCL_1)         # use my custom driver, with extra snibbo's
+_ = distSensor.read()
+sleep_ms(500)
+print('Created distsensor')
+
+radio_dev           = PiicoDev_Transceiver(bus=0, freq=400000, sda=SDA_0, scl=SCL_0)
+sleep_ms(500)
+print('Created radio_dev')
 radio               = My_Radio(radio_dev)
-#rtc 		        = PiicoDev_RV3028()                 # Initialise the RTC module, enable charging
+
 housetank           = Tank("Empty")                     # make my tank object
 
 # endregion
@@ -233,6 +302,10 @@ errors              = TankError()
 timer_mgr           = TimerManager()
 
 wf                  = MyWiFi()
+
+#rtc 		        = PiicoDev_RV3028()                 # Initialise the RTC module, enable charging
+# enc_a               = Pin(19, Pin.IN)
+# enc_b               = Pin(20, Pin.IN)
 
 # Configure WiFi SSID and password
 SSID                = wf.ssid
@@ -1256,7 +1329,10 @@ def dump_context():
         else:
             tmp=int(tmp)
         e_code = errors.get_code(tmp)
-    logstr = f'{now_time_long()} Context Dump\n{op_mode=}\n{borepump.num_switch_events=}\nlast_switch: {format_secs_short(borepump.last_time_switched)}\nLast Err:{e_code}'
+
+    logstr = f"{now_time_long()} Context Dump\n{op_mode=}\n{borepump.num_switch_events=}\n" \
+        f"last_switch: {format_secs_short(borepump.last_time_switched)}\nLast Err:{e_code}\n" \
+        f"{stable_pressure=} RCSO:{read_count_since_ON}"
     ev_log.write(logstr + '\n')
     print(logstr)
 
@@ -1283,9 +1359,11 @@ def enter_maint_mode()->None:
     enter_maint_mode_reason("(via menu)")
 
 def exit_maint_mode()->None:
-    global op_mode, info_display_mode, BlinkDelay
+    global op_mode, info_display_mode, BlinkDelay, stable_pressure, tank_is
 
     event_ring.add("Exit from MAINT mode")
+    stable_pressure = False
+    tank_is = ""
     op_mode = OP_MODE_AUTO
     info_display_mode = INFO_AUTO
     BlinkDelay = SLOW_BLINK
@@ -2224,7 +2302,7 @@ def checkForAnomalies()->None:
 
             if not CALIBRATE_MODE:                              # easy way to prevent pesky alarms while testing
                 if tank_is == "Overflow":                       # ideally, refer to a Tank object... but this will work for now
-                    raiseAlarm("OVERFLOW - ON", 999)
+                    raiseAlarm("OVERFLOW - ON", 999)        # TODO reset tank_is on EXIT_MAINT_MODE
                     error_ring.add(TankError.OVERFLOW_ON)
                     abort_pumping("OVERFLOW!")                  # requires manual intervention!
                 
@@ -2265,7 +2343,7 @@ def checkForAnomalies()->None:
                 ev_log.write(str(i) + '\n')
 
 def abort_pumping(reason:str)-> None:
-    global op_mode, BlinkDelay, info_display_mode, maint_mode_time
+    global op_mode, BlinkDelay, info_display_mode
 # if bad stuff happens, kill off any active timers, switch off, send notification, and enter maintenance state
     if timer_mgr.is_pending(TWM_TIMER_NAME):
         timer_mgr.cancel_timer(TWM_TIMER_NAME)
@@ -2444,7 +2522,7 @@ def DisplayInfo()->None:
             lcd4x20.putstr(f'R#:{rec_num:>6} C#:{read_count_since_ON:>6}')
 
             lcd4x20.move_to(0, 3)
-            lcd4x20.putstr(f'Zone:{zone:>3} HI:{kpa_peak:3} LO:{kpa_low:3}')       
+            lcd4x20.putstr(f'Z:{zone:>3} HI:{kpa_peak:3} LO:{kpa_low:3}')       
 
         elif info_display_mode == INFO_MAINT:       # MAINTENANCE mode
             lcd4x20.move_to(0, 0)
@@ -2954,7 +3032,7 @@ class AppContext:
     def __init__(self):
         self.wlan = None
         self.my_IP = None
-        self.lcd = RGB1602.RGB1602(16,2)        # type ignore
+        self.lcd = RGB1602.RGB1602(16, 2, 400000)        # type ignore
         self.ini_pump_state:bool = False        # assume pump is OFF to start... will update as required in init_all
         # Add references to functions if needed
         # self.log_event = log_event
@@ -3272,7 +3350,7 @@ async def pump_action_processor():
             if success and bool(response):
                 # Handle successful ON request
                 borepump.switch_pump(True)              # this will set state to ON
-                LOGHFDATA = True
+                LOGHFDATA = True            # TODO change toggle_HF so this stays static UNTIL say end of TWM program... or other state change
                 TANK_LOG_FREQ = 1                       # log every depth reading
                 hf_log_mod = KPA_LOG_FREQ               # and every kpa reading
                 switch_ring.add("PUMP ON")
@@ -3600,7 +3678,7 @@ async def main_control_task():
             DisplayInfo()		                    # info display... one of several views
             DisplayGraph(False)
 
-            if stable_pressure:
+            if stable_pressure:         # TODO reset stable_pressure on EXIT_MAINTENANCE
                 checkForAnomalies()	                # test for weirdness
             if rec_num % TANK_LOG_FREQ == 0:           
                 LogTankData()			                # record it
