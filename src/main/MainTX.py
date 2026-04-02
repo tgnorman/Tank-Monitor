@@ -38,11 +38,14 @@ from Radio import My_Radio
 
 # using Peter's mip-installed repo...
 from primitives import Pushbutton, Queue, Encoder
+
+# from PP_cycle_detect import detect_pump_cycling
+
 #import aioprof1
 # endregion
 
 # region INITIALISE
-SW_VERSION          = "25/3/26 16:10"      #  Almost full test on PCB...
+SW_VERSION          = "2/4/26 21:17"       # Now with PP smarts...
 DEBUGLVL            = 0
 
 # micropython.mem_info()
@@ -108,6 +111,7 @@ ERRORRINGSIZE       = 20            # max error log ringbuffer length
 HI_FREQ_RINGSIZE    = 128           # for high frequency pressure logging.  At 1 Hz that's 2 minutes of data... increase for graphing
 DEPTHRINGSIZE       = 12            # since adding fast_average in critical_states, this no longer is a concern, but is used for ROC SMA calc
 DEPTHGRAPHSIZE      = 128           # for plotting depth
+PPRINGSIZE          = 30            # this will store 30 status changes...
 
 # endregion
 # region COUNTERS
@@ -148,6 +152,9 @@ dr_xvalues          = [i for i in range(DEPTHRINGSIZE)]
 dr_yvalues          = [0 for i in range(DEPTHRINGSIZE)]
 # endregion
 # region SYSTEM
+I2C0_FREQ           = 400000
+I2C1_FREQ           = 100000
+
 FREE_SPACE_LOWATER  = 300           # in KB...
 FREE_SPACE_HIWATER  = 800
 MAX_CONTIN_RUNMINS  = 40            # max runtime.  More than this looks like trouble
@@ -163,9 +170,13 @@ my_IP               = None
 pump_action_queue   = Queue()       # Queue to hold async on/off requests, processed asynchronously
 
 # endregion
+# region PRESSURE_PUMP
+MAX_NIGHTWATCH_ON   = 5 * 60
+# endregion
 # region LOGGING
 # logging stuff...
 LOGHFDATA           = False         # this is reset in init_all
+LOGPPDATA           = True
 TANK_LOG_FREQ       = 1
 KPA_LOG_FREQ        = 2             # apply mod this for HF logging
 last_logged_depth   = 0
@@ -175,6 +186,9 @@ LOG_MIN_KPA_CHANGE  = 10            # update after pressure sensor active
 PP_SWITCH_NOISE     = 6             # ignore depth reading if instant change is more than this...
 
 level_init          = False 		# to get started
+
+PP_CHECK_PERIOD     = 1000          # ms... is 1 second checking.
+PP_ANOMALY_PERIOD   = 30*60         # seconds... not ms
 # endregion
 # region PHYSICAL_DEVICES
 # Pins      BREADBOARD Circuit !!
@@ -190,7 +204,6 @@ led                 = Pin('LED', Pin.OUT)
 # PLATFORM            = "PCB"
 PLATFORM            = "PCB"
 
-
 if PLATFORM == "PCB":
     # Create pins for encoder lines and the onboard button
     px                  = Pin(1, Pin.IN)
@@ -204,7 +217,7 @@ if PLATFORM == "PCB":
     nav_LL              = Pin(13, Pin.IN, Pin.PULL_UP)		# RIGHT button   Wh
     nav_OK              = Pin(14, Pin.IN, Pin.PULL_UP)		# SELECT button  Red
 
-    presspmp            = Pin(15, Pin.IN)      # prep for pressure pump monitor.  Needs output from opamp circuit
+    presspmp_detect     = Pin(15, Pin.IN)                   # DO NOT USE PULL_UP/DOWN on Pico 2 !@#$
     solenoid            = Pin(16, Pin.OUT, value=0)         # MUST ensure we don't close solenoid on startup... pump may already be running !!!  Note: Low == Open
     relay_1 		    = Pin(17, Pin.OUT)                  # TBD..
     screamer 		    = Pin(18, Pin.OUT)                  # emergency situation !! Needs action taken...
@@ -212,23 +225,15 @@ if PLATFORM == "PCB":
     infomode            = Pin(20, Pin.IN, Pin.PULL_UP)      # for changing display mode ... replace with 5X double DOWN
     lcdbtn 	            = Pin(21, Pin.IN, Pin.PULL_UP)		# soon to be replaced with 5X double-click UP
 
-# review/remove
-    # enc_a = ''
-    # enc_b = ''
-
     # new 2004 LCD...
     SDA_0 = 4 ;     SCL_0 = 5
     SDA_1 = 6 ;     SCL_1 = 7
-    i2c1                = I2C(1, sda=Pin(SDA_1), scl=Pin(SCL_1), freq=100000)
-    i2c0                = I2C(0, sda=Pin(SDA_0), scl=Pin(SCL_0), freq=400000)
-
-    # Create PiicoDev sensor objects
-    # distSensor          = TN_PiicoDev_VL53L1X(bus=1, freq=100000, sda=6, scl=7)         # use my custom driver, with extra snibbo's
-    # print('Created distsensor')
+    i2c1                = I2C(1, sda=Pin(SDA_1), scl=Pin(SCL_1), freq=I2C1_FREQ)
+    i2c0                = I2C(0, sda=Pin(SDA_0), scl=Pin(SCL_0), freq=I2C0_FREQ)
 else:
     solenoid            = Pin(2,  Pin.OUT, value=0)         # MUST ensure we don't close solenoid on startup... pump may already be running !!!  Note: Low == Open
     lcdbtn 	            = Pin(5,  Pin.IN, Pin.PULL_UP)		# soon to be replaced with 5X double-click UP
-    presspmp            = Pin(15, Pin.IN, Pin.PULL_UP)      # prep for pressure pump monitor.  Needs output from opamp circuit
+    presspmp_detect            = Pin(15, Pin.IN)                   # DO NOT USE PULL_UP/DOWN on Pico 2 !@#$
     screamer 		    = Pin(16, Pin.OUT)                  # emergency situation !! Needs action taken...
 
     # add buttons for 5-way nav control... reordered pins
@@ -241,56 +246,47 @@ else:
     # Create pins for encoder lines and the onboard button
 
     enc_btn             = Pin(18, Pin.IN, Pin.PULL_UP)
-    # enc_a               = Pin(19, Pin.IN)
-    # enc_b               = Pin(20, Pin.IN)
     px                  = Pin(20, Pin.IN)
     py                  = Pin(19, Pin.IN)
 
     beeper              = Pin(21, Pin.OUT)                  # for audible feedback
     infomode            = Pin(27, Pin.IN, Pin.PULL_UP)      # for changing display mode ... replace with 5X double DOWN
 
-    # new 2004 LCD...
-
-    # i2c0                = I2C(0, sda=Pin(8), scl=Pin(9), freq=400000)
-    # i2c1                = I2C(1, sda=Pin(6), scl=Pin(7), freq=100000)
-
     SDA_0 = 8 ;     SCL_0 = 9
     SDA_1 = 6 ;     SCL_1 = 7
-    i2c1                = I2C(1, sda=Pin(SDA_1), scl=Pin(SCL_1), freq=100000)
-    i2c0                = I2C(0, sda=Pin(SDA_0), scl=Pin(SCL_0), freq=400000)
-    # Create PiicoDev sensor objects
-    # distSensor          = TN_PiicoDev_VL53L1X(bus=1, freq=100000, sda=6, scl=7)         # use my custom driver, with extra snibbo's
+    i2c1                = I2C(1, sda=Pin(SDA_1), scl=Pin(SCL_1), freq=I2C1_FREQ)
+    i2c0                = I2C(0, sda=Pin(SDA_0), scl=Pin(SCL_0), freq=I2C0_FREQ)
 
-sleep_ms(2000)
+# sleep_ms(2000)
 
-lcd 		        = RGB1602.RGB1602(16,2, 400000)
-sleep_ms(500)
+lcd 		        = RGB1602.RGB1602(16,2, I2C0_FREQ)
+sleep_ms(100)
 lcd.clear()
 lcd.setCursor(0,0)
 lcd.printout("lcd lives...")
 print('Created lcd')
 
 lcd4x20             = I2cLcd(i2c0, I2C_ADDR, I2C_NUM_ROWS, I2C_NUM_COLS)
-sleep_ms(500)
+sleep_ms(100)
 lcd4x20.clear()
 lcd4x20.move_to(0, 0)
 lcd4x20.putstr("4x20 lives...")
 print('Created lcd4x20')
 
-display             = create_PiicoDev_SSD1306(freq=400000, bus=0, sda=Pin(SDA_0), scl=Pin(SCL_0))
-sleep_ms(500)
+display             = create_PiicoDev_SSD1306(freq=I2C0_FREQ, bus=0, sda=Pin(SDA_0), scl=Pin(SCL_0))
+sleep_ms(100)
 display.fill(0)
 display.text("OLED lives...", 0, 0, 1)
 display.show()
 print('Created OLED')
 
-distSensor          = TN_PiicoDev_VL53L1X(bus=1, freq=100000, sda=SDA_1, scl=SCL_1)         # use my custom driver, with extra snibbo's
+distSensor          = TN_PiicoDev_VL53L1X(bus=1, freq=I2C1_FREQ, sda=SDA_1, scl=SCL_1)         # use my custom driver, with extra snibbo's
 _ = distSensor.read()
-sleep_ms(500)
+sleep_ms(100)
 print('Created distsensor')
 
-radio_dev           = PiicoDev_Transceiver(bus=0, freq=400000, sda=SDA_0, scl=SCL_0)
-sleep_ms(500)
+radio_dev           = PiicoDev_Transceiver(bus=0, freq=I2C0_FREQ, sda=SDA_0, scl=SCL_0)
+sleep_ms(100)
 print('Created radio_dev')
 radio               = My_Radio(radio_dev)
 
@@ -304,8 +300,6 @@ timer_mgr           = TimerManager()
 wf                  = MyWiFi()
 
 #rtc 		        = PiicoDev_RV3028()                 # Initialise the RTC module, enable charging
-# enc_a               = Pin(19, Pin.IN)
-# enc_b               = Pin(20, Pin.IN)
 
 # Configure WiFi SSID and password
 SSID                = wf.ssid
@@ -353,6 +347,247 @@ pending_request     = {}            # to track what we are waiting for
 depthringindex      = 0             # testing linreg residual SD stuff...
 
 # endregion
+# region PP_Cycles
+"""
+pump_cycle_detect.py
+--------------------
+Detects suspicious repetitive pump cycling from a ring buffer of switch events.
+
+Ring buffer entry format:  (timestamp, state)
+    timestamp : int  - Unix epoch seconds (from time.time())
+    state     : str  - "ON" or "OFF"
+
+Typical problem signature
+    Pump ON  ~10 s  → pressurises line
+    Pump OFF ~5 min → line slowly bleeds down
+    … repeats
+
+Usage
+-----
+    from pump_cycle_detect import detect_pump_cycling
+
+    # head is the index where the NEXT write will go (i.e. oldest data is there)
+    result = detect_pump_cycling(ring_buffer, head, len(ring_buffer))
+    if result["alert"]:
+        print("Suspicious cycling detected:", result)
+"""
+
+# ---------------------------------------------------------------------------
+# Tuneable defaults  (pass overrides as keyword args to detect_pump_cycling)
+# ---------------------------------------------------------------------------
+_DEF_MIN_CYCLES     = 3      # need at least this many complete cycles
+_DEF_MAX_ON_S       = 15     # ON durations above this are NOT suspicious (s)
+_DEF_MIN_OFF_S      = 120     # OFF gap must be at least this long (s)
+_DEF_MAX_CV_PERCENT = 40     # coefficient-of-variation ceiling for "regular"
+                             # (integer %, avoids floats)
+_DEF_LOOKBACK_S     = 3_600  # only inspect events in the last hour
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _int_sqrt(n):
+    """Integer square-root (Newton's method). Returns floor(sqrt(n))."""
+    if n <= 0:
+        return 0
+    x = n
+    y = (x + 1) >> 1
+    while y < x:
+        x = y
+        y = (x + n // x) >> 1
+    return x
+
+
+def _extract_cycles(buf, head, buf_len, now, lookback, max_on, min_off):
+    """
+    Walk the ring buffer in chronological order (oldest → newest) and return
+    a list of complete ON/OFF cycles that fall within the lookback window AND
+    match the suspicious short-ON / long-OFF shape.
+
+    head    : index where the NEXT write will go; oldest data lives here.
+    buf_len : total capacity of the ring buffer.
+
+    Iteration uses (head + k) % buf_len so timestamps always increase,
+    avoiding spurious negative diffs at the wrap-around point.
+
+    Each returned cycle is a dict:
+        on_s       - how long the pump ran (seconds)
+        off_s      - how long it was off afterwards (seconds)
+        period_s   - on_s + off_s  (used for regularity check)
+        ts_start   - timestamp of the ON event
+    """
+    cutoff = now - lookback
+    cycles = []
+
+    # Build a flat chronological index list for clean look-ahead.
+    # We only need indices, not a copy of the data.
+    def entry(n):
+        return buf[(head + n) % buf_len]
+
+    k = 0
+    while k < buf_len - 2:
+        ts_on, state_on = entry(k)
+
+        # Skip until we find an ON event inside the lookback window
+        if state_on != "ON" or ts_on < cutoff:
+            k += 1
+            continue
+
+        ts_off, state_off = entry(k + 1)
+        if state_off != "OFF":      # two ONs in a row  - data gap, skip
+            k += 1
+            continue
+
+        on_s = ts_off - ts_on
+        if on_s < 0:                # shouldn't happen with correct head, but guard anyway
+            k += 1
+            continue
+
+        ts_next_on, state_next_on = entry(k + 2)
+        if state_next_on != "ON":   # still off  - skip
+            k += 1
+            continue
+
+        off_s = ts_next_on - ts_off
+        if off_s < 0:
+            k += 1
+            continue
+
+        if on_s <= max_on and off_s >= min_off:
+            cycles.append({
+                "on_s":     on_s,
+                "off_s":    off_s,
+                "period_s": on_s + off_s,
+                "ts_start": ts_on,
+            })
+
+        k += 2   # advance past the ON+OFF pair we just consumed
+
+    return cycles
+
+
+def _coefficient_of_variation_pct(values):
+    """
+    Return CV as an integer percentage:  100 * std_dev / mean
+    Uses only integer arithmetic.  Returns 0 for single-element lists.
+    """
+    n = len(values)
+    if n <= 1:
+        return 0
+    mean = sum(values) // n
+    if mean == 0:
+        return 0
+    variance = sum((v - mean) ** 2 for v in values) // n
+    return (_int_sqrt(variance) * 100) // mean
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+def detect_pump_cycling(
+    buf,
+    head,
+    buf_len,
+    now=None,
+    min_cycles=_DEF_MIN_CYCLES,
+    max_on_s=_DEF_MAX_ON_S,
+    min_off_s=_DEF_MIN_OFF_S,
+    max_cv_percent=_DEF_MAX_CV_PERCENT,
+    lookback_s=_DEF_LOOKBACK_S,
+):
+    """
+    Analyse a ring buffer for suspicious repetitive pump cycling.
+
+    Parameters
+    ----------
+    buf           : list/array of (timestamp: int, state: str)
+                    Raw ring buffer — may be partially filled or wrapped.
+    head          : int
+                    Index where the NEXT write will go.  The oldest valid
+                    entry is at this index (it was the last one overwritten).
+    buf_len       : int
+                    Total allocated capacity of the ring buffer.
+    now           : int | None
+                    Current time in seconds (time.time()).  Defaults to the
+                    timestamp of the most-recently written entry.
+    min_cycles    : int   - minimum consecutive matching cycles to raise alert
+    max_on_s      : int   - ON duration ceiling for a "suspicious" cycle (s)
+    min_off_s     : int   - OFF duration floor for a "suspicious" cycle (s)
+    max_cv_percent: int   - regularity threshold; lower = stricter (integer %)
+    lookback_s    : int   - how far back to inspect (s)
+
+    Returns
+    -------
+    dict with keys:
+        alert       : bool   - True if suspicious cycling detected
+        cycle_count : int    - number of matching cycles found
+        avg_on_s    : int    - average ON duration (s)
+        avg_off_s   : int    - average OFF duration (s)
+        avg_period_s: int    - average total cycle period (s)
+        cv_percent  : int    - coefficient of variation of cycle periods (%)
+        cycles      : list   - raw cycle dicts (on_s, off_s, period_s, ts_start)
+        reason      : str    - human-readable explanation
+    """
+    if buf_len < 2:
+        return _no_alert("Buffer too small", [])
+
+    if now is None:
+        # Most-recently written entry is one step behind head
+        now = buf[(head - 1) % buf_len][0]
+
+    cycles = _extract_cycles(buf, head, buf_len, now, lookback_s, max_on_s, min_off_s)
+
+    lcd.setCursor(0, 1)
+    lcd.printout(f'DPC: {len(cycles)} cs')
+    if len(cycles) < min_cycles:
+        return _no_alert(
+            "Only {} suspicious cycle(s) found (need {})".format(len(cycles), min_cycles),
+            cycles,
+        )
+
+    periods    = [c["period_s"] for c in cycles]
+    cv         = _coefficient_of_variation_pct(periods)
+    avg_on     = sum(c["on_s"]  for c in cycles) // len(cycles)
+    avg_off    = sum(c["off_s"] for c in cycles) // len(cycles)
+    avg_period = sum(periods)                     // len(cycles)
+
+    if cv > max_cv_percent:
+        return _no_alert(
+            "Cycles found but irregular (CV {}% > {}%)".format(cv, max_cv_percent),
+            cycles,
+            cv=cv, avg_on=avg_on, avg_off=avg_off, avg_period=avg_period,
+        )
+
+    reason = "{} regular cycles: avg ON {}s, avg OFF {}s, CV {}%".format(
+        len(cycles), avg_on, avg_off, cv,
+    )
+    return {
+        "alert":        True,
+        "cycle_count":  len(cycles),
+        "avg_on_s":     avg_on,
+        "avg_off_s":    avg_off,
+        "avg_period_s": avg_period,
+        "cv_percent":   cv,
+        "cycles":       cycles,
+        "reason":       reason,
+    }
+
+def _no_alert(reason, cycles, cv=None, avg_on=0, avg_off=0, avg_period=0):
+    return {
+        "alert":        False,
+        "cycle_count":  len(cycles),
+        "avg_on_s":     avg_on,
+        "avg_off_s":    avg_off,
+        "avg_period_s": avg_period,
+        "cv_percent":   cv,
+        "cycles":       cycles,
+        "reason":       reason,
+    }
+
+# endregion
+
 # region EMAIL
 SMTP_SERVER         = "smtp.gmail.com"
 SMTP_PORT           = 465
@@ -935,9 +1170,20 @@ def show_depth():
         lcd.setCursor(0,1)
         lcd.printout("No depth vals")
 
+def show_house():
+    if pp_ring.index > -1:
+        navigator.set_display_list(MenuNavigator.PPRING)
+        navigator.mode           = MenuNavigator.VIEWRING
+        navigator.goto_first()
+    else:
+        lcd.setCursor(0,1)
+        lcd.printout("No PP switches")
+
 def show_space():
+    free = free_space()
     lcd.setCursor(0,1)
-    lcd.printout(f'Free KB: {free_space():<6}')
+    lcd.printout(f'Free KB: {free:<6}')
+    if free < FREE_SPACE_LOWATER: beepx3()
 
 def my_reset():
     ev_log.write(f"{now_time_long()} SOFT RESET\n")
@@ -1050,7 +1296,7 @@ def shutdown()->None:
     hf_log.flush()
     hf_log.close()
 
-def send_last_HF_data():
+def send_last_HF_data():        # TODO change this to send_ALL...   for send_last, just copy send_log... simple!
     filenames = [x for x in uos.listdir() if x.startswith("HF ") and x.endswith(".txt") ]
     if len(filenames) > 0:
         sorted_filenames = sorted(filenames, key=lambda x: uos.stat(x)[7], reverse=True)  # Sort by date (newest first)
@@ -1411,6 +1657,14 @@ def send_log()->None:
     lcd.printout(f'{"Log queued":<16}')
     # print(f"Log added to email queue")
 
+def send_PP_log()->None:
+
+    add_to_email_queue(pplogname) # type: ignore
+    # add_to_email_queue("borepump_events.txt")
+    lcd.setCursor(0, 1)
+    lcd.printout(f'{"Log queued":<16}')
+    # print(f"Log added to email queue")
+
 def toggle_prod_mode():
     global PRODUCTION_MODE
     PRODUCTION_MODE = not PRODUCTION_MODE
@@ -1428,6 +1682,12 @@ def toggle_HFLOGGING():
     LOGHFDATA = not LOGHFDATA
     lcd.setCursor(0, 1)
     lcd.printout(f'LOGHFDATA {' ON' if LOGHFDATA else 'OFF'}')
+
+def toggle_PPLOGGING():
+    global LOGPPDATA
+    LOGPPDATA = not LOGPPDATA
+    lcd.setCursor(0, 1)
+    lcd.printout(f'LOGPPDATA {' ON' if LOGPPDATA else 'OFF'}')
 
 def toggle_click()->None:
     global btn_click
@@ -1472,6 +1732,7 @@ new_menu = {
           { Title_Str: "Switch",        Action_Str: show_switch},
           { Title_Str: "Pressure",      Action_Str: show_pressure},
           { Title_Str: "Depth",         Action_Str: show_depth},
+          { Title_Str: "House",         Action_Str: show_house},
           { Title_Str: "Errors",        Action_Str: show_errors},
           { Title_Str: "Stats",         Action_Str: show_duty_cycle},
           { Title_Str: "Go Back",       Action_Str: my_go_back}
@@ -1486,6 +1747,7 @@ new_menu = {
           { Title_Str: "STOP PUMP",     Action_Str: manual_stop},
           { Title_Str: "Email evlog",   Action_Str: send_log},
           { Title_Str: "Email tank",    Action_Str: send_last_tank},
+          { Title_Str: "Email PPlog",   Action_Str: send_PP_log},
           { Title_Str: "Email HFlog",   Action_Str: send_last_HF_data},
           { Title_Str: "CANCEL ALARM",  Action_Str: cancel_alarm},
           { Title_Str: "Go Back",       Action_Str: my_go_back}
@@ -1536,6 +1798,7 @@ new_menu = {
           { Title_Str: "Test Beep",         Action_Str: beepx3},
           { Title_Str: "Toggle Click",      Action_Str: toggle_click},
           { Title_Str: "Toggle HFLOG",      Action_Str: toggle_HFLOGGING},
+          { Title_Str: "Toggle PPLOG",      Action_Str: toggle_PPLOGGING},
           { Title_Str: "Toggle PROD",       Action_Str: toggle_prod_mode},
           { Title_Str: "Toggle CALIB",      Action_Str: toggle_calibration_mode},
           { Title_Str: "Enter MAINT",       Action_Str: enter_maint_mode},
@@ -1596,12 +1859,12 @@ def delete_file(filename)->bool:
         return False
 
 def pp_callback(pin):
-    presspmp.irq(handler=None)
+    presspmp_detect.irq(handler=None)
     v = pin.value()
     presspump.switch_pump(v)
     # print("Pressure Pump Pin triggered:", v)
     sleep_ms(100)
-    presspmp.irq(trigger=Pin.IRQ_RISING|Pin.IRQ_FALLING, handler=pp_callback)
+    presspmp_detect.irq(trigger=Pin.IRQ_RISING|Pin.IRQ_FALLING, handler=pp_callback)
 
 def enc_cb(pos, delta):
     global encoder_count
@@ -1815,7 +2078,7 @@ def enable_controls():
     global enc, pb_OK, pb_UP, pb_DN, pb_LL, pb_RR           # added 18/5/25... encoder stopped working after DROP invoked timer.mgr
 #                                                           21/8/25 added pb objects... Peter Hinch stuff
    # Enable the interupt handlers
-    presspmp.irq(trigger=Pin.IRQ_RISING|Pin.IRQ_FALLING, handler=pp_callback)
+    presspmp_detect.irq(trigger=Pin.IRQ_RISING|Pin.IRQ_FALLING, handler=pp_callback)
     enc = Encoder(px, py, v=0, div=4, vmin=None, vmax=None, callback=enc_cb)
     # enc_a.irq(trigger=Pin.IRQ_RISING, handler=encoder_a_IRQ)
 
@@ -1918,7 +2181,7 @@ def get_zone_from_list(pressure: int):
 
 def init_logging():
     # global year, month, day, shortyear
-    global tank_log, ev_log, pp_log, eventlogname, hf_log
+    global tank_log, ev_log, pp_log, eventlogname, hf_log, pplogname
 
     now             = now_time_tuple()      # getcurrent time, convert to local SA time
     year            = now[0]
@@ -2746,7 +3009,7 @@ def init_clock()->bool:
 
 def init_ringbuffers():
     global hi_freq_kpa_ring, hi_freq_kpa_index
-    global event_ring, error_ring, switch_ring, kpa_ring, depth_ring
+    global event_ring, error_ring, switch_ring, kpa_ring, depth_ring, pp_ring
     global depthringbuf, depthringindex     # revert to old style for linreg/residual analysis of SD
     global depth_ROC_ring, depth_ROC_index
 
@@ -2771,6 +3034,12 @@ def init_ringbuffers():
 
     depth_ring = RingBuffer(
         size=DEPTHRINGSIZE, 
+        time_formatter=lambda t: format_secs_long(t),
+        short_time_formatter=lambda t: format_secs_short(t)
+    )
+
+    pp_ring = RingBuffer(
+        size=PPRINGSIZE, 
         time_formatter=lambda t: format_secs_long(t),
         short_time_formatter=lambda t: format_secs_short(t)
     )
@@ -2819,6 +3088,7 @@ def init_all():
     global btn_click
     global last_activity_time
     global graphkPa, graphdst
+    global last_pp_status
 
     PS_ND               = "Pressure sensor not detected"
     str_msg             = "At startup, BorePump is "
@@ -2831,6 +3101,7 @@ def init_all():
     rotary_btn_pressed  = False
     nav_btn_last_time   = 0
     nav_btn_state       = False
+    last_pp_status      = presspmp_detect.value() == 0
 
     ev_log.write(f"\n\n{now_time_long()} Pump Monitor starting - SW ver:{SW_VERSION}  ")      # no \n...
     ev_log.write(f'params ({config_dict[DELAY]}s, {int(PRESSURE_PERIOD_MS/1000)}s, {DEPTHRINGSIZE=})\n')
@@ -2873,6 +3144,7 @@ def init_all():
     navigator.set_buffer(MenuNavigator.KPARING,    kpa_ring.buffer)
     navigator.set_buffer(MenuNavigator.ERRORRING,  error_ring.buffer)
     navigator.set_buffer(MenuNavigator.DEPTHRING,  depth_ring.buffer)
+    navigator.set_buffer(MenuNavigator.PPRING,     pp_ring.buffer)
 
     navigator.set_program_list(program_list)
     #  Note: filelist is set in show_dir... DO NOT set here !!
@@ -3032,7 +3304,7 @@ class AppContext:
     def __init__(self):
         self.wlan = None
         self.my_IP = None
-        self.lcd = RGB1602.RGB1602(16, 2, 400000)        # type ignore
+        self.lcd = RGB1602.RGB1602(16, 2, I2C0_FREQ)        # type ignore
         self.ini_pump_state:bool = False        # assume pump is OFF to start... will update as required in init_all
         # Add references to functions if needed
         # self.log_event = log_event
@@ -3291,6 +3563,20 @@ async def processemail_queue():
                 
         await asyncio.sleep_ms(1000)
 
+async def monitor_pressure_pump(sleep_ms:int)->None:
+    global last_pp_status
+
+    while True:
+        pp_status = presspmp_detect.value() == 0            # using inverse logic with dual op-amps
+        if pp_status != last_pp_status:
+            presspump.switch_pump(pp_status)
+            pp_str = 'ON' if pp_status else 'OFF'
+            pp_ring.add(pp_str)
+            if LOGPPDATA: pp_log.write(f'{now_time_long()} {pp_str}\n')
+
+            last_pp_status = pp_status
+        await asyncio.sleep_ms(sleep_ms)
+
 async def check_rotary_state(menu_sleep:int)->None:
     global ui_mode, encoder_count, encoder_btn_state, nav_btn_state
     while True:
@@ -3329,6 +3615,33 @@ async def blinkx2():
         await asyncio.sleep_ms(50)
         led.value(0)
         await asyncio.sleep_ms(BlinkDelay)     # adjust so I get a 1 second blink... or faster in maintenacne mode   
+
+async def pp_anomaly_check(period_s)->None:
+    """
+    Look for bad PP behaviour... like running continually at night, or repeated pattern of cycling 
+    """
+    while True:
+        tupltime = now_time_tuple()
+        hour = tupltime[3]
+        nightwatch = hour > 21 or hour < 7
+        blen = len(pp_ring.buffer)
+        if DEBUGLVL > 0: ev_log.write(f'{now_time_long()} pp_anomaly_check {hour=} {nightwatch=} {blen=}\n' )
+        if nightwatch:
+            if presspump.state:
+                on_secs = time.time() - presspump.last_time_switched
+                if on_secs > MAX_NIGHTWATCH_ON:
+                    ev_log.write(f'{now_time_long()} PP nightwatch continuous running!')
+        # now... the tricky bit, may need to tweak parameters in PP_Cycle_detect
+            if blen > 10:      # don't run if buffer is (almost) empty
+                result = detect_pump_cycling(pp_ring.buffer, (pp_ring.index - 1) % PPRINGSIZE, blen, lookback_s=period_s)  # why - 1? Claude code asssumes HEAD is next write point...
+                # ev_log.write(result)
+                if result["alert"]:
+                    ev_log.write(f'{now_time_long()} PP cycle detected: {result["reason"]}\n')
+                    event_ring.add("PP Cycle Detected")
+                else:
+                    ev_log.write(f'{now_time_long()} NO ALERT: {result["reason"]} count {result["cycle_count"]} cv {result["cv_percent"]}\n')
+
+        await asyncio.sleep(period_s)
 
 async def pump_action_processor():
     """Process pump actions from queue, handle success/failure differently for ON/OFF"""
@@ -3619,6 +3932,7 @@ async def main_control_task():
     start_time = time.time()
     print(f"Main TX starting {format_secs_long(start_time)} SM version:{system.version} TX version:{SW_VERSION}")
     init_logging()          # needs correct time first!
+    init_all()              # includes device config...
     
     asyncio.create_task(blinkx2())                              # visual indicator we are running
     # asyncio.create_task(check_lcd_btn())                       # start up lcd_button widget
@@ -3632,12 +3946,14 @@ async def main_control_task():
     asyncio.create_task(heartbeat_task())                       # send heartbeats independent of other stuff: DELAY until async Comms running
     # asyncio.create_task(resume_pumping())                       # if pump stopped by kpa_drop... resume when event triggered
     asyncio.create_task(pump_action_processor())                # a generic handler for async ON/OFF actions
-
+    if PLATFORM == "PCB":
+        asyncio.create_task(monitor_pressure_pump(PP_CHECK_PERIOD))       # TODO needs a separate anomaly checker... no need to run every 5 secs like existing check
+        asyncio.create_task(pp_anomaly_check(PP_ANOMALY_PERIOD))    # look for weirdness
+    
     gc.collect()
     gc.threshold(gc.mem_free() // 4 + gc.mem_alloc())
     # micropython.mem_info()
 
-    init_all()              # includes device config...
     get_tank_depth()        # defer until after devices configured.  First reading might be more accurate now...
 
     _ = Timer(period=config_dict[LCD] * 1000, mode=Timer.ONE_SHOT, callback=lcd_off)    # type:ignore

@@ -49,6 +49,7 @@ class MenuNavigator:
     ERRORRING       = 'errors'
     KPARING         = 'kpa'
     DEPTHRING       = 'depth'
+    PPRING          = 'house'
 
     def __init__(self, menu, dev2:RGB1602): #, dev4:I2cLcd):
         self.menu = menu
@@ -65,6 +66,7 @@ class MenuNavigator:
             MenuNavigator.SWITCHRING:   {'buffer': None, 'index': 0},
             MenuNavigator.KPARING:      {'buffer': None, 'index': 0},
             MenuNavigator.ERRORRING:    {'buffer': None, 'index': 0},
+            MenuNavigator.PPRING:       {'buffer': None, 'index': 0},
             MenuNavigator.DEPTHRING:    {'buffer': None, 'index': 0}      # added depth for consistency with other data structure 19/9/25
         }
 
@@ -247,7 +249,7 @@ class MenuNavigator:
         if self.mode == MenuNavigator.VIEWRING:
             if self.displaylist is not None:
                 if len(self.displaylist) > 0:
-                    pos = 0 if first else len(self.displaylist) - 1
+                    pos = 0 if first else len(self.displaylist) - 1     # TODO woul be nice to have a go_to_current, but will need context
                     self.display_navindex = pos
                     hist_str = self.displaylist[pos]
         elif self.mode == MenuNavigator.VIEWPROG:
