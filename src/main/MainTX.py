@@ -45,15 +45,16 @@ from primitives import Pushbutton, Queue, Encoder
 # endregion
 
 # region INITIALISE
-SW_VERSION          = "2/4/26 21:17"       # Now with PP smarts...
+SW_VERSION          = "15/4/26 12:42"       # Now with PP smarts...
 DEBUGLVL            = 0
 
 # micropython.mem_info()
 # gc.collect()
+# endregion
 
 # region MODES
 PRODUCTION_MODE     = False         # change to True when no longer in development cycle
-CALIBRATE_MODE      = False
+CALIBRATE_MODE      = True
 
 OP_MODE_AUTO        = 0
 OP_MODE_IRRIGATE    = 1
@@ -201,8 +202,8 @@ temp_sensor         = ADC(4)			                # Internal temperature sensor is 
 vbus_sense          = Pin('WL_GPIO2', Pin.IN)           # external power monitoring of VBUS
 led                 = Pin('LED', Pin.OUT)
 
-# PLATFORM            = "PCB"
 PLATFORM            = "PCB"
+# PLATFORM            = "BB"
 
 if PLATFORM == "PCB":
     # Create pins for encoder lines and the onboard button
@@ -213,8 +214,8 @@ if PLATFORM == "PCB":
     # add buttons for 5-way nav control... reordered pins
     nav_DN 	            = Pin(10, Pin.IN, Pin.PULL_UP)		# DOWN button    Gr
     nav_UP 	            = Pin(11, Pin.IN, Pin.PULL_UP)		# UP button      Or
-    nav_RR              = Pin(12, Pin.IN, Pin.PULL_UP)		# LEFT button    Y
-    nav_LL              = Pin(13, Pin.IN, Pin.PULL_UP)		# RIGHT button   Wh
+    nav_RR              = Pin(12, Pin.IN, Pin.PULL_UP)		# RIGHT button   Y
+    nav_LL              = Pin(13, Pin.IN, Pin.PULL_UP)		# LEFT button    Wh
     nav_OK              = Pin(14, Pin.IN, Pin.PULL_UP)		# SELECT button  Red
 
     presspmp_detect     = Pin(15, Pin.IN)                   # DO NOT USE PULL_UP/DOWN on Pico 2 !@#$
@@ -239,8 +240,8 @@ else:
     # add buttons for 5-way nav control... reordered pins
     nav_DN 	            = Pin(10, Pin.IN, Pin.PULL_UP)		# DOWN button    Gr
     nav_UP 	            = Pin(11, Pin.IN, Pin.PULL_UP)		# UP button      Or
-    nav_RR              = Pin(12, Pin.IN, Pin.PULL_UP)		# LEFT button    Y
-    nav_LL              = Pin(13, Pin.IN, Pin.PULL_UP)		# RIGHT button   Wh
+    nav_RR              = Pin(12, Pin.IN, Pin.PULL_UP)		# RIGHT button   Y
+    nav_LL              = Pin(13, Pin.IN, Pin.PULL_UP)		# LEFT button    Wh
     nav_OK              = Pin(14, Pin.IN, Pin.PULL_UP)		# SELECT button  Red
 
     # Create pins for encoder lines and the onboard button
@@ -344,7 +345,7 @@ last_activity_time  = 0             # for sleepmode calcs
 # region Async_Comms
 pending_request     = {}            # to track what we are waiting for
 
-depthringindex      = 0             # testing linreg residual SD stuff...
+# depthringindex      = 0             # testing linreg residual SD stuff...
 
 # endregion
 # region PP_Cycles
@@ -2254,6 +2255,7 @@ def get_tank_depth():
 
     d = int(distSensor.read()) - housetank.sensor_offset
     housetank.depth = (housetank.height - d)
+    if DEBUGLVL > 0: print(f'get_tank_depth: {housetank.depth}')
     tank_is = get_fill_state(d)
 
 def set_zone(timer: Timer):
@@ -2307,25 +2309,35 @@ def updateData():
     global pressure_str
     global average_kpa, zone, avg_kpa_set
     global temp
-    global depthringindex
+    # global depthringindex
     global depth_ROC_index
 
     get_tank_depth()
 
 #  OK... try to filter out pressure pump switching noise
-    change_since_last = abs(housetank.last_depth - housetank.depth)
-    if change_since_last > PP_SWITCH_NOISE and rec_num > 1:     # ignore this reading.  Could smooth it with an average...
+    last_reading = housetank.depth
+    if depth_ring.index > -1:       # TODO refer to PP switch activity, not this...
+        prev_depth = depth_ring.buffer[depth_ring.index][1]      # beware... tuples lurk here
+    else:
+        prev_depth = housetank.depth            # fudge it if we have no prior value
+
+    change_since_last = abs(prev_depth - housetank.depth)
+    if rec_num > 1 and change_since_last > PP_SWITCH_NOISE:    # Why ref rec_num?  otherwise we are forever stuck on zero...
         if DEBUGLVL > 0:
-            lstr = f"{now_time_long()} fudging housetank depth! {change_since_last=}\n"
-            ev_log.write(lstr)
-        housetank.depth = int(housetank.last_depth)                  # Why ref rec_num?  otherwise we are forever stuck on zero...
-    depth_ring.add(housetank.depth)
+            # prev_depth = depth_ring.buffer[(depth_ring.index - 1) % len(depth_ring.buffer)][1]      # beware... tuples lurk here
+            lstr = f"{now_time_long()} fudging depth: {housetank.depth:4} {prev_depth=:4} {change_since_last=} last_depth={housetank.last_depth:4} RB={depth_ring.buffer[depth_ring.index][1]:4} Updating from {housetank.depth} to {prev_depth}"
+            print(lstr)
+            ev_log.write(lstr + '\n')
+        housetank.depth = prev_depth                # ignore this reading, maintain prev value
+                                                    # TODO check if subsequent refs are now a problem...
+
+    depth_ring.add(last_reading)
     sma_depth = calc_SMA(depth_ring.buffer)         # this calculates average of non-zero values... regardless of how many entries in the ring
     time_factor = config_dict[DELAY] / 60           # dont move this - DELAY may be changed on the fly
     housetank.depth_ROC = int((sma_depth - housetank.last_depth) / time_factor)	# ROC in mm/minute.  Save negatives also...
     depth_ROC_ring[depth_ROC_index] = housetank.depth_ROC  # do this right... plot depth_ROC, not depth
-    if DEBUGLVL > 1: print(f"{sma_depth=} {housetank.last_depth=} {housetank.depth_ROC=} {depth_ROC_index=} {depth_ROC_ring[depth_ROC_index]=}")
     depth_ROC_index = (depth_ROC_index + 1) % DEPTHGRAPHSIZE
+    if DEBUGLVL > 0: print(f"depth: {housetank.depth:4} {prev_depth=:4} {sma_depth=:5.1f} {housetank.last_depth=:4}")
     housetank.last_depth = int(sma_depth)           # track ROC since last reading using SMA_DEPTH... NOT raw depth
     depth_str = f"{housetank.depth/1000:.2f}m " + tank_is
 
@@ -3010,14 +3022,14 @@ def init_clock()->bool:
 def init_ringbuffers():
     global hi_freq_kpa_ring, hi_freq_kpa_index
     global event_ring, error_ring, switch_ring, kpa_ring, depth_ring, pp_ring
-    global depthringbuf, depthringindex     # revert to old style for linreg/residual analysis of SD
+    # global depthringbuf, depthringindex     # revert to old style for linreg/residual analysis of SD
     global depth_ROC_ring, depth_ROC_index
 
-    depthringbuf = [0]                # start with a list containing zero...
-    if DEPTHRINGSIZE > 1:             # expand it as needed...
-        for _ in range(DEPTHRINGSIZE - 1):
-            depthringbuf.append(0)
-    depthringindex = 0
+    # depthringbuf = [0]                # start with a list containing zero...
+    # if DEPTHRINGSIZE > 1:             # expand it as needed...
+    #     for _ in range(DEPTHRINGSIZE - 1):
+    #         depthringbuf.append(0)
+    # depthringindex = 0
 
     switch_ring = RingBuffer(
         size=SWITCHRINGSIZE, 
@@ -3104,7 +3116,7 @@ def init_all():
     last_pp_status      = presspmp_detect.value() == 0
 
     ev_log.write(f"\n\n{now_time_long()} Pump Monitor starting - SW ver:{SW_VERSION}  ")      # no \n...
-    ev_log.write(f'params ({config_dict[DELAY]}s, {int(PRESSURE_PERIOD_MS/1000)}s, {DEPTHRINGSIZE=})\n')
+    ev_log.write(f'params ({config_dict[DELAY]}s, {int(PRESSURE_PERIOD_MS/1000)}s, {PP_SWITCH_NOISE=})\n')
     hf_log_mod = KPA_LOG_FREQ         # increase for mod operator to reduce logging when pump is OFF
 
     slist=[]
@@ -3567,7 +3579,7 @@ async def monitor_pressure_pump(sleep_ms:int)->None:
     global last_pp_status
 
     while True:
-        pp_status = presspmp_detect.value() == 0            # using inverse logic with dual op-amps
+        pp_status = presspmp_detect.value() != 0
         if pp_status != last_pp_status:
             presspump.switch_pump(pp_status)
             pp_str = 'ON' if pp_status else 'OFF'
@@ -3940,14 +3952,13 @@ async def main_control_task():
     asyncio.create_task(check_rotary_state(ROTARY_PERIOD_MS))   # check rotary every ROTARY_PERIOD_MS milliseconds
     asyncio.create_task(processemail_queue())                   # check email queue
     asyncio.create_task(monitor_vbus())
-    if kpa_sensor_found:
-        asyncio.create_task(read_pressure())                    # read pressure every PRESSURE_PERIOD_MS milliseconds    
+    asyncio.create_task(read_pressure())                        # read pressure every PRESSURE_PERIOD_MS milliseconds    
     
     asyncio.create_task(heartbeat_task())                       # send heartbeats independent of other stuff: DELAY until async Comms running
     # asyncio.create_task(resume_pumping())                       # if pump stopped by kpa_drop... resume when event triggered
     asyncio.create_task(pump_action_processor())                # a generic handler for async ON/OFF actions
     if PLATFORM == "PCB":
-        asyncio.create_task(monitor_pressure_pump(PP_CHECK_PERIOD))       # TODO needs a separate anomaly checker... no need to run every 5 secs like existing check
+        asyncio.create_task(monitor_pressure_pump(PP_CHECK_PERIOD))
         asyncio.create_task(pp_anomaly_check(PP_ANOMALY_PERIOD))    # look for weirdness
     
     gc.collect()
@@ -3994,7 +4005,7 @@ async def main_control_task():
             DisplayInfo()		                    # info display... one of several views
             DisplayGraph(False)
 
-            if stable_pressure:         # TODO reset stable_pressure on EXIT_MAINTENANCE
+            if stable_pressure:
                 checkForAnomalies()	                # test for weirdness
             if rec_num % TANK_LOG_FREQ == 0:           
                 LogTankData()			                # record it
