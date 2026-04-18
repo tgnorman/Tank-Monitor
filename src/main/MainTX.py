@@ -45,7 +45,7 @@ from primitives import Pushbutton, Queue, Encoder
 # endregion
 
 # region INITIALISE
-SW_VERSION          = "15/4/26 12:42"       # Now with PP smarts...
+SW_VERSION          = "18/4/26 18:38"       # Now with PP smarts...
 DEBUGLVL            = 0
 
 # micropython.mem_info()
@@ -698,7 +698,7 @@ opmode_dict         = {
 # Pressure to Zone mapping... names of zones
 P0 = "00"
 P1 = "Air"
-P2 = "HT"
+P2 = "HT"           # beware of changing... P2 is used elsewhere as special case
 P3 = "FW"
 P4 = "Z45"
 P5 = "Z3"
@@ -2314,22 +2314,27 @@ def updateData():
 
     get_tank_depth()
 
-#  OK... try to filter out pressure pump switching noise
+#  OK... try to filter out pressure pump switching noise..only matters if filling tank, ie HT zone
     last_reading = housetank.depth
-    if depth_ring.index > -1:       # TODO refer to PP switch activity, not this...
-        prev_depth = depth_ring.buffer[depth_ring.index][1]      # beware... tuples lurk here
-    else:
-        prev_depth = housetank.depth            # fudge it if we have no prior value
+    if zone == P2:                                      # that's HT...
+        last_PP_event = pp_ring.buffer[pp_ring.index]
+        recent_switch = last_PP_event[1] == "ON" and (time.time() - last_PP_event[0]) < config_dict[DELAY]    # looks like pump-ON in the current iteration...
 
-    change_since_last = abs(prev_depth - housetank.depth)
-    if rec_num > 1 and change_since_last > PP_SWITCH_NOISE:    # Why ref rec_num?  otherwise we are forever stuck on zero...
-        if DEBUGLVL > 0:
-            # prev_depth = depth_ring.buffer[(depth_ring.index - 1) % len(depth_ring.buffer)][1]      # beware... tuples lurk here
-            lstr = f"{now_time_long()} fudging depth: {housetank.depth:4} {prev_depth=:4} {change_since_last=} last_depth={housetank.last_depth:4} RB={depth_ring.buffer[depth_ring.index][1]:4} Updating from {housetank.depth} to {prev_depth}"
-            print(lstr)
-            ev_log.write(lstr + '\n')
-        housetank.depth = prev_depth                # ignore this reading, maintain prev value
-                                                    # TODO check if subsequent refs are now a problem...
+        if recent_switch:
+            if depth_ring.index > -1:
+                prev_depth = depth_ring.buffer[depth_ring.index][1]      # beware... tuples lurk here
+            else:
+                prev_depth = housetank.depth            # fudge it if we have no prior value
+
+            change_since_last = abs(prev_depth - housetank.depth)
+            if rec_num > 1 and change_since_last > PP_SWITCH_NOISE:    # Why ref rec_num?  otherwise we are forever stuck on zero...
+                if DEBUGLVL > 0:
+                    # prev_depth = depth_ring.buffer[(depth_ring.index - 1) % len(depth_ring.buffer)][1]      # beware... tuples lurk here
+                    lstr = f"{now_time_long()} fudging depth: {housetank.depth:4} {prev_depth=:4} {change_since_last=} last_depth={housetank.last_depth:4} RB={depth_ring.buffer[depth_ring.index][1]:4} Updating from {housetank.depth} to {prev_depth}"
+                    print(lstr)
+                    ev_log.write(lstr + '\n')
+                housetank.depth = prev_depth                # ignore this reading, maintain prev value
+                                                            # TODO check if subsequent refs are now a problem...
 
     depth_ring.add(last_reading)
     sma_depth = calc_SMA(depth_ring.buffer)         # this calculates average of non-zero values... regardless of how many entries in the ring
@@ -2577,7 +2582,7 @@ def checkForAnomalies()->None:
 
             if not CALIBRATE_MODE:                              # easy way to prevent pesky alarms while testing
                 if tank_is == "Overflow":                       # ideally, refer to a Tank object... but this will work for now
-                    raiseAlarm("OVERFLOW - ON", 999)        # TODO reset tank_is on EXIT_MAINT_MODE
+                    raiseAlarm("OVERFLOW - ON", 999)
                     error_ring.add(TankError.OVERFLOW_ON)
                     abort_pumping("OVERFLOW!")                  # requires manual intervention!
                 
