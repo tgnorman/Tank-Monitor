@@ -15,7 +15,6 @@ import ntptime
 import network
 from PiicoDev_Unified import sleep_ms
 # from PiicoDev_VL53L1X import PiicoDev_VL53L1X
-from TN_VL53L1X import TN_PiicoDev_VL53L1X
 from PiicoDev_Transceiver import PiicoDev_Transceiver
 from PiicoDev_SSD1306 import *
 from umachine import Timer, Pin, ADC, soft_reset, I2C
@@ -42,11 +41,17 @@ from primitives import Pushbutton, Queue, Encoder
 # from PP_cycle_detect import detect_pump_cycling
 
 #import aioprof1
+
+TANK_DIST_MEASURE   = True
+if TANK_DIST_MEASURE: from TN_VL53L1X import TN_PiicoDev_VL53L1X
 # endregion
 
 # region INITIALISE
-SW_VERSION          = "18/4/26 18:38"       # Now with PP smarts...
+SW_VERSION          = "20/5/26 14:18"       # Run with no VL53L1X
 DEBUGLVL            = 0
+
+PLATFORM            = "PCB"
+# PLATFORM            = "BB"
 
 # micropython.mem_info()
 # gc.collect()
@@ -176,6 +181,7 @@ MAX_NIGHTWATCH_ON   = 5 * 60
 # endregion
 # region LOGGING
 # logging stuff...
+LOG_KPA_DFLT        = False         # for session-wide switching
 LOGHFDATA           = False         # this is reset in init_all
 LOGPPDATA           = True
 TANK_LOG_FREQ       = 1
@@ -201,9 +207,6 @@ bp_pressure         = ADC(0)                            # read line pressure
 temp_sensor         = ADC(4)			                # Internal temperature sensor is connected to ADC channel 4
 vbus_sense          = Pin('WL_GPIO2', Pin.IN)           # external power monitoring of VBUS
 led                 = Pin('LED', Pin.OUT)
-
-PLATFORM            = "PCB"
-# PLATFORM            = "BB"
 
 if PLATFORM == "PCB":
     # Create pins for encoder lines and the onboard button
@@ -281,10 +284,13 @@ display.text("OLED lives...", 0, 0, 1)
 display.show()
 print('Created OLED')
 
-distSensor          = TN_PiicoDev_VL53L1X(bus=1, freq=I2C1_FREQ, sda=SDA_1, scl=SCL_1)         # use my custom driver, with extra snibbo's
-_ = distSensor.read()
-sleep_ms(100)
-print('Created distsensor')
+if TANK_DIST_MEASURE:
+    distSensor      = TN_PiicoDev_VL53L1X(bus=1, freq=I2C1_FREQ, sda=SDA_1, scl=SCL_1)         # use my custom driver, with extra snibbo's
+    _ = distSensor.read()
+    sleep_ms(100)
+    print('Created distsensor')
+else:
+    distSensor      = None
 
 radio_dev           = PiicoDev_Transceiver(bus=0, freq=I2C0_FREQ, sda=SDA_0, scl=SCL_0)
 sleep_ms(100)
@@ -750,8 +756,8 @@ zone_list:list[tuple[str, int, int, float]] = [
     (P4, 250, 350,  2.5),       # Z45
     (P5, 300, 440,  2.7),       # Z3
     (P6, 350, 545,  3.0),       # Z2
-    (P7, 390, 580,  3.0),       # Z1
-    (P8, 420, 600,  3.0),       # Z4
+    (P7, 390, 595,  3.0),       # Z1
+    (P8, 420, 650,  3.0),       # Z4
     (P9, 600, 800,  3.5)        # XP
 ]
 # endregion
@@ -1678,6 +1684,12 @@ def toggle_calibration_mode():
     lcd.setCursor(0, 1)
     lcd.printout(f'CALIBMODE {' ON' if CALIBRATE_MODE else 'OFF'}')
 
+def toggle_kpa_default():
+    global LOG_KPA_DFLT
+    LOG_KPA_DFLT = not LOG_KPA_DFLT
+    lcd.setCursor(0, 1)
+    lcd.printout(f'LOG_KPA_DFLT {' ON' if LOG_KPA_DFLT else 'OFF'}')
+
 def toggle_HFLOGGING():
     global LOGHFDATA
     LOGHFDATA = not LOGHFDATA
@@ -1779,8 +1791,8 @@ new_menu = {
                 { Title_Str: "Cycle1",          Value_Str: {Default_Str: 1,   Working_Str : DEFAULT_CYCLE,       Step_Str : 5}},
                 { Title_Str: "Cycle2",          Value_Str: {Default_Str: 2,   Working_Str : DEFAULT_CYCLE,       Step_Str : 5}},
                 { Title_Str: "Cycle3",          Value_Str: {Default_Str: 3,   Working_Str : DEFAULT_CYCLE,       Step_Str : 5}},
-                { Title_Str: "Add cycle",       Action_Str: add_cycle},
                 { Title_Str: "Delete cycle",    Action_Str: remove_cycle},
+                { Title_Str: "Add cycle",       Action_Str: add_cycle},
                 { Title_Str: "Update program",  Action_Str: update_program_list_from_menu},
                 { Title_Str: "Go Back",         Action_Str: my_go_back}
             ]
@@ -1795,13 +1807,14 @@ new_menu = {
           { Title_Str: "File Manager",      Action_Str: filemngr},
           { Title_Str: "Show Space",        Action_Str: show_space},
           { Title_Str: "Make Space",        Action_Str: make_more_space},
-          { Title_Str: "Flush logs",        Action_Str: flush_data},
-          { Title_Str: "Test Beep",         Action_Str: beepx3},
-          { Title_Str: "Toggle Click",      Action_Str: toggle_click},
+          { Title_Str: "Toggle KPADFLT",    Action_Str: toggle_kpa_default},
           { Title_Str: "Toggle HFLOG",      Action_Str: toggle_HFLOGGING},
           { Title_Str: "Toggle PPLOG",      Action_Str: toggle_PPLOGGING},
           { Title_Str: "Toggle PROD",       Action_Str: toggle_prod_mode},
           { Title_Str: "Toggle CALIB",      Action_Str: toggle_calibration_mode},
+          { Title_Str: "Toggle Click",      Action_Str: toggle_click},
+          { Title_Str: "Flush logs",        Action_Str: flush_data},
+          { Title_Str: "Test Beep",         Action_Str: beepx3},
           { Title_Str: "Enter MAINT",       Action_Str: enter_maint_mode},
           { Title_Str: "Exit  MAINT",       Action_Str: exit_maint_mode},
           { Title_Str: "Reset",             Action_Str: my_reset},
@@ -2253,7 +2266,10 @@ def calc_average_HFpressure(offset_back:int, length:int)->float:
 def get_tank_depth():
     global tank_is
 
-    d = int(distSensor.read()) - housetank.sensor_offset
+    if distSensor is not None:
+        d = int(distSensor.read()) - housetank.sensor_offset
+    else:
+        d = 1000
     housetank.depth = (housetank.height - d)
     if DEBUGLVL > 0: print(f'get_tank_depth: {housetank.depth}')
     tank_is = get_fill_state(d)
@@ -2271,7 +2287,7 @@ def set_zone(timer: Timer):
             else:
                 error_ring.add(TankError.ZONE_NOTFOUND)
             kPa_sd_multiple = zsdm
-            z_str = f"{now_time_long()} Zone changed from {zone} to {new_zone} start_kpa {zone_startup}. {kpa_peak=} SDM: {kPa_sd_multiple}"
+            z_str = f"{now_time_long()} Zone changed from {zone} to {new_zone} {zone_startup=} {kpa_peak=} SDM: {kPa_sd_multiple}"
             zone = new_zone
             print(z_str)
             ev_log.write(z_str + "\n")
@@ -2295,7 +2311,7 @@ def set_average_kpa(timer: Timer):
             zone_timer = Timer(period=ZONE_DELAY * 1000,    mode=Timer.ONE_SHOT, callback=set_zone)  # type:ignore
         else:
             print("set_average_kpa: Yikes!! Buffer has data, but average_kpa is 0")
-            for i in range(5): print(f"{hi_freq_kpa_ring[hi_freq_kpa_index - i - 1]} ", end=" ")
+            for i in range(5): print(f"{hi_freq_kpa_ring[(hi_freq_kpa_index - i - 1) % HI_FREQ_RINGSIZE]} ", end=" ")
     else:
         logstr = f'{now_time_long()} set_average_kpa: ({read_count_since_ON=}) <= AVG_KPA_COUNT.  Should not happen'
         print(logstr)
@@ -2317,8 +2333,11 @@ def updateData():
 #  OK... try to filter out pressure pump switching noise..only matters if filling tank, ie HT zone
     last_reading = housetank.depth
     if zone == P2:                                      # that's HT...
-        last_PP_event = pp_ring.buffer[pp_ring.index]
-        recent_switch = last_PP_event[1] == "ON" and (time.time() - last_PP_event[0]) < config_dict[DELAY]    # looks like pump-ON in the current iteration...
+        if pp_ring.index > -1:
+            last_PP_event = pp_ring.buffer[pp_ring.index]
+            recent_switch = last_PP_event[1] == "ON" and (time.time() - last_PP_event[0]) < config_dict[DELAY]    # looks like pump-ON in the current iteration...
+        else:
+            recent_switch = False
 
         if recent_switch:
             if depth_ring.index > -1:
@@ -2347,15 +2366,16 @@ def updateData():
     depth_str = f"{housetank.depth/1000:.2f}m " + tank_is
 
     if kpa_sensor_found and read_count_since_ON >= AVG_KPA_COUNT:
-        tmp = round(calc_average_HFpressure(0, AVG_KPA_COUNT))  # get average of last AVG_KPA_COUNT readings.
+        tmp = round(calc_average_HFpressure(0, AVG_KPA_COUNT), 2)  # get average of last AVG_KPA_COUNT readings.
         if tmp > 0:
-            average_kpa = tmp
+            average_kpa = int(tmp)
             avg_kpa_set = True
             kpa_ring.add(average_kpa)         # kpa_ring values are ONLY used to view history via menu... no other function
             # print(f"Average kPa set in UpdateData to: {average_kpa}")
         else:
-            print("Yikes!! HF_B full, but average_kpa is 0")
-            for i in range(5): print(f"{hi_freq_kpa_ring[hi_freq_kpa_index - i - 1]} ", end=" ")
+            dstr = f"{now_time_long()} Yikes!! RCSO {read_count_since_ON}, but average_kpa(tmp) is {tmp}  {hi_freq_kpa_index=}"
+            print(dstr)
+            for i in range(5): print(f"{hi_freq_kpa_ring[(hi_freq_kpa_index - i - 1) % HI_FREQ_RINGSIZE]} ", end=" ")
 
     prev_index = (hi_freq_kpa_index - 1) % HI_FREQ_RINGSIZE     # because hi_freq_kpa_index refers to pos to write next value
     pressure_str = f'P {hi_freq_kpa_ring[prev_index]:>3} Av {int(average_kpa):>3} {zone:3}'
@@ -2391,8 +2411,8 @@ def reset_state():
 
     read_count_since_ON = 0
     stable_pressure = False
-    avg_kpa_set = False             # ? Should I also set hf_kpa_index to 0 ??
-    kpa_peak = 0
+    avg_kpa_set = False             # TODO Should I also set hf_kpa_index to 0 ??
+    kpa_peak = 0                    # if not, potential for looking at OLD values when I refer to previous buffer value.  Think this through
     kpa_low = 1000
     drop_hiwat = 0
 
@@ -2580,28 +2600,30 @@ def checkForAnomalies()->None:
                             error_ring.add(TankError.BELOW_ZONE_MIN)
                             if PRODUCTION_MODE: abort_pumping("kPa below Zone min")
 
-            if not CALIBRATE_MODE:                              # easy way to prevent pesky alarms while testing
-                if tank_is == "Overflow":                       # ideally, refer to a Tank object... but this will work for now
-                    raiseAlarm("OVERFLOW - ON", 999)
-                    error_ring.add(TankError.OVERFLOW_ON)
-                    abort_pumping("OVERFLOW!")                  # requires manual intervention!
-                
-                if housetank.depth_ROC < - housetank.min_ROC and borepump.state:     # pump is ON but level is falling!
-                    raiseAlarm("DRAINING - ON", housetank.depth_ROC)                              
-                    error_ring.add(TankError.DRAINWHILE_ON)     # in PROD, this should also trigger ABORT... something seriously wrong
-                    if PRODUCTION_MODE: abort_pumping("Draining but ON")
 
-                if abs(housetank.depth_ROC) > housetank.max_ROC:                    # this one is less critical...
-                    raiseAlarm("XS ROC", housetank.depth_ROC)
-                    error_ring.add(TankError.MAX_ROC_EXCEEDED)
+            if TANK_DIST_MEASURE:                   # allow for absence of VL53L1X...
+                if not CALIBRATE_MODE:                              # easy way to prevent pesky alarms while testing
+                    if tank_is == "Overflow":                       # ideally, refer to a Tank object... but this will work for now
+                        raiseAlarm("OVERFLOW - ON", 999)
+                        error_ring.add(TankError.OVERFLOW_ON)
+                        abort_pumping("OVERFLOW!")                  # requires manual intervention!
+                    
+                    if housetank.depth_ROC < - housetank.min_ROC and borepump.state:     # pump is ON but level is falling!
+                        raiseAlarm("DRAINING - ON", housetank.depth_ROC)                              
+                        error_ring.add(TankError.DRAINWHILE_ON)     # in PROD, this should also trigger ABORT... something seriously wrong
+                        if PRODUCTION_MODE: abort_pumping("Draining but ON")
 
-            # changed to get SD of residuals after removing trend... which is significant on normal depth change during tank fill
-            if rec_num > DEPTHRINGSIZE:
-                make_dr_lists()         # pull (x, y) coordinates.  Should now work no matter time distribution of ring_buffer entries
-                _,_,_, stdev_Depth, r2 = linear_regression(dr_xvalues, dr_yvalues, DEPTHRINGSIZE, depth_ring.index, DEPTHRINGSIZE, False)
-                if stdev_Depth > DEPTH_SD_MAX:
-                    raiseAlarm("XS D SDEV", stdev_Depth)
-                    error_ring.add(TankError.HI_VAR_DIST)
+                    if abs(housetank.depth_ROC) > housetank.max_ROC:                    # this one is less critical...
+                        raiseAlarm("XS ROC", housetank.depth_ROC)
+                        error_ring.add(TankError.MAX_ROC_EXCEEDED)
+
+                # changed to get SD of residuals after removing trend... which is significant on normal depth change during tank fill
+                if rec_num > DEPTHRINGSIZE:
+                    make_dr_lists()         # pull (x, y) coordinates.  Should now work no matter time distribution of ring_buffer entries
+                    _,_,_, stdev_Depth, r2 = linear_regression(dr_xvalues, dr_yvalues, DEPTHRINGSIZE, depth_ring.index, DEPTHRINGSIZE, False)
+                    if stdev_Depth > DEPTH_SD_MAX:
+                        raiseAlarm("XS D SDEV", stdev_Depth)
+                        error_ring.add(TankError.HI_VAR_DIST)
 
         else:                                       # pump is OFF
             if op_mode == OP_MODE_AUTO:
@@ -2802,7 +2824,7 @@ def DisplayInfo()->None:
             lcd4x20.putstr(f'R#:{rec_num:>6} C#:{read_count_since_ON:>6}')
 
             lcd4x20.move_to(0, 3)
-            lcd4x20.putstr(f'Z:{zone:>3} HI:{kpa_peak:3} LO:{kpa_low:3}')       
+            lcd4x20.putstr(f'Z:{zone:>4} HI:{kpa_peak:3} LO:{kpa_low:3}')       
 
         elif info_display_mode == INFO_MAINT:       # MAINTENANCE mode
             lcd4x20.move_to(0, 0)
@@ -2863,11 +2885,12 @@ def DisplayData()->None:
                     if secs_to_next_ON < 0:                 # there is no next ON... this is flag to indicate end-of-program
                         secs_to_end = program_end_time - now
                         mins_to_end = 0
+                        hrs_to_end = 0
                         if secs_to_end > 60:
                             mins_to_end = int(secs_to_end / 60)
                             hrs_to_end = int(mins_to_end / 60)
                             secs_to_end = secs_to_end % 60
-                        display_str = f"TWM end: {hrs_to_end:1}:{mins_to_end:2}:{secs_to_end:02}"
+                        display_str = f"TWM end: {hrs_to_end:1}:{mins_to_end:02}:{secs_to_end:02}"
                         # display_str = "End TWM soon"
                         # print(f"{format_secs_long(now)}: {secs_to_next_ON=}")
                     else:
@@ -2906,7 +2929,7 @@ def DisplayGraph(showhist:bool):
 
         if showhist:
             for i in range(len(depth_ROC_ring)):
-                mod_index = (depth_ROC_index + i) % DEPTHGRAPHSIZE
+                mod_index = (depth_ROC_index - DEPTHGRAPHSIZE + i) % DEPTHGRAPHSIZE
                 d = depth_ROC_ring[mod_index]
                 scaled_dist  = int(2 * d + HEIGHT / 2)
                 display.fill(0)
@@ -2918,7 +2941,7 @@ def DisplayGraph(showhist:bool):
         display.updateGraph2D(graphdst, scaled_dist)
         display.text(f"Depth ROCx2 +-32", 0, 0, 1)
         display.hline(0, int(HEIGHT / 2), 127, 1)        # y-axis zero
-    else:
+    else:       # show kPa
         if zone_maximum > 0:
             zone_max_kpa = zone_maximum
             zone_min_kpa = zone_minimum
@@ -2930,7 +2953,7 @@ def DisplayGraph(showhist:bool):
 
         if showhist:
             for i in range(len(hi_freq_kpa_ring)):
-                mod_index = (hi_freq_kpa_index + i) % HI_FREQ_RINGSIZE
+                mod_index = (hi_freq_kpa_index - DEPTHGRAPHSIZE + i) % HI_FREQ_RINGSIZE
                 p = max(hi_freq_kpa_ring[mod_index], zone_min_kpa)      # ensure no negatives in scaled_dist
                 scaled_dist  = int(HEIGHT * (p - zone_min_kpa) / (zone_max_kpa - zone_min_kpa))
                 display.fill(0)
@@ -2950,7 +2973,7 @@ def LogTankData()->None:
 
 # Now, do the print and logging
     tempstr = f"{temp:.2f} C"  
-    logstr  = now_time_long() + f" {housetank.depth/1000:.3f} {average_kpa:4}\n"
+    logstr  = now_time_long() + f" {housetank.depth/1000:.3f} {average_kpa:4}\n"    # TODO refactor... LogTankData does MORE than log.. it updates key string vars
     dbgstr  = now_time_short() + f" {housetank.depth/1000:.3f}m {average_kpa:4}kPa"    
 
     enter_log = False
@@ -2967,7 +2990,7 @@ def LogTankData()->None:
             last_logged_kpa = average_kpa
             enter_log = True
 
-        if enter_log: tank_log.write(logstr)
+        if enter_log and TANK_DIST_MEASURE: tank_log.write(logstr)
     print(dbgstr)
 
 def calc_pump_runtime(p:Pump) -> str:
@@ -3087,10 +3110,11 @@ def init_ringbuffers():
     depth_ROC_index = 0
 
 def change_TB(newTB_ms):
-    distSensor.stopRanging()
-    if not distSensor.setMeasurementTimingBudget(newTB_ms * 1000):      # convert to uSecs
-        print("setTB failed!")
-    distSensor.startRanging()
+    if distSensor is not None:
+        distSensor.stopRanging()
+        if not distSensor.setMeasurementTimingBudget(newTB_ms * 1000):      # convert to uSecs
+            print("setTB failed!")
+        distSensor.startRanging()
 
 def init_all():
     global borepump, free_space_KB, presspump, vbus_prev_status, vbus_last_OFF_time, report_max_outage
@@ -3207,7 +3231,6 @@ def init_all():
     
     stdev_Press         = 0
     stdev_Depth         = 0
-    # LOGHFDATA           = kpa_sensor_found
 
     if not kpa_sensor_found:
         lcd4x20.move_to(0, 3)
@@ -3229,25 +3252,28 @@ def init_all():
     btn_click = False
 
 #   Do spiffy stuff with VL53L1X if I can...
-    if hasattr(distSensor, "setMeasurementTimingBudget"):
+    if distSensor is not None: set_VL53L1X_modes(distSensor)
+    
+    last_activity_time = now 
+
+def set_VL53L1X_modes(ds:TN_PiicoDev_VL53L1X):
+    if hasattr(ds, "setMeasurementTimingBudget"):
         change_TB(TIMEBUDGET_MS)         # this line only called if my driver is loaded.
-        distSensor.stopRanging()
-        distSensor.setDistanceMode('medium')
+        ds.stopRanging()
+        ds.setDistanceMode('medium')
         sleep_ms(200)
-        distSensor.setROISize(ROISIZE, ROISIZE)
+        ds.setROISize(ROISIZE, ROISIZE)
         sleep_ms(200)
-        distSensor.startRanging()
+        ds.startRanging()
         sleep_ms(500)
-        _ = distSensor.read()
-        _ = distSensor.read()
-        _ = distSensor.read()       # couple of dummy reads to make sure things have settled
+        _ = ds.read()
+        _ = ds.read()
+        _ = ds.read()       # couple of dummy reads to make sure things have settled
         ev_log.write(f"{now_time_long()} Set VL53L1X TimeBudget to {TIMEBUDGET_MS} ms, ROI to {ROISIZE}, DM to 'medium'\n")
         print(f"{now_time_long()} Set VL53L1X TimeBudget to {TIMEBUDGET_MS} ms, ROI to {ROISIZE}, and DM to 'medium'")
     else:
         ev_log.write(f"{now_time_long()} setMeasurementTimingBudget not available in this driver.\n")
-        print("setMeasurementTimingBudget not available in this driver.")
-    
-    last_activity_time = now    # start now... check "regularly" - whatever that is
+        print("setMeasurementTimingBudget not available in this driver.")   # start now... check "regularly" - whatever that is
     # pump_on_event.clear()       # ensure we start out with this unset
 
 # def heartbeat() -> bool:
@@ -3680,7 +3706,7 @@ async def pump_action_processor():
             if success and bool(response):
                 # Handle successful ON request
                 borepump.switch_pump(True)              # this will set state to ON
-                LOGHFDATA = True            # TODO change toggle_HF so this stays static UNTIL say end of TWM program... or other state change
+                if LOG_KPA_DFLT: LOGHFDATA = True       # TODO change toggle_HF so this stays static UNTIL say end of TWM program... or other state change
                 TANK_LOG_FREQ = 1                       # log every depth reading
                 hf_log_mod = KPA_LOG_FREQ               # and every kpa reading
                 switch_ring.add("PUMP ON")
