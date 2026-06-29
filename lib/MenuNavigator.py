@@ -310,7 +310,7 @@ class MenuNavigator:
             # print(f'In ENTER {param} = {val}')
             self.new_value = item[MenuNavigator.MENU_VALUE][MenuNavigator.MENU_WV]
             self.LCD2R.setCursor(0, 0)
-            self.LCD2R.printout(f'{param} -+')
+            self.LCD2R.printout(f'- {param} +')
         else:
             print(f"Unknown type in item... check menu def.  {item}")       # TODO display on LCD also
     

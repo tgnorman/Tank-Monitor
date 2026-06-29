@@ -3,7 +3,7 @@
 # region IMPORTS
 import sys
 import time
-# import micropython
+import micropython
 import gc
 from secrets import MyWiFi
 from utime import sleep, ticks_us, ticks_diff, ticks_ms
@@ -38,6 +38,8 @@ from Radio import My_Radio
 # using Peter's mip-installed repo...
 from primitives import Pushbutton, Queue, Encoder
 
+# from umqtt.simple import MQTTClient # type:ignore
+from umqtt.robust import MQTTClient # type:ignore
 # from PP_cycle_detect import detect_pump_cycling
 
 #import aioprof1
@@ -47,7 +49,7 @@ if TANK_DIST_MEASURE: from TN_VL53L1X import TN_PiicoDev_VL53L1X
 # endregion
 
 # region INITIALISE
-SW_VERSION          = "20/5/26 14:18"       # Run with no VL53L1X
+SW_VERSION          = "29/6/2026 16:22"       # 
 DEBUGLVL            = 0
 
 PLATFORM            = "PCB"
@@ -117,7 +119,7 @@ ERRORRINGSIZE       = 20            # max error log ringbuffer length
 HI_FREQ_RINGSIZE    = 128           # for high frequency pressure logging.  At 1 Hz that's 2 minutes of data... increase for graphing
 DEPTHRINGSIZE       = 12            # since adding fast_average in critical_states, this no longer is a concern, but is used for ROC SMA calc
 DEPTHGRAPHSIZE      = 128           # for plotting depth
-PPRINGSIZE          = 30            # this will store 30 status changes...
+PPRINGSIZE          = 16            # this will store 30 status changes...
 
 # endregion
 # region COUNTERS
@@ -176,8 +178,121 @@ my_IP               = None
 pump_action_queue   = Queue()       # Queue to hold async on/off requests, processed asynchronously
 
 # endregion
-# region PRESSURE_PUMP
-MAX_NIGHTWATCH_ON   = 5 * 60
+# region MQTT
+# --- MQTT broker settings ---
+MQTT_BROKER         = "192.168.20.90"   # IP (or hostname) of your Mosquitto VM
+MQTT_PORT           = 1883
+MQTT_CLIENT_ID      = "pico-w-01"
+MQTT_USER           = "homeassistant"              # set these if you enabled auth on the broker
+MQTT_PASSWORD       = "Tommy"
+MQTT_TOPIC_SUB      = b"home/pico/commands"
+MQTT_TOPIC_PUB      = b"home/pico/status"
+
+MQTT_DEPTH_DISCOVERY = b"homeassistant/sensor/housetank_depth/config"
+MQTT_DEPTH_STATE    = b"housetank/depth/state"
+
+MQTT_TEMP_DISCOVERY = b"homeassistant/sensor/pico_temperature/config"
+MQTT_TEMP_STATE     = b"housetank/temperature/state"
+
+MQTT_KPA_DISCOVERY  = b"homeassistant/sensor/pressure/config"
+MQTT_KPA_STATE      = b"housetank/pressure/state"
+
+def mqtt_callback(topic, msg):
+    print("Received:", topic, msg)
+
+def connect_mqtt():
+    client = MQTTClient(
+        MQTT_CLIENT_ID,
+        MQTT_BROKER,
+        port=MQTT_PORT,
+        user=MQTT_USER,
+        password=MQTT_PASSWORD,
+        keepalive=60
+    )
+    client.set_callback(mqtt_callback)
+    client.connect()
+    client.subscribe(MQTT_TOPIC_SUB)
+    print("Connected to MQTT broker at", MQTT_BROKER)
+    return client
+
+def publish_depth_discovery(client):
+    discovery_payload = """{
+        "name": "Water Tank Level",
+        "state_topic": "housetank/depth/state",
+        "unit_of_measurement": "m",
+        "value_template": "{{ value }}",
+        "device_class": "distance",
+        "unique_id": "housetank_depth_01",
+        "device": {
+            "identifiers": ["pico_housetank"],
+            "name": "House Tank Monitor",
+            "model": "Pico 2W",
+            "manufacturer": "Raspberry Pi"
+        }
+    }"""
+    # print(len(discovery_payload))
+    client.publish(MQTT_DEPTH_DISCOVERY, discovery_payload, retain=True)
+    print("DEPTH discovery published")
+
+def publish_tank_depth(client):
+    depth_m = round(housetank.depth / 1000, 3)  # mm to metres
+    if DEBUGLVL > 0: print(f'publish_tank_depth: {depth_m}m')
+    client.publish(MQTT_DEPTH_STATE, str(depth_m))
+
+def publish_temp_discovery(client):
+    discovery_payload = """{
+        "name": "Pico Temperature",
+        "state_topic": "housetank/temperature/state",
+        "unit_of_measurement": "\\u00b0C",
+        "value_template": "{{ value }}",
+        "device_class": "temperature",
+        "unique_id": "pico_temperature_01",
+        "device": {
+            "identifiers": ["pico_housetank"],
+            "name": "House Tank Monitor",
+            "model": "Pico W",
+            "manufacturer": "Raspberry Pi"
+        }
+    }"""
+    # print(len(discovery_payload))
+    client.publish(MQTT_TEMP_DISCOVERY, discovery_payload, retain=True)
+    print("Temperature discovery published")
+
+def publish_temperature(client):
+    global temp
+    try:
+        if DEBUGLVL > 0: print(f'publish_temperature: {temp:.1f}°C')
+        client.publish(MQTT_TEMP_STATE, str(round(temp, 1)))
+    except Exception as e:
+        print(f'publish_temperature exception {e}')
+
+# kPa
+def publish_kPa_discovery(client):
+    discovery_payload = """{
+        "name": "Line Pressure",
+        "state_topic": "housetank/pressure/state",
+        "unit_of_measurement": "kPa",
+        "value_template": "{{ value }}",
+        "device_class": "pressure",
+        "unique_id": "pico_pressure_01",
+        "device": {
+            "identifiers": ["pico_housetank"],
+            "name": "House Tank Monitor",
+            "model": "Pico W",
+            "manufacturer": "Raspberry Pi"
+        }
+    }"""
+    # print(len(discovery_payload))
+    client.publish(MQTT_KPA_DISCOVERY, discovery_payload, retain=True)
+    print("Pressure discovery published")
+
+def publish_kPa(client):
+    global average_kpa
+    try:
+        if DEBUGLVL > 0: print(f'publish_kPa: {average_kpa} kPa')
+        client.publish(MQTT_KPA_STATE, str(round(average_kpa, 1)))
+    except Exception as e:
+        print(f'publish_kPa exception {e}')
 # endregion
 # region LOGGING
 # logging stuff...
@@ -194,8 +309,7 @@ PP_SWITCH_NOISE     = 6             # ignore depth reading if instant change is 
 
 level_init          = False 		# to get started
 
-PP_CHECK_PERIOD     = 1000          # ms... is 1 second checking.
-PP_ANOMALY_PERIOD   = 30*60         # seconds... not ms
+# PP_ANOMALY_PERIOD   = 30*60         # seconds... not ms
 # endregion
 # region PHYSICAL_DEVICES
 # Pins      BREADBOARD Circuit !!
@@ -210,8 +324,8 @@ led                 = Pin('LED', Pin.OUT)
 
 if PLATFORM == "PCB":
     # Create pins for encoder lines and the onboard button
-    px                  = Pin(1, Pin.IN)
-    py                  = Pin(2, Pin.IN)
+    py                  = Pin(1, Pin.IN)
+    px                  = Pin(2, Pin.IN)
     enc_btn             = Pin(3, Pin.IN, Pin.PULL_UP)
 
     # add buttons for 5-way nav control... reordered pins
@@ -234,10 +348,12 @@ if PLATFORM == "PCB":
     SDA_1 = 6 ;     SCL_1 = 7
     i2c1                = I2C(1, sda=Pin(SDA_1), scl=Pin(SCL_1), freq=I2C1_FREQ)
     i2c0                = I2C(0, sda=Pin(SDA_0), scl=Pin(SCL_0), freq=I2C0_FREQ)
+
+    KPA_OFFSET          = 60
 else:
     solenoid            = Pin(2,  Pin.OUT, value=0)         # MUST ensure we don't close solenoid on startup... pump may already be running !!!  Note: Low == Open
     lcdbtn 	            = Pin(5,  Pin.IN, Pin.PULL_UP)		# soon to be replaced with 5X double-click UP
-    presspmp_detect            = Pin(15, Pin.IN)                   # DO NOT USE PULL_UP/DOWN on Pico 2 !@#$
+    presspmp_detect     = Pin(15, Pin.IN)                   # DO NOT USE PULL_UP/DOWN on Pico 2 !@#$
     screamer 		    = Pin(16, Pin.OUT)                  # emergency situation !! Needs action taken...
 
     # add buttons for 5-way nav control... reordered pins
@@ -250,8 +366,8 @@ else:
     # Create pins for encoder lines and the onboard button
 
     enc_btn             = Pin(18, Pin.IN, Pin.PULL_UP)
-    px                  = Pin(20, Pin.IN)
-    py                  = Pin(19, Pin.IN)
+    px                  = Pin(19, Pin.IN)
+    py                  = Pin(20, Pin.IN)
 
     beeper              = Pin(21, Pin.OUT)                  # for audible feedback
     infomode            = Pin(27, Pin.IN, Pin.PULL_UP)      # for changing display mode ... replace with 5X double DOWN
@@ -260,6 +376,8 @@ else:
     SDA_1 = 6 ;     SCL_1 = 7
     i2c1                = I2C(1, sda=Pin(SDA_1), scl=Pin(SCL_1), freq=I2C1_FREQ)
     i2c0                = I2C(0, sda=Pin(SDA_0), scl=Pin(SCL_0), freq=I2C0_FREQ)
+
+    KPA_OFFSET          = 100
 
 # sleep_ms(2000)
 
@@ -283,12 +401,22 @@ display.fill(0)
 display.text("OLED lives...", 0, 0, 1)
 display.show()
 print('Created OLED')
+sleep_ms(100)
 
 if TANK_DIST_MEASURE:
-    distSensor      = TN_PiicoDev_VL53L1X(bus=1, freq=I2C1_FREQ, sda=SDA_1, scl=SCL_1)         # use my custom driver, with extra snibbo's
-    _ = distSensor.read()
-    sleep_ms(100)
-    print('Created distsensor')
+    try:
+        distSensor      = TN_PiicoDev_VL53L1X(bus=1, freq=I2C1_FREQ, sda=SDA_1, scl=SCL_1)         # use my custom driver, with extra snibbo's
+        sleep_ms(100)
+        _ = distSensor.read()
+        sleep_ms(100)
+        print('Created distsensor')
+    except Exception as e:
+        lcd.clear()
+        lcd.setCursor(0,0)
+        lcd.printout("VL53L1X on bus 1")
+        lcd.setCursor(0, 1)
+        lcd.printout("Exception")
+        distSensor      = None
 else:
     distSensor      = None
 
@@ -354,6 +482,7 @@ pending_request     = {}            # to track what we are waiting for
 # depthringindex      = 0             # testing linreg residual SD stuff...
 
 # endregion
+
 # region PP_Cycles
 """
 pump_cycle_detect.py
@@ -366,7 +495,7 @@ Ring buffer entry format:  (timestamp, state)
 
 Typical problem signature
     Pump ON  ~10 s  → pressurises line
-    Pump OFF ~5 min → line slowly bleeds down
+    Pump OFF ~1-2 min → line slowly bleeds down
     … repeats
 
 Usage
@@ -382,13 +511,26 @@ Usage
 # ---------------------------------------------------------------------------
 # Tuneable defaults  (pass overrides as keyword args to detect_pump_cycling)
 # ---------------------------------------------------------------------------
+PP_NIGHT_START_HR   = 21      
+PP_NIGHT_END_HR     = 7       
+PP_MAX_NIGHTWATCH_ON   = 5 * 60
+PP_CHECK_PERIOD     = 1000          # ms... is 1 second checking.
+PP_ANOMALY_MINS     = 15        # NOTE - MINUTES here. Convert to secs later
+
 _DEF_MIN_CYCLES     = 3      # need at least this many complete cycles
-_DEF_MAX_ON_S       = 15     # ON durations above this are NOT suspicious (s)
-_DEF_MIN_OFF_S      = 120     # OFF gap must be at least this long (s)
+_DEF_MAX_ON_S       = 14     # ON durations above this are NOT suspicious (s)
+_DEF_MIN_OFF_S      = 40     # OFF gap must be at least this long (s)
 _DEF_MAX_CV_PERCENT = 40     # coefficient-of-variation ceiling for "regular"
                              # (integer %, avoids floats)
 _DEF_LOOKBACK_S     = 3_600  # only inspect events in the last hour
 
+#This is the decorator
+def print_args(func):
+    def inner_func(*args, **kwargs):
+        print(args)
+        print(kwargs)
+        return func(*args, **kwargs)
+    return inner_func
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -405,7 +547,7 @@ def _int_sqrt(n):
         y = (x + n // x) >> 1
     return x
 
-
+@print_args
 def _extract_cycles(buf, head, buf_len, now, lookback, max_on, min_off):
     """
     Walk the ring buffer in chronological order (oldest → newest) and return
@@ -543,6 +685,7 @@ def detect_pump_cycling(
     if now is None:
         # Most-recently written entry is one step behind head
         now = buf[(head - 1) % buf_len][0]
+
 
     cycles = _extract_cycles(buf, head, buf_len, now, lookback_s, max_on_s, min_off_s)
 
@@ -699,6 +842,24 @@ opmode_dict         = {
     OP_MODE_IRRIGATE:   "IRRI",
     OP_MODE_MAINT:      "MTCE",
     OP_MODE_DISABLED:   "SUSP"
+}
+
+PP_NUM_CYCLES       = "Num cycles"
+PP_MIN_OFF          = "Min OFF"
+PP_MAX_ON           = "Max ON"
+PP_MAX_CV           = "CV %"
+PP_NIGHT_STRT_STR   = "Night Start"
+PP_NIGHT_END_STR    = "Night End"
+PP_ANOM_STR         = "Anomaly mins"
+
+PP_dict             = {
+    PP_NUM_CYCLES    : _DEF_MIN_CYCLES,
+    PP_MIN_OFF       : _DEF_MIN_OFF_S,
+    PP_MAX_ON        : _DEF_MAX_ON_S,
+    PP_MAX_CV        : _DEF_MAX_CV_PERCENT,
+    PP_NIGHT_STRT_STR : PP_NIGHT_START_HR,
+    PP_NIGHT_END_STR    : PP_NIGHT_END_HR,
+    PP_ANOM_STR         : PP_ANOMALY_MINS
 }
 
 # Pressure to Zone mapping... names of zones
@@ -962,6 +1123,39 @@ def update_config() -> None:
     if update_fill_state:
         get_tank_depth()
 
+def update_PP_params() -> None:
+    """Update configuration dictionary from menu working values."""
+    
+    # Find path to config submenu
+    config_path = find_menu_path(new_menu, "Set PP params->")
+    if not config_path:
+        print("Could not find PP params submenu!")
+        return
+
+    # Navigate to config items
+    current_menu = new_menu
+    for index in config_path:
+        current_menu = current_menu[Item_Str][index]
+    
+    # Check each config item
+    config_items = current_menu.get(Item_Str, [])
+    for item in config_items:
+        param = item.get(Title_Str)
+        if param in config_dict.keys():
+            new_working_value = item[Value_Str][Working_Str]
+            if new_working_value > 0 and config_dict[param] != new_working_value:
+                old_value = config_dict[param]
+                if param in (PP_NIGHT_STRT_STR, PP_NIGHT_END_STR):   # check for bad hours
+                    new_working_value = new_working_value % 24
+                config_dict[param] = new_working_value
+                lcd.clear()
+                lcd.setCursor(0,0)
+                lcd.printout(f'Updated {param}')
+                lcd.setCursor(0,1)
+                lcd.printout(f'to {new_working_value}')
+                ev_log.write(f"{now_time_long()} Updated {param} to {new_working_value}\n")
+                print(f"in update_PP_params {param}: dict was {old_value} is now {new_working_value}")
+
 def update_timer_params() -> None:
     """Update timer dictionary from menu working values."""
     
@@ -1049,7 +1243,9 @@ def Change_Mode(newmode)-> None:
     if newmode == UI_MODE_MENU:
         ui_mode = UI_MODE_MENU
         # print(f"Change_Mode: going to MENU mode {ui_mode=}")
-        lcd.setRGB(240, 30, 240)
+        # lcd.setRGB(240, 30, 240)
+        lcd.setRGB(170,170,138)         # TODO change colours...
+
     elif newmode == UI_MODE_NORM:
         ui_mode = UI_MODE_NORM
         # print(f"Change_Mode: Exiting MENU mode {ui_mode=}")
@@ -1065,6 +1261,7 @@ def exit_menu():                      # exit from MENU mode
     lcd.printout(f'{"Exit & Update":<16}')
     update_config()
     update_timer_params()
+    update_PP_params()
     Change_Mode(UI_MODE_NORM)       # This cancels DEAD_MODE!... need to save state if I DONT want this... as-is, it does provide an escape
     DisplayInfo()
     # ui_mode = UI_MODE_NORM
@@ -1288,7 +1485,7 @@ def shutdown()->None:
         ev_log.write("\nevent_ring dump:\n")
         event_ring.dump()
     if switch_ring.index > -1:
-        ev_log.write("\nSwitch activity:\n")
+        ev_log.write("\nSwitch operations:\n")
         switch_ring.dump()
     if error_ring.index > -1:
         ev_log.write("\nerror_ring dump:\n")
@@ -1582,7 +1779,8 @@ def dump_context():
         else:
             tmp=int(tmp)
         e_code = errors.get_code(tmp)
-
+    else:
+        e_code = ""
     logstr = f"{now_time_long()} Context Dump\n{op_mode=}\n{borepump.num_switch_events=}\n" \
         f"last_switch: {format_secs_short(borepump.last_time_switched)}\nLast Err:{e_code}\n" \
         f"{stable_pressure=} RCSO:{read_count_since_ON}"
@@ -1794,6 +1992,19 @@ new_menu = {
                 { Title_Str: "Delete cycle",    Action_Str: remove_cycle},
                 { Title_Str: "Add cycle",       Action_Str: add_cycle},
                 { Title_Str: "Update program",  Action_Str: update_program_list_from_menu},
+                { Title_Str: "Go Back",         Action_Str: my_go_back}
+            ]
+          },
+           { Title_Str: "Set PP params->",
+            Item_Str: [                  # items[3][2]
+                { Title_Str: PP_NUM_CYCLES,     Value_Str: {Default_Str: 3,   Working_Str : _DEF_MIN_CYCLES,    Step_Str : 1}},
+                { Title_Str: PP_NIGHT_STRT_STR, Value_Str: {Default_Str: 23,  Working_Str : PP_NIGHT_START_HR,  Step_Str : 1}},
+                { Title_Str: PP_NIGHT_END_STR,  Value_Str: {Default_Str: 7,   Working_Str : PP_NIGHT_END_HR,    Step_Str : 1}},
+                { Title_Str: PP_MIN_OFF,        Value_Str: {Default_Str: 60,  Working_Str : _DEF_MIN_OFF_S,     Step_Str : 5}},
+                { Title_Str: PP_MAX_ON,         Value_Str: {Default_Str: 10,  Working_Str : _DEF_MAX_ON_S,      Step_Str : 1}},
+                { Title_Str: PP_MAX_CV,         Value_Str: {Default_Str: 40,   Working_Str : _DEF_MAX_CV_PERCENT,Step_Str : 5}},
+                { Title_Str: PP_ANOM_STR,       Value_Str: {Default_Str: 20,  Working_Str : PP_ANOMALY_MINS,    Step_Str : 5}},
+                { Title_Str: "Save PP params",  Action_Str: update_PP_params},
                 { Title_Str: "Go Back",         Action_Str: my_go_back}
             ]
           },
@@ -2266,12 +2477,17 @@ def calc_average_HFpressure(offset_back:int, length:int)->float:
 def get_tank_depth():
     global tank_is
 
-    if distSensor is not None:
-        d = int(distSensor.read()) - housetank.sensor_offset
-    else:
-        d = 1000
+    try:
+        if distSensor is not None:
+            d = int(distSensor.read()) - housetank.sensor_offset
+        else:
+            d = 1000
+    except Exception as e:
+        ev_log.write(f'{now_time_long()}: Exception in get_tank_depth {e}')
+        enter_maint_mode_reason('dstsens read err')     
+
     housetank.depth = (housetank.height - d)
-    if DEBUGLVL > 0: print(f'get_tank_depth: {housetank.depth}')
+    if DEBUGLVL > 1: print(f'get_tank_depth: {housetank.depth}')
     tank_is = get_fill_state(d)
 
 def set_zone(timer: Timer):
@@ -2327,18 +2543,27 @@ def updateData():
     global temp
     # global depthringindex
     global depth_ROC_index
+    global client, temp
 
+    client.check_msg()          # keep MQTT connection alive
     get_tank_depth()
 
+    publish_tank_depth(client)
+    temp = 27 - (temp_sensor.read_u16() * TEMP_CONV_FACTOR - 0.706)/0.001721
+    # temp=12.3
+    # print(f'Temp is {temp:.1f}')
+    publish_temperature(client)
+    publish_kPa(client)
+
 #  OK... try to filter out pressure pump switching noise..only matters if filling tank, ie HT zone
-    last_reading = housetank.depth
+    # last_reading = housetank.depth
+    prev_depth = housetank.depth
     if zone == P2:                                      # that's HT...
         if pp_ring.index > -1:
             last_PP_event = pp_ring.buffer[pp_ring.index]
             recent_switch = last_PP_event[1] == "ON" and (time.time() - last_PP_event[0]) < config_dict[DELAY]    # looks like pump-ON in the current iteration...
         else:
             recent_switch = False
-
         if recent_switch:
             if depth_ring.index > -1:
                 prev_depth = depth_ring.buffer[depth_ring.index][1]      # beware... tuples lurk here
@@ -2355,7 +2580,8 @@ def updateData():
                 housetank.depth = prev_depth                # ignore this reading, maintain prev value
                                                             # TODO check if subsequent refs are now a problem...
 
-    depth_ring.add(last_reading)
+    # depth_ring.add(last_reading)
+    depth_ring.add(housetank.depth)
     sma_depth = calc_SMA(depth_ring.buffer)         # this calculates average of non-zero values... regardless of how many entries in the ring
     time_factor = config_dict[DELAY] / 60           # dont move this - DELAY may be changed on the fly
     housetank.depth_ROC = int((sma_depth - housetank.last_depth) / time_factor)	# ROC in mm/minute.  Save negatives also...
@@ -2380,13 +2606,12 @@ def updateData():
     prev_index = (hi_freq_kpa_index - 1) % HI_FREQ_RINGSIZE     # because hi_freq_kpa_index refers to pos to write next value
     pressure_str = f'P {hi_freq_kpa_ring[prev_index]:>3} Av {int(average_kpa):>3} {zone:3}'
       
-    temp = 27 - (temp_sensor.read_u16() * TEMP_CONV_FACTOR - 0.706)/0.001721
 
 def get_pressure():
     adc_val = bp_pressure.read_u16() >> 4
     measured_volts = 3.3 * float(adc_val) / 4095    # 65535
     sensor_volts = measured_volts / VDIV_Ratio
-    kpa = max(0, round(sensor_volts * 200 - 100))     # 200 is 800 / delta v, ie 4.5 - 0.5  Changed int to round 13/5/25
+    kpa = max(0, round(sensor_volts * 200 - KPA_OFFSET))     # 200 is 800 / delta v, ie 4.5 - 0.5  Changed int to round 13/5/25
     # print(f"ADC value: {adc_val=}")
     return adc_val, kpa
      
@@ -2601,7 +2826,7 @@ def checkForAnomalies()->None:
                             if PRODUCTION_MODE: abort_pumping("kPa below Zone min")
 
 
-            if TANK_DIST_MEASURE:                   # allow for absence of VL53L1X...
+            if distSensor is not None:                   # allow for absence of VL53L1X...
                 if not CALIBRATE_MODE:                              # easy way to prevent pesky alarms while testing
                     if tank_is == "Overflow":                       # ideally, refer to a Tank object... but this will work for now
                         raiseAlarm("OVERFLOW - ON", 999)
@@ -2990,7 +3215,7 @@ def LogTankData()->None:
             last_logged_kpa = average_kpa
             enter_log = True
 
-        if enter_log and TANK_DIST_MEASURE: tank_log.write(logstr)
+        if enter_log and distSensor is not None: tank_log.write(logstr)
     print(dbgstr)
 
 def calc_pump_runtime(p:Pump) -> str:
@@ -3666,23 +3891,34 @@ async def pp_anomaly_check(period_s)->None:
     while True:
         tupltime = now_time_tuple()
         hour = tupltime[3]
-        nightwatch = hour > 21 or hour < 7
+        nightwatch = hour > PP_dict[PP_NIGHT_STRT_STR] or hour < PP_dict[PP_NIGHT_END_STR]      # TODO make these consts config params
         blen = len(pp_ring.buffer)
         if DEBUGLVL > 0: ev_log.write(f'{now_time_long()} pp_anomaly_check {hour=} {nightwatch=} {blen=}\n' )
         if nightwatch:
             if presspump.state:
                 on_secs = time.time() - presspump.last_time_switched
-                if on_secs > MAX_NIGHTWATCH_ON:
+                if on_secs > PP_MAX_NIGHTWATCH_ON:
                     ev_log.write(f'{now_time_long()} PP nightwatch continuous running!')
         # now... the tricky bit, may need to tweak parameters in PP_Cycle_detect
-            if blen > 10:      # don't run if buffer is (almost) empty
-                result = detect_pump_cycling(pp_ring.buffer, (pp_ring.index - 1) % PPRINGSIZE, blen, lookback_s=period_s)  # why - 1? Claude code asssumes HEAD is next write point...
+            if blen > 8:      # don't run if buffer is (almost) empty
+                result = detect_pump_cycling(pp_ring.buffer,
+                                             (pp_ring.index - 1) % PPRINGSIZE,  # why - 1? Claude code asssumes HEAD is next write point...
+                                             blen,
+                                             min_cycles=PP_dict[PP_NUM_CYCLES],
+                                             max_on_s=PP_dict[PP_MAX_ON],
+                                             min_off_s=PP_dict[PP_MIN_OFF],
+                                             max_cv_percent=PP_dict[PP_MAX_CV],
+                                             lookback_s=period_s)
                 # ev_log.write(result)
                 if result["alert"]:
+                    pstr = f'{now_time_long()} PP cycle detected: {result["reason"]}'
+                    print(pstr)
                     ev_log.write(f'{now_time_long()} PP cycle detected: {result["reason"]}\n')
                     event_ring.add("PP Cycle Detected")
-                else:
-                    ev_log.write(f'{now_time_long()} NO ALERT: {result["reason"]} count {result["cycle_count"]} cv {result["cv_percent"]}\n')
+                # else:
+                #     pstr = f'{now_time_long()} NO ALERT: {result["reason"]} count {result["cycle_count"]} cv {result["cv_percent"]}'
+                #     print(pstr)
+                #     ev_log.write(f'{now_time_long()} NO ALERT: {result["reason"]} count {result["cycle_count"]} cv {result["cv_percent"]}\n')
 
         await asyncio.sleep(period_s)
 
@@ -3850,11 +4086,11 @@ async def send_command_with_timeout(command, expected_response, timeout=5, max_r
 
     """
 
-    if DEBUGLVL > 0: print(f'{now_time_long()} Entered S_C_W_T cmd {command} exp_rsp {expected_response}')
+    if DEBUGLVL > 1: print(f'{now_time_long()} Entered S_C_W_T cmd {command} exp_rsp {expected_response}')
 
     for attempt in range(max_retries):
         # Set up pending request tracker
-        if DEBUGLVL > 0: print(f'{now_time_long()} SCWT {attempt=} - CLEARING pending_request dict')
+        if DEBUGLVL > 1: print(f'{now_time_long()} SCWT {attempt=} - CLEARING pending_request dict')
         pending_request.clear()
         pending_request['command'] = command
         pending_request['expected_resp_str'] = expected_response
@@ -3879,16 +4115,16 @@ async def send_command_with_timeout(command, expected_response, timeout=5, max_r
                         return (False, response)
                     
                 if isinstance(response, tuple):
-                    if DEBUGLVL > 0: print(f'{now_time_long()} SCWT loop {count=} rcvd tuple {response} expected {expected_response}')
+                    if DEBUGLVL > 1: print(f'{now_time_long()} SCWT loop {count=} rcvd tuple {response} expected {expected_response}')
                     if response[0] == expected_response:
-                        if DEBUGLVL > 0: print(f'{now_time_long()} SCWT: received expected tuple response {response[0]} value {response[1]} on {attempt=}')
+                        if DEBUGLVL > 1: print(f'{now_time_long()} SCWT: received expected tuple response {response[0]} value {response[1]} on {attempt=}')
                         return (True, response[1])     # return value
                     else:
                         # Got NAK or unexpected response
-                        if DEBUGLVL > 0: print(f'{now_time_long()} SCWT: received unexpected response {response}')
+                        if DEBUGLVL > 1: print(f'{now_time_long()} SCWT: received unexpected response {response}')
                         return (False, response)
             else:
-                if DEBUGLVL > 0: print(f'{now_time_long()} while loop "get" else... {count=}')
+                if DEBUGLVL > 1: print(f'{now_time_long()} while loop "get" else... {count=}')
 
             count += 1
             await asyncio.sleep_ms(250)
@@ -3916,6 +4152,7 @@ async def radio_transmit_task():
 async def main_control_task():
     """Main control logic - initialise SM, then reads sensors, control pump, manage auto mode operations"""
     global borepump, last_ON_time, LOGHFDATA, rec_num
+    global client
 
     screamer.value(0)			    # turn alarm off
     beeper.value(0)			        # turn beeper off
@@ -3976,7 +4213,12 @@ async def main_control_task():
     print(f"Main TX starting {format_secs_long(start_time)} SM version:{system.version} TX version:{SW_VERSION}")
     init_logging()          # needs correct time first!
     init_all()              # includes device config...
-    
+
+    client = connect_mqtt() # talk to HA
+    publish_depth_discovery(client)
+    publish_temp_discovery(client)
+    publish_kPa_discovery(client)
+
     asyncio.create_task(blinkx2())                              # visual indicator we are running
     # asyncio.create_task(check_lcd_btn())                       # start up lcd_button widget
     asyncio.create_task(regular_flush(FLUSH_PERIOD))            # flush data every FLUSH_PERIOD minutes
@@ -3990,11 +4232,14 @@ async def main_control_task():
     asyncio.create_task(pump_action_processor())                # a generic handler for async ON/OFF actions
     if PLATFORM == "PCB":
         asyncio.create_task(monitor_pressure_pump(PP_CHECK_PERIOD))
-        asyncio.create_task(pp_anomaly_check(PP_ANOMALY_PERIOD))    # look for weirdness
+        asyncio.create_task(pp_anomaly_check(PP_dict[PP_ANOM_STR] * 60))    # convert dict val to seconds, look for weirdness
     
     gc.collect()
     gc.threshold(gc.mem_free() // 4 + gc.mem_alloc())
-    # micropython.mem_info()
+    print("In MCT.. Memory info:")
+    micropython.mem_info()
+    print(f'String space:')
+    micropython.qstr_info()
 
     get_tank_depth()        # defer until after devices configured.  First reading might be more accurate now...
 
